@@ -1,0 +1,24 @@
+services:
+  zhunzou:
+    build: .
+    image: zhunzou:local
+    container_name: zhunzou
+    restart: unless-stopped
+    ports:
+      - '8787:8787'
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: '8787'
+      HOST: 0.0.0.0
+      DATABASE_PATH: /app/data/zhunzou.db
+      GLOBAL_RULES_PATH: /app/data/GLOBAL_RULES.md
+      WEB_DIST_PATH: /app/packages/web/dist
+      SERVE_WEB: 'true'
+    volumes:
+      - zhunzou-data:/app/data
+
+volumes:
+  zhunzou-data:

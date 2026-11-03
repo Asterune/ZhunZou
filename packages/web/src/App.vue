@@ -1,0 +1,350 @@
+<script setup lang="ts">
+import {
+  CheckCircle2,
+  Gavel,
+  LogOut,
+  RefreshCw,
+  ScrollText,
+  Send,
+  SlidersHorizontal,
+  WifiOff,
+} from 'lucide-vue-next';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+
+import BatchApproveDialog from './components/BatchApproveDialog.vue';
+import HistoryList from './components/HistoryList.vue';
+import LoginGate from './components/LoginGate.vue';
+import RulesEditor from './components/RulesEditor.vue';
+import StatusBar from './components/StatusBar.vue';
+import TaskBoard from './components/TaskBoard.vue';
+import TicketCard from './components/TicketCard.vue';
+import ToastStack from './components/ToastStack.vue';
+import { relativeTime } from './lib/format';
+import { useHubStore } from './stores/hub';
+
+type Tab = 'pending' | 'tasks' | 'history' | 'rules';
+
+const store = useHubStore();
+
+function initialTab(): Tab {
+  if (typeof window === 'undefined') return 'pending';
+  const value = new URLSearchParams(window.location.search).get('tab');
+  return value === 'tasks' || value === 'history' || value === 'rules'
+    ? value
+    : 'pending';
+}
+
+const activeTab = ref<Tab>(initialTab());
+const batchOpen = ref(false);
+
+const tabs = computed(() => [
+  {
+    key: 'pending' as const,
+    label: '待批奏折',
+    icon: ScrollText,
+    count: store.pendingTickets.length,
+  },
+  {
+    key: 'tasks' as const,
+    label: '下发任务',
+    icon: Send,
+    count: store.activeTasks.length,
+  },
+  { key: 'history' as const, label: '历史决策', icon: CheckCircle2 },
+  { key: 'rules' as const, label: '规则配置', icon: SlidersHorizontal },
+]);
+
+const connectionLabel = computed(() => {
+  if (store.connection === 'online') return '已连接';
+  if (store.connection === 'offline') return '连接中断';
+  return '连接中';
+});
+
+const connectionDotClass = computed(() => {
+  if (store.connection === 'online') return 'bg-secondary';
+  if (store.connection === 'offline') return 'bg-error';
+  return 'bg-outline';
+});
+
+const connectionTextClass = computed(() => {
+  if (store.connection === 'online') return 'text-secondary';
+  if (store.connection === 'offline') return 'text-error';
+  return 'text-on-surface-variant';
+});
+
+watch(activeTab, (tab) => {
+  if (tab === 'rules') {
+    void store.loadRules();
+    void store.loadRuleCandidates();
+  }
+
+  // Keep the new page at the top: switching while scrolled would otherwise
+  // leave the viewport in the middle of a different page ("页面偏移").
+  if (typeof window !== 'undefined') {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+
+    const url = new URL(window.location.href);
+    if (tab === 'pending') url.searchParams.delete('tab');
+    else url.searchParams.set('tab', tab);
+    window.history.replaceState(null, '', url);
+  }
+});
+
+onMounted(() => {
+  if (store.token) store.start();
+});
+
+onBeforeUnmount(() => {
+  store.stop();
+});
+</script>
+
+<template>
+  <LoginGate v-if="!store.token" />
+
+  <div v-else class="paper-grain min-h-screen bg-surface pb-24 md:pb-0">
+    <header
+      class="sticky top-0 z-40 border-b border-outline-variant/35 bg-surface shadow-[0_1px_8px_rgba(30,27,25,0.04)]"
+    >
+      <div class="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4 sm:px-6">
+        <div class="flex min-w-0 items-center gap-2.5">
+          <span
+            class="grid h-9 w-9 shrink-0 rotate-[-1deg] place-items-center rounded bg-primary text-[18px] font-bold text-on-primary shadow-[0_2px_8px_-2px_rgba(147,0,11,0.5)]"
+            style="font-family: var(--font-serif)"
+          >
+            准
+          </span>
+          <div class="min-w-0 leading-tight">
+            <div class="flex items-center gap-1.5">
+              <h1
+                class="truncate text-lg font-semibold tracking-tight text-on-surface"
+                style="font-family: var(--font-serif)"
+              >
+                准奏
+              </h1>
+              <span class="hidden text-[10px] uppercase tracking-[0.16em] text-on-surface-variant/60 sm:inline">
+                Zhunzou
+              </span>
+            </div>
+            <div class="flex items-center gap-1.5 text-[11px]">
+              <span class="relative flex h-2 w-2">
+                <span
+                  v-if="store.connection === 'online'"
+                  class="absolute inline-flex h-full w-full animate-ping rounded-full bg-secondary opacity-60"
+                />
+                <span
+                  class="relative inline-flex h-2 w-2 rounded-full"
+                  :class="connectionDotClass"
+                />
+              </span>
+              <span class="font-medium" :class="connectionTextClass">
+                {{ connectionLabel }}
+              </span>
+              <span class="text-on-surface-variant/35">•</span>
+              <span class="text-on-surface-variant">
+                {{ store.lastSyncAt ? relativeTime(store.lastSyncAt) : '同步中' }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <nav
+          class="ml-4 hidden items-center gap-1 rounded-xl bg-surface-container/80 p-1 ring-1 ring-inset ring-outline-variant/40 md:flex"
+          aria-label="主导航"
+        >
+          <button
+            v-for="tab in tabs"
+            :key="tab.key"
+            type="button"
+            class="flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-medium"
+            :aria-current="activeTab === tab.key ? 'page' : undefined"
+            :class="
+              activeTab === tab.key
+                ? 'bg-primary text-on-primary shadow-sm'
+                : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
+            "
+            @click="activeTab = tab.key"
+          >
+            <component :is="tab.icon" :size="16" />
+            {{ tab.label }}
+            <span
+              class="grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold"
+              :aria-hidden="!tab.count"
+              :class="
+                tab.count
+                  ? activeTab === tab.key
+                    ? 'bg-on-primary/20 text-on-primary'
+                    : 'bg-primary text-on-primary'
+                  : 'invisible'
+              "
+            >
+              {{ tab.count || '' }}
+            </span>
+          </button>
+        </nav>
+
+        <div class="ml-auto flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            aria-label="立即刷新"
+            title="立即刷新"
+            class="grid h-9 w-9 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface disabled:opacity-50"
+            :disabled="store.refreshing"
+            @click="store.refresh()"
+          >
+            <RefreshCw :size="18" :class="{ 'animate-spin': store.refreshing }" />
+          </button>
+          <button
+            type="button"
+            aria-label="退出登录"
+            title="退出登录"
+            class="grid h-9 w-9 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-error"
+            @click="store.logout()"
+          >
+            <LogOut :size="18" />
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="mx-auto max-w-6xl px-4 py-5 sm:px-6">
+      <div
+        v-if="store.connection === 'offline'"
+        class="mb-4 flex flex-wrap items-center gap-2 rounded-lg bg-tertiary-fixed px-3.5 py-2.5 text-xs text-on-tertiary-fixed shadow-sm"
+      >
+        <WifiOff :size="16" class="shrink-0" />
+        <span class="min-w-0 flex-1 truncate">
+          同步中断：{{ store.lastError || '无法连接服务端' }}
+        </span>
+        <button
+          type="button"
+          class="shrink-0 rounded-md bg-tertiary px-2.5 py-1 text-[11px] font-medium text-on-tertiary-fixed transition hover:opacity-90"
+          @click="store.refresh()"
+        >
+          重试
+        </button>
+      </div>
+
+      <StatusBar />
+
+      <section v-if="activeTab === 'pending'">
+        <div class="mb-4 flex flex-wrap items-end justify-between gap-2 px-0.5">
+          <div class="flex items-center gap-2">
+            <span class="h-2.5 w-2.5 rotate-45 rounded-[2px] bg-primary-container" />
+            <h2
+              class="text-xl font-semibold text-on-surface"
+              style="font-family: var(--font-serif)"
+            >
+              御览奏折
+            </h2>
+            <span
+              v-if="store.pendingTickets.length"
+              class="rounded bg-primary px-2 py-0.5 text-[11px] font-bold text-on-primary"
+            >
+              {{ store.pendingTickets.length }} 封急奏
+            </span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="hidden text-[11px] text-on-surface-variant sm:inline">
+              三思而后决 · 即批即行
+            </span>
+            <button
+              v-if="store.pendingTickets.length > 1"
+              type="button"
+              class="flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[11px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container"
+              @click="batchOpen = true"
+            >
+              <Gavel :size="14" />
+              批量准奏
+            </button>
+          </div>
+        </div>
+
+        <div
+          v-if="!store.pendingTickets.length"
+          class="rounded-xl border border-outline-variant/35 bg-surface-container-low px-6 py-12 text-center shadow-inner"
+        >
+          <div
+            class="mx-auto grid h-14 w-14 place-items-center rounded-full bg-surface-container text-primary"
+          >
+            <CheckCircle2 :size="27" />
+          </div>
+          <h3
+            class="mt-3 text-lg font-semibold text-on-surface"
+            style="font-family: var(--font-serif)"
+          >
+            天下太平 · 暂无待批奏折
+          </h3>
+          <p class="mx-auto mt-1 max-w-sm text-sm leading-6 text-on-surface-variant">
+            各方 Agent 皆顺畅运行中。若有新疑难阻塞，自当飞鸽传书，立呈御前。
+          </p>
+          <span
+            class="mt-4 inline-flex items-center gap-1.5 rounded-full bg-surface-container px-3 py-1 text-[11px] text-on-surface-variant"
+          >
+            <span class="h-1.5 w-1.5 rounded-full bg-secondary" />
+            调度守护进程处于待命监听状态
+          </span>
+        </div>
+
+        <div v-else class="grid gap-4 xl:grid-cols-[repeat(auto-fit,minmax(380px,1fr))]">
+          <TicketCard
+            v-for="ticket in store.pendingTickets"
+            :key="ticket.id"
+            :ticket="ticket"
+          />
+        </div>
+      </section>
+
+      <TaskBoard v-else-if="activeTab === 'tasks'" />
+
+      <HistoryList v-else-if="activeTab === 'history'" />
+
+      <RulesEditor v-else />
+    </main>
+
+    <BatchApproveDialog
+      :open="batchOpen"
+      :tickets="store.pendingTickets"
+      @close="batchOpen = false"
+    />
+
+    <footer
+      class="mx-auto hidden max-w-6xl px-6 pb-6 text-center text-[11px] text-on-surface-variant/60 md:block"
+    >
+      准奏 · 单实例部署 · 数据持久化于 SQLite
+    </footer>
+
+    <nav
+      class="fixed inset-x-0 bottom-0 z-40 border-t border-outline-variant/35 bg-surface/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-2px_12px_rgba(30,27,25,0.05)] backdrop-blur-xl md:hidden"
+    >
+      <div class="flex h-16 items-stretch">
+        <button
+          v-for="tab in tabs"
+          :key="tab.key"
+          type="button"
+          class="relative flex flex-1 flex-col items-center justify-center gap-1 text-[11px]"
+          :aria-current="activeTab === tab.key ? 'page' : undefined"
+          :class="
+            activeTab === tab.key
+              ? 'font-semibold text-primary'
+              : 'text-on-surface-variant'
+          "
+          @click="activeTab = tab.key"
+        >
+          <span class="relative">
+            <component :is="tab.icon" :size="21" />
+            <span
+              v-if="tab.count"
+              class="absolute -right-3 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[9px] font-bold leading-none text-on-primary"
+            >
+              {{ tab.count }}
+            </span>
+          </span>
+          <span>{{ tab.label }}</span>
+        </button>
+      </div>
+    </nav>
+  </div>
+
+  <ToastStack />
+</template>

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "zhunzou": {
+      "command": "node",
+      "args": ["/absolute/path/to/zhunzou/packages/bridge/bin/mcp.js"],
+      "env": {
+        "HUB_URL": "https://hub.example.com",
+        "HUB_TOKEN": "same-value-as-HUB_SECRET_TOKEN",
+        "AGENT_ENV": "company-cursor",
+        "ZHUNZOU_PROJECT": "your-project-name",
+        "ZHUNZOU_FALLBACK": "cli",
+        "ZHUNZOU_WAIT_TIMEOUT_MS": "40000"
+      }
+    }
+  }
+}

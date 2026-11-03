@@ -1,0 +1,1191 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import fastifyStatic from '@fastify/static';
+import Fastify, {
+  type FastifyInstance,
+  type FastifyServerOptions,
+} from 'fastify';
+import { z, ZodError } from 'zod';
+
+import type { DecisionTicket } from '@zhunzou/shared';
+import {
+  batchResolveTicketsSchema,
+  bindWorkspaceProjectSchema,
+  bridgeReleaseManifestSchema,
+  completeTaskSchema,
+  createTaskSchema,
+  createTicketSchema,
+  extendTicketSchema,
+  formatTicketId,
+  heartbeatSchema,
+  isResolvedStatus,
+  isTerminalStatus,
+  listRuleCandidatesQuerySchema,
+  listTasksQuerySchema,
+  listTicketsQuerySchema,
+  listWorkspaceProjectsQuerySchema,
+  nextTaskQuerySchema,
+  releaseTaskSchema,
+  resolveTicketSchema,
+  resumeQuerySchema,
+  ticketIdSchema,
+  updateRulesSchema,
+  waitQuerySchema,
+} from '@zhunzou/shared';
+
+import {
+  buildApprovalToken,
+  buildApprovalUrl,
+  renderApprovalPage,
+  renderApprovalResultPage,
+  verifyApprovalToken,
+} from './approval-link.js';
+import { createAuthHook } from './auth.js';
+import type { ServerConfig } from './config.js';
+import { createDatabase } from './db/client.js';
+import {
+  ApiError,
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+} from './errors.js';
+import { TaskEventBus, TicketEventBus } from './events.js';
+import { createMetaAgent, type MetaAgent } from './meta-agent.js';
+import {
+  createNotifiers,
+  notifyTicketPendingHuman,
+  type Notifier,
+} from './notifications.js';
+import {
+  closePlugins,
+  emitPluginEvent,
+  loadPlugins,
+  readyPlugins,
+  type HubPlugin,
+} from './plugins.js';
+import { parseTicketId, TicketRepository, type TicketStore } from './repository.js';
+import {
+  createRuleDistiller,
+  type RuleDistiller,
+} from './rule-distiller.js';
+import { RulesStore } from './rules-store.js';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    repo: TicketStore;
+    bus: TicketEventBus;
+    taskBus: TaskEventBus;
+    rulesStore: RulesStore;
+  }
+}
+
+const APP_VERSION = '0.1.0';
+const paramsSchema = z.object({ id: ticketIdSchema });
+const approvalParamsSchema = z.object({
+  token: z.string().min(1).max(512),
+});
+const approvalResolveSchema = z.object({
+  selectedOption: z.string().trim().min(1).max(8),
+  customInstruction: z.string().trim().max(2000).optional(),
+  confirmDestructive: z.union([z.string(), z.boolean()]).optional(),
+});
+
+export interface BuildAppOptions {
+  config: ServerConfig;
+  /** Optional storage adapter; defaults to SQLite via TicketRepository. */
+  repo?: TicketStore;
+  metaAgent?: MetaAgent;
+  ruleDistiller?: RuleDistiller;
+  notifiers?: Notifier[];
+  plugins?: HubPlugin[];
+  logger?: FastifyServerOptions['logger'];
+}
+
+export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
+  const { config } = options;
+
+  const app = Fastify({
+    logger: options.logger ?? { level: config.logLevel },
+    bodyLimit: 256 * 1024,
+  });
+
+  // Body-less POSTs (cancel / accept / dismiss) are common from simple HTTP
+  // clients that still set Content-Type: application/json. Treat an empty body
+  // as `undefined` instead of Fastify's default 400 EMPTY_JSON_BODY.
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (_request, body, done) => {
+      const raw = typeof body === 'string' ? body.trim() : '';
+      if (!raw) {
+        done(null, undefined);
+        return;
+      }
+      try {
+        done(null, JSON.parse(raw));
+      } catch {
+        done(
+          new BadRequestError('request body is not valid JSON', 'INVALID_JSON'),
+          undefined,
+        );
+      }
+    },
+  );
+
+  // The signed mobile approval page uses a plain HTML form so it works
+  // without JavaScript (and without exposing the dashboard token).
+  app.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'string' },
+    (_request, body, done) => {
+      const params = new URLSearchParams(
+        typeof body === 'string' ? body : '',
+      );
+      done(null, Object.fromEntries(params.entries()));
+    },
+  );
+
+  const { sqlite, db } = createDatabase(config.dbPath);
+  const repo: TicketStore = options.repo ?? new TicketRepository(db);
+  const bus = new TicketEventBus();
+  const taskBus = new TaskEventBus();
+  const rulesStore = new RulesStore(config.rulesPath);
+  const metaAgent =
+    options.metaAgent ?? createMetaAgent(config.metaAgent, fetch);
+  const ruleDistiller =
+    options.ruleDistiller ??
+    createRuleDistiller(config.metaAgent, fetch, app.log);
+  const notifiers = options.notifiers ?? createNotifiers(config.notifications, app.log);
+  let plugins: HubPlugin[] = [];
+  let sweeper: ReturnType<typeof setInterval> | null = null;
+
+  app.decorate('repo', repo);
+  app.decorate('bus', bus);
+  app.decorate('taskBus', taskBus);
+  app.decorate('rulesStore', rulesStore);
+
+  app.addHook('onClose', async () => {
+    if (sweeper !== null) {
+      clearInterval(sweeper);
+      sweeper = null;
+    }
+    await closePlugins(plugins, app.log);
+    sqlite.close();
+  });
+
+  const indexHtmlPath = join(config.webDistPath, 'index.html');
+  const hasWebBuild = config.serveWeb && existsSync(indexHtmlPath);
+  const indexHtml = hasWebBuild ? readFileSync(indexHtmlPath) : null;
+
+  // Error/not-found handlers must be installed before child route contexts
+  // are created, otherwise encapsulated routes fall back to Fastify defaults.
+  app.setNotFoundHandler(async (request, reply) => {
+    const isApi =
+      request.url.startsWith('/api') || request.url.startsWith('/releases/');
+
+    // SPA fallback: unknown non-API GETs render the dashboard shell.
+    if (!isApi && indexHtml && (request.method === 'GET' || request.method === 'HEAD')) {
+      return reply
+        .type('text/html; charset=utf-8')
+        .header('cache-control', 'no-cache')
+        .send(indexHtml);
+    }
+
+    return reply.code(404).send({
+      error: { code: 'NOT_FOUND', message: 'route not found' },
+    });
+  });
+
+  app.setErrorHandler(async (error, request, reply) => {
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'request payload failed validation',
+          details: error.issues,
+        },
+      });
+    }
+
+    if (error instanceof ApiError) {
+      if (error.statusCode >= 500) {
+        request.log.error({ err: error }, 'api error');
+      }
+      return reply.code(error.statusCode).send({
+        error: {
+          code: error.code,
+          message: error.message,
+          ...(error.details === undefined ? {} : { details: error.details }),
+        },
+      });
+    }
+
+    const statusCode =
+      typeof (error as { statusCode?: unknown }).statusCode === 'number'
+        ? (error as { statusCode: number }).statusCode
+        : 500;
+
+    if (statusCode < 500) {
+      return reply.code(statusCode).send({
+        error: {
+          code: 'BAD_REQUEST',
+          message: error instanceof Error ? error.message : 'bad request',
+        },
+      });
+    }
+
+    request.log.error({ err: error }, 'unhandled error');
+    return reply.code(500).send({
+      error: { code: 'INTERNAL_ERROR', message: 'internal server error' },
+    });
+  });
+
+  // -----------------------------------------------------------------
+  // Static web dashboard (single-port deployment)
+  // -----------------------------------------------------------------
+  if (hasWebBuild) {
+    await app.register(fastifyStatic, {
+      root: config.webDistPath,
+      prefix: '/',
+      index: ['index.html'],
+      setHeaders(response, filePath) {
+        response.header(
+          'cache-control',
+          filePath.endsWith('index.html')
+            ? 'no-cache'
+            : 'public, max-age=31536000, immutable',
+        );
+      },
+    });
+    app.log.info({ root: config.webDistPath }, 'serving web dashboard');
+  }
+
+  // -----------------------------------------------------------------
+  // Published bridge releases (public: clients self-update without a token)
+  // -----------------------------------------------------------------
+  const bridgeManifestPath = join(config.bridgeReleasesPath, 'latest.json');
+  if (existsSync(bridgeManifestPath)) {
+    await app.register(fastifyStatic, {
+      root: config.bridgeReleasesPath,
+      prefix: '/releases/bridge/',
+      decorateReply: false,
+      cacheControl: false,
+      setHeaders(response, filePath) {
+        response.header(
+          'cache-control',
+          filePath.endsWith('latest.json')
+            ? 'no-cache'
+            : 'public, max-age=300',
+        );
+      },
+    });
+    app.log.info(
+      { root: config.bridgeReleasesPath },
+      'serving bridge releases',
+    );
+  }
+
+  // -----------------------------------------------------------------
+  // Meta-Agent pipeline (runs after the create response has been sent)
+  // -----------------------------------------------------------------
+  const runMetaReview = async (ticketId: number): Promise<void> => {
+    const ticket = repo.get(ticketId);
+    if (!ticket || ticket.status !== 'PENDING_META') return;
+
+    try {
+      const { content: rules } = rulesStore.read();
+      const precedents = repo.findSimilarTickets({
+        projectName: ticket.projectName,
+        blockerQuestion: ticket.blockerQuestion,
+        excludeId: Number(ticket.id),
+        limit: 5,
+      });
+      const review = await metaAgent.review(ticket, rules, precedents);
+
+      if (precedents.length > 0) {
+        app.log.info(
+          {
+            ticket: formatTicketId(ticket.id),
+            precedents: precedents.map((item) => formatTicketId(item.id)),
+          },
+          'meta-agent using historical precedents',
+        );
+      }
+
+      if (review.canResolve && review.selectedOption) {
+        const selected = ticket.options.find(
+          (option) => option.key === review.selectedOption,
+        );
+        if (selected?.risk === 'destructive') {
+          const escalated = repo.markPendingHuman(
+            ticketId,
+            `选项 ${review.selectedOption} 标记为 destructive，必须人工确认`,
+          );
+          if (escalated) {
+            notifyTicketPendingHuman(
+              notifiers,
+              escalated,
+              app.log,
+              approvalUrlFor(escalated),
+            );
+            emitPluginEvent(plugins, 'onTicketPendingHuman', escalated, app.log);
+          }
+          return;
+        }
+
+        const updated = repo.markAutoResolved(
+          ticketId,
+          review.selectedOption,
+          review.reason,
+        );
+        if (updated) {
+          bus.publish(updated);
+          emitPluginEvent(plugins, 'onTicketResolved', updated, app.log);
+          app.log.info(
+            { ticket: formatTicketId(updated.id), option: review.selectedOption },
+            'meta-agent auto-resolved ticket',
+          );
+        }
+        return;
+      }
+
+      const updated = repo.markPendingHuman(ticketId, review.reason);
+      if (updated) {
+        app.log.info(
+          { ticket: formatTicketId(updated.id), reason: review.reason },
+          'meta-agent escalated ticket to human',
+        );
+        notifyTicketPendingHuman(
+          notifiers,
+          updated,
+          app.log,
+          approvalUrlFor(updated),
+        );
+        emitPluginEvent(plugins, 'onTicketPendingHuman', updated, app.log);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      app.log.error({ err: message, ticket: formatTicketId(ticketId) }, 'meta-agent review failed');
+
+      const updated = repo.markPendingHuman(
+        ticketId,
+        `Meta-Agent 预审失败，已转人工：${message}`,
+      );
+      if (updated) {
+        notifyTicketPendingHuman(
+          notifiers,
+          updated,
+          app.log,
+          approvalUrlFor(updated),
+        );
+        emitPluginEvent(plugins, 'onTicketPendingHuman', updated, app.log);
+      }
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Rule distillation: turn a human approval into a candidate rule.
+  // Runs after the approval response, so the human never waits on the LLM.
+  // -----------------------------------------------------------------
+  const distillRule = async (ticket: DecisionTicket): Promise<void> => {
+    if (ticket.status !== 'HUMAN_RESOLVED') return;
+
+    try {
+      const content = await ruleDistiller.distill(ticket);
+      if (!content) return;
+
+      const candidate = repo.createRuleCandidate(Number(ticket.id), content);
+      if (!candidate) return;
+
+      app.log.info(
+        {
+          candidate: formatTicketId(candidate.id),
+          ticket: formatTicketId(ticket.id),
+        },
+        'rule candidate distilled from human approval',
+      );
+    } catch (error) {
+      app.log.warn(
+        {
+          err: (error as Error).message,
+          ticket: formatTicketId(ticket.id),
+        },
+        'rule candidate distillation failed',
+      );
+    }
+  };
+
+  const approvalUrlFor = (ticket: DecisionTicket): string | undefined => {
+    if (!config.publicBaseUrl) return undefined;
+    const expiresAt = Date.now() + config.approvalLinkTtlMs;
+    const token = buildApprovalToken(
+      ticket.id,
+      expiresAt,
+      config.approvalLinkSecret,
+    );
+    return buildApprovalUrl(config.publicBaseUrl, token);
+  };
+
+  const autoResolveEligible = (projectName: string): boolean => {
+    if (config.autoResolveTimeoutMs <= 0) return false;
+    if (config.autoResolveProjects.length === 0) return true;
+    return config.autoResolveProjects.includes(projectName);
+  };
+
+  const sweepDueTickets = async (): Promise<void> => {
+    const now = Date.now();
+
+    for (const ticket of repo.findDueTickets(now)) {
+      const option = ticket.options.find(
+        (item) => item.key === ticket.recommendedOption,
+      );
+
+      // Hard safety rule: never auto-approve a destructive option, even if
+      // the agent marked it as the recommendation.
+      if (option?.risk === 'destructive') {
+        repo.clearExpiry(Number(ticket.id), now);
+        app.log.warn(
+          { ticket: formatTicketId(ticket.id) },
+          'skipped timeout auto-resolve for destructive option',
+        );
+        continue;
+      }
+
+      const updated = repo.markTimedOut(
+        Number(ticket.id),
+        ticket.recommendedOption,
+        `超过自动裁决时限，默认采纳推荐方案 ${ticket.recommendedOption}`,
+        now,
+      );
+
+      if (updated) {
+        bus.publish(updated);
+        emitPluginEvent(plugins, 'onTicketResolved', updated, app.log);
+        app.log.info(
+          {
+            ticket: formatTicketId(updated.id),
+            option: updated.selectedOption,
+          },
+          'ticket auto-resolved by timeout policy',
+        );
+      }
+    }
+  };
+
+  const sweepStaleTasks = async (): Promise<void> => {
+    const now = Date.now();
+    const onlineEnvs = new Set(
+      repo
+        .listHeartbeats(now)
+        .filter((heartbeat) => heartbeat.online)
+        .map((heartbeat) => heartbeat.env),
+    );
+
+    for (const task of repo.listClaimedTasks()) {
+      const claimedAt = task.claimedAt ?? task.updatedAt;
+      const hardExpired =
+        config.taskHardTimeoutMs > 0 &&
+        claimedAt <= now - config.taskHardTimeoutMs;
+      const offlineExpired =
+        !onlineEnvs.has(task.env) &&
+        claimedAt <= now - config.taskClaimTimeoutMs;
+
+      if (!hardExpired && !offlineExpired) continue;
+
+      const requeue =
+        !hardExpired && task.attempts < config.taskMaxAttempts;
+      const reason = hardExpired
+        ? '任务执行超时，已自动失败'
+        : requeue
+          ? `端侧 ${task.env} 离线，任务已重新排队`
+          : `端侧 ${task.env} 多次离线，任务已自动失败`;
+
+      const updated = repo.releaseTask(
+        Number(task.id),
+        requeue,
+        reason,
+        now,
+      );
+
+      if (updated) {
+        taskBus.publish(updated);
+        app.log.warn(
+          {
+            task: formatTicketId(updated.id),
+            env: updated.env,
+            attempts: updated.attempts,
+            requeued: requeue,
+          },
+          'released stale claimed task',
+        );
+      }
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Public health check (no auth)
+  // -----------------------------------------------------------------
+  app.get('/healthz', async () => ({
+    ok: true,
+    version: APP_VERSION,
+    now: Date.now(),
+  }));
+
+  // -----------------------------------------------------------------
+  // Bridge release manifest (no auth) — feeds `cli.mjs upgrade`
+  // -----------------------------------------------------------------
+  app.get('/api/bridge/latest', async (request, reply) => {
+    if (!existsSync(bridgeManifestPath)) {
+      return reply.code(404).send({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'no bridge release published yet',
+        },
+      });
+    }
+
+    let manifest;
+    try {
+      manifest = bridgeReleaseManifestSchema.parse(
+        JSON.parse(readFileSync(bridgeManifestPath, 'utf8')),
+      );
+    } catch (error) {
+      request.log.error({ err: error }, 'invalid bridge release manifest');
+      return reply.code(500).send({
+        error: {
+          code: 'INVALID_MANIFEST',
+          message: 'latest.json is not a valid bridge release manifest',
+        },
+      });
+    }
+
+    const origin =
+      config.publicBaseUrl ||
+      `${request.protocol}://${request.headers.host ?? 'localhost'}`;
+
+    return reply.header('cache-control', 'no-cache').send({
+      ...manifest,
+      baseUrl:
+        manifest.baseUrl ?? `${origin}/releases/bridge/${manifest.version}`,
+    });
+  });
+
+  // -----------------------------------------------------------------
+  // Signed one-click approval page (no Bearer token; the URL is the
+  // capability). Rendered server-side so it works from any notification.
+  // -----------------------------------------------------------------
+  app.get('/a/:token', async (request, reply) => {
+    const { token } = approvalParamsSchema.parse(request.params);
+    const payload = verifyApprovalToken(token, config.approvalLinkSecret);
+
+    if (!payload) {
+      return reply
+        .code(410)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '链接已失效',
+            '该审批链接已过期或无效，请打开看板重新审批。',
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    const ticket = repo.get(Number(payload.ticketId));
+    if (!ticket) {
+      return reply
+        .code(404)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '工单不存在',
+            '这封奏折可能已被清理，请打开看板确认。',
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    if (!['PENDING_META', 'PENDING_HUMAN'].includes(ticket.status)) {
+      return reply
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '这封奏折已处理',
+            `当前状态：${ticket.status}`,
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    return reply
+      .type('text/html; charset=utf-8')
+      .send(renderApprovalPage(ticket, token, config.publicBaseUrl));
+  });
+
+  app.post('/a/:token/resolve', async (request, reply) => {
+    const { token } = approvalParamsSchema.parse(request.params);
+    const payload = verifyApprovalToken(token, config.approvalLinkSecret);
+
+    if (!payload) {
+      return reply
+        .code(410)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '链接已失效',
+            '该审批链接已过期或无效，请打开看板重新审批。',
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    const input = approvalResolveSchema.parse(request.body ?? {});
+    const ticketId = Number(payload.ticketId);
+    const ticket = repo.get(ticketId);
+
+    if (!ticket) {
+      return reply
+        .code(404)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '工单不存在',
+            '这封奏折可能已被清理，请打开看板确认。',
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    if (!['PENDING_META', 'PENDING_HUMAN'].includes(ticket.status)) {
+      return reply
+        .code(409)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '这封奏折已处理',
+            `当前状态：${ticket.status}`,
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    const option = ticket.options.find(
+      (item) => item.key === input.selectedOption,
+    );
+    if (!option) {
+      return reply
+        .code(400)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalPage(
+            ticket,
+            token,
+            config.publicBaseUrl,
+            `选项 ${input.selectedOption} 不存在，请重新选择。`,
+          ),
+        );
+    }
+
+    const confirmed =
+      input.confirmDestructive === true ||
+      input.confirmDestructive === 'true';
+
+    if (option.risk === 'destructive' && !confirmed) {
+      return reply
+        .code(400)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalPage(
+            ticket,
+            token,
+            config.publicBaseUrl,
+            '这是高风险 / 不可逆选项，请勾选确认后再提交。',
+            input.selectedOption,
+            input.customInstruction ?? '',
+          ),
+        );
+    }
+
+    try {
+      const resolved = repo.resolve(ticketId, {
+        selectedOption: input.selectedOption,
+        confirmDestructive: true,
+        ...(input.customInstruction
+          ? { customInstruction: input.customInstruction }
+          : {}),
+      });
+      bus.publish(resolved);
+      emitPluginEvent(plugins, 'onTicketResolved', resolved, app.log);
+      void distillRule(resolved);
+
+      return reply
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '已准奏',
+            `方案 ${option.key}「${option.label}」已生效，Agent 将立即恢复执行。`,
+            true,
+            config.publicBaseUrl,
+          ),
+        );
+    } catch (error) {
+      return reply
+        .code(error instanceof ConflictError ? 409 : 500)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '未能提交',
+            error instanceof Error ? error.message : '未知错误',
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+  });
+
+  // -----------------------------------------------------------------
+  // Authenticated API
+  // -----------------------------------------------------------------
+  await app.register(
+    async (api) => {
+      api.addHook('preHandler', createAuthHook(config.token));
+
+      // Create a ticket; Meta-Agent pre-review is scheduled immediately after.
+      api.post('/tickets', async (request, reply) => {
+        const input = createTicketSchema.parse(request.body);
+        const now = Date.now();
+        const expiresAt = autoResolveEligible(input.projectName)
+          ? now + config.autoResolveTimeoutMs
+          : undefined;
+        const ticket = repo.create(input, now, expiresAt);
+        emitPluginEvent(plugins, 'onTicketCreated', ticket, app.log);
+
+        setImmediate(() => {
+          void runMetaReview(Number(ticket.id));
+        });
+
+        return reply.code(201).send({ ticket });
+      });
+
+      // Batch approval: resolve each ticket with its own recommended option
+      // unless the caller pins one. Destructive options require an explicit
+      // confirmDestructive=true and are skipped otherwise.
+      api.post('/tickets/batch-resolve', async (request) => {
+        const input = batchResolveTicketsSchema.parse(request.body);
+        const resolved: DecisionTicket[] = [];
+        const skipped: Array<{ id: string; reason: string }> = [];
+
+        for (const id of input.ticketIds) {
+          const ticketId = parseTicketId(id);
+          const current = repo.get(ticketId);
+          if (!current) {
+            skipped.push({ id, reason: '工单不存在' });
+            continue;
+          }
+          if (!['PENDING_META', 'PENDING_HUMAN'].includes(current.status)) {
+            skipped.push({ id, reason: `已处于 ${current.status}` });
+            continue;
+          }
+
+          const optionKey = input.selectedOption ?? current.recommendedOption;
+          const option = current.options.find(
+            (item) => item.key === optionKey,
+          );
+          if (!option) {
+            skipped.push({ id, reason: `选项 ${optionKey} 不存在` });
+            continue;
+          }
+          if (
+            option.risk === 'destructive' &&
+            input.confirmDestructive !== true
+          ) {
+            skipped.push({ id, reason: '破坏性选项需要单独确认' });
+            continue;
+          }
+
+          try {
+            const ticket = repo.resolve(ticketId, {
+              selectedOption: optionKey,
+              ...(input.customInstruction
+                ? { customInstruction: input.customInstruction }
+                : {}),
+              confirmDestructive: true,
+            });
+            bus.publish(ticket);
+            emitPluginEvent(plugins, 'onTicketResolved', ticket, app.log);
+            void distillRule(ticket);
+            resolved.push(ticket);
+          } catch (error) {
+            skipped.push({
+              id,
+              reason: error instanceof Error ? error.message : '审批失败',
+            });
+          }
+        }
+
+        return { tickets: resolved, skipped };
+      });
+
+      // Long polling: hold the request until resolved, cancelled, or timeout.
+      api.get('/tickets/:id/wait', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const ticketId = parseTicketId(id);
+        const rawQuery = (request.query ?? {}) as Record<string, unknown>;
+        const timeout =
+          rawQuery.timeout === undefined
+            ? config.waitTimeoutMs
+            : waitQuerySchema.parse(rawQuery).timeout;
+
+        const existing = repo.get(ticketId);
+        if (!existing) throw new NotFoundError(`ticket ${formatTicketId(id)} not found`);
+
+        if (isTerminalStatus(existing.status)) {
+          return {
+            resolved: isResolvedStatus(existing.status),
+            timedOut: false,
+            ticket: existing,
+          };
+        }
+
+        const result = await bus.wait(existing.id, timeout);
+        const ticket = result.ticket ?? repo.get(ticketId);
+
+        if (!ticket) throw new NotFoundError(`ticket ${formatTicketId(id)} not found`);
+
+        return {
+          resolved: isResolvedStatus(ticket.status),
+          timedOut: result.timedOut && !isTerminalStatus(ticket.status),
+          ticket,
+        };
+      });
+
+      api.get('/tickets/:id', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const ticket = repo.get(parseTicketId(id));
+        if (!ticket) throw new NotFoundError(`ticket ${formatTicketId(id)} not found`);
+        return { ticket };
+      });
+
+      api.get('/tickets', async (request) => {
+        const query = listTicketsQuerySchema.parse(request.query);
+        return repo.list(query);
+      });
+
+      // Human approval from the web console.
+      api.post('/tickets/:id/resolve', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const input = resolveTicketSchema.parse(request.body);
+        const ticket = repo.resolve(parseTicketId(id), input);
+
+        bus.publish(ticket);
+        emitPluginEvent(plugins, 'onTicketResolved', ticket, app.log);
+        void distillRule(ticket);
+        return { ticket };
+      });
+
+      // Snooze the timeout SLA. Useful when the human is away but does not
+      // want the recommended option to be applied automatically yet.
+      api.post('/tickets/:id/extend', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const input = extendTicketSchema.parse(request.body ?? {});
+        const ticketId = parseTicketId(id);
+        const current = repo.get(ticketId);
+        if (!current) {
+          throw new NotFoundError(`ticket ${formatTicketId(id)} not found`);
+        }
+
+        const ticket = repo.extend(ticketId, input.minutes);
+        if (!ticket) {
+          throw new ConflictError(
+            `ticket ${formatTicketId(id)} is already ${current.status}`,
+            'ALREADY_FINALIZED',
+          );
+        }
+
+        return { ticket };
+      });
+
+      // Explicit cancellation (bridge timeout / user abort).
+      api.post('/tickets/:id/cancel', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const ticketId = parseTicketId(id);
+        const current = repo.get(ticketId);
+        if (!current) throw new NotFoundError(`ticket ${formatTicketId(id)} not found`);
+
+        const cancelled = repo.cancel(ticketId);
+        if (!cancelled) {
+          throw new ConflictError(
+            `ticket ${formatTicketId(id)} is already ${current.status}`,
+            'ALREADY_FINALIZED',
+          );
+        }
+
+        bus.publish(cancelled);
+        emitPluginEvent(plugins, 'onTicketCancelled', cancelled, app.log);
+        return { ticket: cancelled };
+      });
+
+      // -----------------------------------------------------------------
+      // Human → Agent task dispatch
+      // -----------------------------------------------------------------
+
+      // Human dispatches a task from the dashboard.
+      api.post('/tasks', async (request, reply) => {
+        const input = createTaskSchema.parse(request.body);
+        const task = repo.createTask(input);
+        taskBus.publish(task);
+        return reply.code(201).send({ task });
+      });
+
+      api.get('/tasks', async (request) => {
+        const query = listTasksQuerySchema.parse(request.query);
+        return repo.listTasks(query);
+      });
+
+      // Bridge long-polls for the next task assigned to its env.
+      api.get('/tasks/next', async (request) => {
+        const query = nextTaskQuerySchema.parse(request.query);
+        const deadline = Date.now() + query.timeout;
+
+        for (;;) {
+          const task = repo.claimNextTask(query.env);
+          if (task) return { task, timedOut: false };
+
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) return { task: null, timedOut: true };
+
+          const wake = await taskBus.wait(query.env, remaining, () =>
+            repo.claimNextTask(query.env),
+          );
+          if (wake.task) return { task: wake.task, timedOut: false };
+          if (wake.timedOut) return { task: null, timedOut: true };
+          // Another waiter may have claimed the published task; loop.
+        }
+      });
+
+      api.get('/tasks/:id', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const task = repo.getTask(parseTicketId(id));
+        if (!task) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+        return { task };
+      });
+
+      // Agent reports completion / failure.
+      api.post('/tasks/:id/complete', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const input = completeTaskSchema.parse(request.body);
+        const task = repo.completeTask(parseTicketId(id), input);
+        return { task };
+      });
+
+      // Bridge hands a claimed task back when no local agent could be woken.
+      // Requeueing lets the next bridge / wake adapter retry it immediately
+      // instead of waiting for the stale-task sweeper.
+      api.post('/tasks/:id/release', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const input = releaseTaskSchema.parse(request.body ?? {});
+        const taskId = parseTicketId(id);
+        const reason =
+          input.reason ??
+          (input.requeue
+            ? '端侧未能唤醒，任务已重新排队'
+            : '端侧未能唤醒，任务已失败');
+
+        const task = repo.releaseTask(taskId, input.requeue, reason);
+        if (!task) {
+          const current = repo.getTask(taskId);
+          if (!current) {
+            throw new NotFoundError(
+              `task ${formatTicketId(id)} not found`,
+            );
+          }
+          throw new ConflictError(
+            `task ${formatTicketId(id)} is ${current.status}, expected CLAIMED`,
+            'ALREADY_FINALIZED',
+          );
+        }
+
+        taskBus.publish(task);
+        return { task };
+      });
+
+      // Human cancels a task that has not finished.
+      api.post('/tasks/:id/cancel', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const taskId = parseTicketId(id);
+        const current = repo.getTask(taskId);
+        if (!current) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+
+        const cancelled = repo.cancelTask(taskId);
+        if (!cancelled) {
+          throw new ConflictError(
+            `task ${formatTicketId(id)} is already ${current.status}`,
+            'ALREADY_FINALIZED',
+          );
+        }
+
+        return { task: cancelled };
+      });
+
+      // Bridge heartbeat: Running / Blocked / Idle.
+      api.post('/status/heartbeat', async (request) => {
+        const input = heartbeatSchema.parse(request.body);
+        return { heartbeat: repo.recordHeartbeat(input) };
+      });
+
+      api.get('/status', async () => ({ envs: repo.listHeartbeats() }));
+
+      // Bridge restart recovery: pending decisions plus recently terminal
+      // tickets and still-active tasks for this env.
+      api.get('/resume', async (request) => {
+        const query = resumeQuerySchema.parse(request.query);
+        const since = query.since ?? Date.now() - 24 * 60 * 60 * 1000;
+
+        return {
+          tickets: repo.listResumeTickets(query.env, since, query.limit),
+          tasks: repo.listActiveTasks(query.env, query.limit),
+        };
+      });
+
+      // -----------------------------------------------------------------
+      // Workspace ↔ project bindings
+      // -----------------------------------------------------------------
+
+      // Projects a workspace has worked on; feeds the dispatch dropdown.
+      api.get('/workspace-projects', async (request) => {
+        const query = listWorkspaceProjectsQuerySchema.parse(request.query);
+        return repo.listWorkspaceProjects(query);
+      });
+
+      // Explicit bind from the dashboard (idempotent).
+      api.post('/workspace-projects', async (request, reply) => {
+        const input = bindWorkspaceProjectSchema.parse(request.body);
+        const project = repo.bindWorkspaceProject(
+          input.env,
+          input.projectName,
+        );
+        return reply.code(201).send({ project });
+      });
+
+      api.delete('/workspace-projects/:id', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const project = repo.unbindWorkspaceProject(parseTicketId(id));
+        if (!project) {
+          throw new NotFoundError(
+            `workspace project ${formatTicketId(id)} not found`,
+          );
+        }
+        return { project };
+      });
+
+      // GLOBAL_RULES.md online editing.
+      api.get('/rules', async () => rulesStore.read());
+
+      api.put('/rules', async (request) => {
+        const { content } = updateRulesSchema.parse(request.body);
+        return rulesStore.write(content);
+      });
+
+      // Candidate rules distilled from past human approvals.
+      api.get('/rules/candidates', async (request) => {
+        const query = listRuleCandidatesQuerySchema.parse(request.query);
+        return repo.listRuleCandidates(query);
+      });
+
+      api.post('/rules/candidates/:id/accept', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const candidateId = parseTicketId(id);
+        const candidate = repo.getRuleCandidate(candidateId);
+        if (!candidate) {
+          throw new NotFoundError(
+            `rule candidate ${formatTicketId(id)} not found`,
+          );
+        }
+        if (candidate.status !== 'PENDING') {
+          throw new ConflictError(
+            `rule candidate ${formatTicketId(id)} is already ${candidate.status}`,
+            'ALREADY_FINALIZED',
+          );
+        }
+
+        const rules = rulesStore.append(candidate.content);
+        const updated = repo.markRuleCandidate(candidateId, 'ACCEPTED');
+
+        if (!updated) {
+          throw new ConflictError(
+            `rule candidate ${formatTicketId(id)} changed while accepting`,
+            'RACE_LOST',
+          );
+        }
+
+        return { candidate: updated, rules };
+      });
+
+      api.post('/rules/candidates/:id/dismiss', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const candidateId = parseTicketId(id);
+        const candidate = repo.getRuleCandidate(candidateId);
+        if (!candidate) {
+          throw new NotFoundError(
+            `rule candidate ${formatTicketId(id)} not found`,
+          );
+        }
+
+        const updated = repo.markRuleCandidate(candidateId, 'DISMISSED');
+        if (!updated) {
+          throw new ConflictError(
+            `rule candidate ${formatTicketId(id)} is already ${candidate.status}`,
+            'ALREADY_FINALIZED',
+          );
+        }
+
+        return { candidate: updated };
+      });
+    },
+    { prefix: '/api' },
+  );
+
+  // -----------------------------------------------------------------
+  // Operator plugins (optional): loaded after routes are registered.
+  // -----------------------------------------------------------------
+  plugins =
+    options.plugins ??
+    (await loadPlugins(config.plugins, {
+      config,
+      logger: app.log,
+      version: APP_VERSION,
+    }));
+
+  for (const notifier of notifiers) {
+    app.log.info({ channel: notifier.name }, 'notification channel enabled');
+  }
+  for (const plugin of plugins) {
+    app.log.info({ plugin: plugin.name }, 'plugin loaded');
+  }
+
+  await readyPlugins(plugins, app, app.log);
+
+  // Single background loop for SLA auto-resolution and stale task cleanup.
+  // unref() keeps tests and one-shot CLI usage from being held open.
+  sweeper = setInterval(() => {
+    void sweepDueTickets().catch((error: unknown) => {
+      app.log.error({ err: (error as Error).message }, 'timeout sweep failed');
+    });
+    void sweepStaleTasks().catch((error: unknown) => {
+      app.log.error(
+        { err: (error as Error).message },
+        'stale task sweep failed',
+      );
+    });
+  }, config.sweepIntervalMs);
+  sweeper.unref?.();
+
+  return app;
+}

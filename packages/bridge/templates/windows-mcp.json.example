@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "zhunzou": {
+      "command": "node",
+      "args": [
+        "C:/Users/YourName/zhunzou-bridge/mcp.mjs"
+      ],
+      "env": {
+        "HUB_URL": "https://hub.l1uqi.com",
+        "HUB_TOKEN": "REPLACE_WITH_HUB_SECRET_TOKEN",
+        "AGENT_ENV": "company-windows",
+        "ZHUNZOU_PROJECT": "your-project-name",
+        "ZHUNZOU_FALLBACK": "cli",
+        "ZHUNZOU_WAIT_TIMEOUT_MS": "40000"
+      }
+    }
+  }
+}

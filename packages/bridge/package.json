@@ -1,0 +1,48 @@
+{
+  "name": "zhunzou-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Local MCP server + CLI that bridges Cursor/OpenCode to the Zhunzou decision service",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "ai-agents",
+    "approval",
+    "cli",
+    "cursor",
+    "opencode"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "zhunzou-bridge": "./bin/cli.js",
+    "zhunzou-mcp": "./bin/mcp.js",
+    "agent-hub-mcp": "./bin/mcp.js"
+  },
+  "files": [
+    "bin",
+    "dist-standalone",
+    "templates"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-standalone.mjs",
+    "build:bundle": "node scripts/build-standalone.mjs",
+    "package:windows": "node scripts/build-standalone.mjs && node scripts/package-windows.mjs",
+    "publish:release": "node scripts/publish-bridge.mjs",
+    "prepack": "pnpm build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "wait": "node bin/cli.js wait"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@zhunzou/shared": "workspace:*",
+    "commander": "^14.0.2",
+    "esbuild": "^0.24.2",
+    "zod": "^3.25.76"
+  }
+}

@@ -1,0 +1,533 @@
+# 准奏（Zhunzou）
+
+[English](./README.en.md) · 中文
+
+> Agent 上奏，总管拟票，你一句「准奏」。
+
+<p align="center">
+  <img src="./docs/assets/dashboard.png" alt="准奏看板：环境状态、待批奏折、总管转人工理由与高风险选项二次确认" width="920" />
+</p>
+
+跨设备多 Agent 异步决策中枢。端侧（Cursor / OpenCode / 任意 Agent）遇到需要人类拍板的卡点时，把问题压缩成「三行简报 + 结构化选项」提交到云端；总管 Agent 按《全局工程规范》自动处理大部分常规决策，剩余部分进入 Web 看板集中审批，端侧通过长轮询 / CLI 无感阻塞等待结果。
+
+设计上刻意保持**通用、可插拔**：预审模型、通知渠道、端侧接入和自定义逻辑都可以替换，不绑定某一家模型或某一个 IDE。扩展方式见 [docs/PLUGINS.md](./docs/PLUGINS.md)。
+
+> 当前状态：**M1–M8 全部完成**，具备共享协议、云端服务、长轮询、Meta-Agent、MCP/CLI 桥接、Web 看板、单端口部署、「历史判例 + 批复沉淀」的决策记忆闭环、超时裁决、批量审批、高风险保护、陈旧任务治理，以及通知内签名一键批复与接入向导。
+
+---
+
+## 目录结构
+
+```text
+zhunzou/
+├── package.json
+├── pnpm-workspace.yaml
+├── tsconfig.base.json
+├── GLOBAL_RULES.md              # Meta-Agent 预审依据（可在线编辑）
+├── .env.example
+├── Dockerfile / docker-compose.yml
+├── ecosystem.config.cjs         # pm2 单实例配置
+├── docs/PLUGINS.md              # 可插拔扩展说明
+├── examples/plugins/            # 外部插件示例（审计日志 / 自定义通知）
+├── scripts/
+│   ├── smoke-test.sh            # 启动真实服务 + HTTP 冒烟测试
+│   ├── bridge-smoke-test.sh     # 真实服务 + MCP stdio + CLI 端到端
+│   ├── web-smoke-test.sh        # 构建产物 + 单端口看板托管验收
+│   └── deploy-pm2.sh            # 一键构建并 (重) 启动 pm2
+├── deploy/                      # 生产部署（systemd + nginx）
+│   ├── deploy.sh                # 本地打包 → 上传 → 远程构建
+│   ├── setup.sh                 # 服务器端安装 / systemd / nginx
+│   ├── enable-https.sh          # Let's Encrypt 证书 + HTTPS
+│   └── zhunzou.service / nginx.conf
+└── packages/
+    ├── shared/                  # Zod Schema、TypeScript 类型、状态机常量
+    ├── server/                  # Fastify API、SQLite/Drizzle、Meta-Agent、通知、插件、长轮询
+    ├── bridge/                  # 端侧 MCP Server + CLI（Cursor / OpenCode / 任意 Agent）
+    └── web/                     # Vue 3 + Vite + TailwindCSS 批奏折看板
+```
+
+---
+
+## 快速开始
+
+要求：Node.js >= 20、pnpm 9（可用 `corepack enable pnpm`）。
+
+```bash
+pnpm install
+cp .env.example .env          # 填入 HUB_SECRET_TOKEN / OPENAI_API_KEY
+
+pnpm build                    # 构建 shared / server / bridge / web
+pnpm server                   # 默认 http://127.0.0.1:8787
+```
+
+浏览器打开 `http://127.0.0.1:8787`，输入 `HUB_SECRET_TOKEN` 即可进入批奏折看板。生产构建由 Fastify 同端口托管，无需额外 Web 服务器。
+
+开发模式（服务端热重载 + Vite 前端代理）：
+
+```bash
+pnpm dev          # 服务端 :8787
+pnpm dev:web      # 看板 :5173，/api 自动代理到 :8787
+```
+
+> 未配置 `OPENAI_API_KEY` 时，Meta-Agent 会自动跳过预审，所有工单直接转 `PENDING_HUMAN`，方便本地联调。
+
+### 用 curl 走一遍完整流程
+
+```bash
+TOKEN=dev-token   # 与 .env 中的 HUB_SECRET_TOKEN 保持一致
+
+# 1. 提交卡点工单
+curl -s -X POST http://127.0.0.1:8787/api/tickets \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "env": "company-cursor",
+    "projectName": "yikuaomed-erp",
+    "doneSummary": "完成登录页表单校验",
+    "blockerQuestion": "错误提示用 Toast 还是行内文案？",
+    "nextStepPlan": "确定后接入统一错误处理并补测试",
+    "options": [
+      { "key": "A", "label": "Toast 提示", "prosCons": "统一、实现快" },
+      { "key": "B", "label": "行内文案", "prosCons": "更贴近字段" }
+    ],
+    "recommendedOption": "A"
+  }'
+
+# 2. 端侧长轮询（会挂起最多 40s）
+curl -s "http://127.0.0.1:8787/api/tickets/1/wait?timeout=40000" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. 另一个终端：人类审批，长轮询立即被唤醒
+curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"selectedOption":"B","customInstruction":"先只改登录页"}'
+```
+
+---
+
+## Web 批奏折看板（M4）
+
+单页 Vue 3 应用，默认由 Fastify 在同一个端口托管（`SERVE_WEB=true`），无需 CORS。
+
+- **登录门**：粘贴 `HUB_SECRET_TOKEN`，仅存于本机 `localStorage`（`zhunzou.token`，自动兼容旧的 `agent-hub.token`）。
+- **接入端状态栏**：展示每个 `env` 的在线心跳、Running / Blocked / Idle 状态与当前任务，90 秒无心跳自动置灰。
+- **待批奏折**：`PENDING_META` / `PENDING_HUMAN` 工单按创建时间排队；卡片即三行简报（已完成 / 卡点 / 下一步），点击任一方案即提交审批，可附带补充指令。推荐方案会高亮，但不影响选择。
+- **超时默认裁决**：开启 `AUTO_RESOLVE_TIMEOUT_MS` 后，待批卡片显示倒计时，到期按推荐方案自动准奏；可「暂缓 10 分钟」。推荐方案标记为 `destructive` 时永不自动执行。
+- **批量准奏**：积压多封时一键按各自推荐方案批复，提交前有 3 秒撤销窗口；高风险方案默认跳过，需勾选后才会一并批准。
+- **高风险保护**：选项支持 `risk: safe | caution | destructive`；破坏性选项必须人类二次确认，Meta-Agent 与超时策略都不能自动通过。
+- **通知内一键批复**：设置 `PUBLIC_BASE_URL` 后，Bark / 飞书 / Slack / Discord / ntfy / Telegram / Webhook 的通知都会带签名审批链接；手机点开即可选方案提交，无需登录看板。链接绑定单张工单、默认 30 分钟过期，重复提交会被状态机拒绝。
+- **下发任务**：人 → Agent 的反向调度。在看板指定环境、项目、标题与详细指令，端侧 Agent 通过 `agent_hub_next_task` 领取并执行，完成后回报结果；看板状态栏同步显示真实任务。
+- **工作区项目绑定**：每个环境（工作区）可绑定多个项目，下发任务时「项目名」下拉框只列出该环境已绑定的项目，不用再手输。Agent 心跳会自动上报 OpenCode / Cursor 当前打开的工作区（git 根目录名），服务端据此自动绑定；也可在看板用下拉框绑定其他已上报项目 / 解除（当前活跃项目不可解除，心跳会自动恢复）。
+- **历史决策**：自动放行与人工审批的完整记录，含决定、理由与补充指令。
+- **规则配置**：在线编辑 `GLOBAL_RULES.md`，保存后 Meta-Agent 立即使用新规则，无需重启。
+- **批复沉淀**：每次人工审批后自动提炼一条候选规则；在规则页一键采纳后并入 `GLOBAL_RULES.md`，也可忽略。没有配置 LLM 时使用确定性模板，功能仍可用。
+- **决策记忆**：Meta-Agent 预审时会参考同项目最近的历史判例，优先保持决策一致性，并在理由中注明「沿用 #编号」。
+- **自动同步**：每 5 秒轮询一次；页面隐藏时暂停，切回前台立即刷新；断网时展示可重试的错误条。
+
+前端源码位于 `packages/web`，使用 `createHubStore` 组合式状态管理（未引入 Pinia），TailwindCSS 4 + Vite 8 构建。
+
+---
+
+## API
+
+除 `GET /healthz` 与签名审批页 `/a/:token` 外，所有接口都需要 `Authorization: Bearer <HUB_SECRET_TOKEN>`。
+错误统一返回 `{ "error": { "code": "...", "message": "...", "details"?: ... } }`。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/healthz` | 健康检查（免鉴权） |
+| `GET` | `/a/:token` | 签名审批页（免 Bearer，链接自带能力与有效期） |
+| `POST` | `/a/:token/resolve` | 从签名审批页提交决定 |
+| `POST` | `/api/tickets` | 创建工单，返回 `201`，随后异步触发 Meta-Agent 预审 |
+| `GET` | `/api/tickets/:id` | 查询单个工单 |
+| `GET` | `/api/tickets` | 列表，支持 `?status=&projectName=&limit=` |
+| `GET` | `/api/tickets/:id/wait?timeout=40000` | 长轮询；返回 `{ resolved, timedOut, ticket }` |
+| `POST` | `/api/tickets/:id/resolve` | 人工审批 `{ selectedOption, customInstruction?, confirmDestructive? }` |
+| `POST` | `/api/tickets/batch-resolve` | 批量审批 `{ ticketIds, selectedOption?, confirmDestructive? }` |
+| `POST` | `/api/tickets/:id/extend` | 暂缓自动裁决 `{ minutes? }`，默认 10 分钟 |
+| `POST` | `/api/tickets/:id/cancel` | 取消仍在等待的工单 |
+| `POST` | `/api/tasks` | 人 → Agent 下发任务 `{ env, title, instruction, projectName? }` |
+| `GET` | `/api/tasks` | 任务列表，支持 `?env=&status=&limit=` |
+| `GET` | `/api/tasks/next?env=...&timeout=40000` | 端侧长轮询领取任务；无任务时超时返回 |
+| `POST` | `/api/tasks/:id/complete` | Agent 回报完成 / 失败 `{ status, result? }` |
+| `POST` | `/api/tasks/:id/cancel` | 人取消尚未结束的任务 |
+| `GET` | `/api/workspace-projects` | 工作区项目绑定列表，支持 `?env=` |
+| `POST` | `/api/workspace-projects` | 绑定项目 `{ env, projectName }`，幂等 |
+| `DELETE` | `/api/workspace-projects/:id` | 解除一条工作区项目绑定 |
+| `POST` | `/api/status/heartbeat` | 端侧上报 `{ env, status, projectName?, currentTask? }` |
+| `GET` | `/api/status` | 各接入端在线状态（90s 内有心跳视为在线） |
+| `GET` | `/api/resume?env=...&since=...` | 端侧重启恢复：未决/近期工单 + 活跃任务 |
+| `GET` | `/api/rules` | 读取 `GLOBAL_RULES.md` |
+| `PUT` | `/api/rules` | 在线更新规则 `{ content }` |
+| `GET` | `/api/rules/candidates` | 候选规则列表，支持 `?status=PENDING\|ACCEPTED\|DISMISSED&limit=` |
+| `POST` | `/api/rules/candidates/:id/accept` | 采纳候选规则并追加到 `GLOBAL_RULES.md` |
+| `POST` | `/api/rules/candidates/:id/dismiss` | 忽略候选规则 |
+
+### 长轮询约定
+
+- 单次请求最长 55s（`MAX_WAIT_TIMEOUT_MS`），默认 40s，可用 `WAIT_TIMEOUT_MS` 调整。
+- 已 resolved / cancelled 的工单会**立即**返回，不占用等待时间。
+- 唤醒完全走内存 `EventEmitter`，等待期间**不会轮询数据库**；SQLite 只负责持久化。
+- 超时返回 `{ resolved: false, timedOut: true, ticket }`，客户端可据此重试。
+
+### 工单状态机
+
+```text
+POST /tickets
+      │
+      ▼
+PENDING_META ──(规范覆盖，自动拍板)──▶ AUTO_RESOLVED
+      │
+      └──(需人工 / 预审失败 / 未配置 LLM)──▶ PENDING_HUMAN ──(看板审批)──▶ HUMAN_RESOLVED
+      │
+      └──(端侧取消)──▶ CANCELLED
+```
+
+人工决定永远优先：即使 Meta-Agent 的回复迟到，也不会覆盖已完成的 `HUMAN_RESOLVED`（数据库条件更新保证）。
+
+### 任务状态机（人 → Agent）
+
+```text
+POST /api/tasks
+      │
+      ▼
+PENDING ──(agent_hub_next_task 领取)──▶ CLAIMED ──(agent_hub_complete_task)──▶ DONE / FAILED
+   │                                        │
+   └──────────────(看板取消)────────────────┴──▶ CANCELLED
+```
+
+- 任务按 `env` 隔离：只有同一 `AGENT_ENV` 的桥接能领取。
+- 领取是条件更新，两个 Agent 同时轮询也只有一个能拿到同一条任务。
+- 每次领取会累加 `attempts`。如果端侧离线超过 `TASK_CLAIM_TIMEOUT_MS`，任务自动放回 `PENDING`；
+  超过 `TASK_MAX_ATTEMPTS` 或 `TASK_HARD_TIMEOUT_MS` 后标记 `FAILED`，不会永久卡在 `CLAIMED`。
+- `GET /api/tasks/next` 使用与审批相同的进程内 `EventEmitter` 唤醒，单实例部署约束不变。
+
+---
+
+## Meta-Agent 预审（可插拔）
+
+预审策略由 `META_AGENT_PROVIDER` 选择，核心只依赖一个 `MetaAgent` 接口：
+
+| Provider | 行为 |
+| --- | --- |
+| `openai`（默认） | 调用任意 OpenAI 兼容的 `/chat/completions`（DeepSeek / OpenAI / Moonshot / Ollama / vLLM…） |
+| `http` | 把 `{ ticket, rules }` POST 到 `META_AGENT_ENDPOINT`，由你自己的服务返回裁决 |
+| `none` | 关闭预审，所有工单直接转人工 |
+
+OpenAI 兼容模式的流程：
+
+1. 读取 `GLOBAL_RULES.md`；
+2. 将「规则 + 工单三点简报 + 选项」发送给模型；
+3. 强制返回严格 JSON：`{ "canResolve": boolean, "selectedOption": "A", "reason": "..." }`；
+4. 模型给出的选项必须真实存在于工单中，否则自动降级为人工审批；
+5. `canResolve === false` 时按 `NOTIFY_CHANNELS` 并行通知（Bark / 飞书 / Slack / Discord / ntfy / Telegram / Webhook）。
+
+预审前会从同一项目召回最近的历史已决工单（字符 bigram 相似度，零外部依赖），作为
+「历史判例」注入 prompt，帮助 Meta-Agent 对同类问题保持一致判断。历史判例只是参考，
+不会覆盖规范，也不会让高风险变更自动通过。
+
+人工审批完成后，服务端会在后台把这次批复提炼成一条候选规则（有 LLM 时用 LLM 抽象，
+没有 LLM 时用确定性模板），进入规则页的「御前待议」列表；采纳后追加到
+`GLOBAL_RULES.md` 的 `## 历史批复沉淀` 小节，忽略则只保留审计记录。
+
+`META_AGENT_HEADERS` 可以追加任意请求头，适配带网关鉴权的部署。
+
+规则文件可通过 `PUT /api/rules` 在线维护，无需重启服务。建议把团队真实偏好写具体，例如：
+
+- 非破坏性重构一律采纳推荐方案；
+- 数据库 schema / API 契约变更必须人工确认；
+- 前端状态管理统一 Pinia。
+
+### 通知渠道
+
+`NOTIFY_CHANNELS` 逗号分隔、并行 fan-out；不配置时保持旧行为（有 `WEBHOOK_URL` 就用通用 Webhook）：
+
+```bash
+NOTIFY_CHANNELS=bark,feishu,console
+```
+
+所有渠道单次超时 5 秒，失败只记日志，不影响工单与长轮询。
+
+设置 `PUBLIC_BASE_URL=https://hub.example.com` 后，通知正文会列出全部选项并附带签名审批链接
+（`/a/:token`）。手机点开即可直接选择方案提交，不需要登录看板；链接默认 30 分钟过期，
+只对一张工单有效，高风险选项仍需勾选确认。Bark 会把链接作为点击跳转，ntfy 使用 `Click` 头。
+
+### 外部插件
+
+`HUB_PLUGINS` 可加载任意 ES Module，挂载工单生命周期钩子：
+
+```bash
+HUB_PLUGINS=./examples/plugins/audit-log.mjs
+```
+
+支持 `onTicketCreated` / `onTicketPendingHuman` / `onTicketResolved` /
+`onTicketCancelled` / `onReady` / `onClose`。完整接口、通知渠道变量和示例见
+[docs/PLUGINS.md](./docs/PLUGINS.md)。
+
+---
+
+## 配置
+
+复制 `.env.example` 为 `.env`。常用变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PORT` / `HOST` | `8787` / `0.0.0.0` | 监听地址 |
+| `HUB_SECRET_TOKEN` | 开发环境 `dev-token` | 生产环境必须显式设置 |
+| `DATABASE_PATH` | `./data/zhunzou.db` | SQLite 文件路径 |
+| `GLOBAL_RULES_PATH` | `./GLOBAL_RULES.md` | 规则文件路径 |
+| `META_AGENT_PROVIDER` | `openai` | `openai` / `http` / `none` |
+| `OPENAI_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI 兼容接口 |
+| `OPENAI_API_KEY` | 空 | 为空时跳过自动预审 |
+| `META_AGENT_MODEL` | `deepseek-chat` | 预审模型 |
+| `META_AGENT_ENDPOINT` | 空 | `provider=http` 时的决策服务地址 |
+| `META_AGENT_HEADERS` | 空 | 额外请求头（JSON） |
+| `META_AGENT_TIMEOUT_MS` | `15000` | LLM 请求超时 |
+| `NOTIFY_CHANNELS` | 空 | `webhook,bark,feishu,slack,discord,ntfy,telegram,console` |
+| `WEBHOOK_URL` / `WEBHOOK_SECRET` | 空 | 通用通知 Webhook（兼容旧配置） |
+| `HUB_PLUGINS` | 空 | 逗号分隔的插件模块路径 |
+| `WAIT_TIMEOUT_MS` | `40000` | 默认长轮询窗口 |
+| `AUTO_RESOLVE_TIMEOUT_MS` | `0` | 超时默认裁决时限；`0` 关闭。到期按推荐方案自动准奏 |
+| `AUTO_RESOLVE_PROJECTS` | 空 | 允许自动裁决的项目，逗号分隔；空表示全部 |
+| `SWEEP_INTERVAL_MS` | `5000` | 超时与陈旧任务清理的扫描间隔 |
+| `TASK_CLAIM_TIMEOUT_MS` | `1800000` | 端侧离线超过该时长后，`CLAIMED` 任务自动重新排队 |
+| `TASK_HARD_TIMEOUT_MS` | `21600000` | `CLAIMED` 任务硬超时，即使端侧在线也标记失败 |
+| `TASK_MAX_ATTEMPTS` | `3` | 任务最多被领取次数，超过后标记 `FAILED` |
+| `PUBLIC_BASE_URL` | 空 | 通知里签名审批链接的公开地址，如 `https://hub.example.com` |
+| `APPROVAL_LINK_SECRET` | `HUB_SECRET_TOKEN` | 审批链接 HMAC 密钥 |
+| `APPROVAL_LINK_TTL_MS` | `1800000` | 审批链接有效期 |
+| `SERVE_WEB` | `true` | 是否由 Fastify 托管 `packages/web/dist` |
+| `WEB_DIST_PATH` | `./packages/web/dist` | 前端构建产物目录 |
+
+相对路径统一以仓库根目录为基准解析，因此从任意目录启动都不会写错位置。
+
+---
+
+## 端侧接入
+
+`packages/bridge` 提供两个入口，均为纯 JS/TS + `fetch`，无原生编译依赖。
+npm 包内置 esbuild 单文件 bundle（`dependencies` 为空），`npx zhunzou-bridge` 不会额外拉取 MCP SDK / zod / `@zhunzou/shared`。
+
+推荐先跑一次向导，它会写入 MCP 配置、安装决策规则（Cursor 写 `.cursorrules`，OpenCode 写 `AGENTS.md`）并校验连通性：
+
+```bash
+npx zhunzou-bridge init
+# 非交互：--hub-url ... --token ... --env ... --target cursor|opencode|claude|all --yes
+# 只预览不落盘：--dry-run
+# 仓库内未发布 npm 时：pnpm build && node packages/bridge/bin/cli.js init
+```
+
+手动配置：
+
+```bash
+# MCP Server（stdio），挂到 Cursor / OpenCode / 任意 MCP 客户端
+node packages/bridge/bin/mcp.js
+
+# CLI：阻塞等待审批结果，把决策打印到 stdout
+npx zhunzou-bridge wait --ticket 104
+
+# 守护进程：空闲时也能自动领取看板下发的任务并唤醒本机 AI
+npx zhunzou-bridge wake
+```
+
+桥接会从启动目录（编辑器打开的 OpenCode / Cursor 工作区）自动推断项目名：优先使用 `ZHUNZOU_PROJECT`，未设置时取 git 仓库根目录（非 git 项目取当前目录）的目录名。每次心跳都会上报它，服务端据此自动完成「工作区 ↔ 项目」绑定，看板的项目下拉框无需手动输入即可选择。
+
+### MCP Tools
+
+| Tool | 作用 |
+| --- | --- |
+| `agent_hub_resume` | 重启/重连后恢复上下文：未决/近期工单 + 活跃任务 |
+| `agent_hub_next_task` | 长轮询领取看板下发的任务，返回后标记 `Running` 并显示真实任务 |
+| `agent_hub_complete_task` | 回报下发任务 `DONE` / `FAILED`，状态回到 `Idle` |
+| `agent_hub_report_task` | 上报当前正在做的普通任务，避免看板一直显示「MCP 已连接」 |
+| `agent_hub_escalate` | 创建工单 → 长轮询 40s → 返回最终决策或超时引导 |
+| `agent_hub_wait` | 继续等待已有工单（策略 2 接力轮询） |
+| `agent_hub_notify_done` | 上报 `Idle`，更新看板状态灯 |
+
+超时后的两种保底策略（`ZHUNZOU_FALLBACK`，兼容旧名 `AGENT_HUB_FALLBACK`）：
+
+- `cli`（默认，推荐）：返回 `npx zhunzou-bridge wait --ticket 104 ...`，让模型在终端阻塞等待 stdout；
+- `mcp`：返回 `[STATUS: STILL_WAITING] ... agent_hub_wait(ticketId: 104)`，让模型接力调用工具。
+
+### 自动唤醒（wake）
+
+MCP 工具只能在对话回合内调用：没人操作编辑器时，端侧不会主动领任务，看板就会一直停在
+「待领取」。`zhunzou-bridge wake` 常驻长轮询补上这一段，任务一到就唤醒本机任意 AI 客户端：
+
+```bash
+zhunzou-bridge wake                      # 自动探测：OpenCode → 常见 CLI Agent → 桌面通知
+zhunzou-bridge wake --adapter opencode   # 注入当前项目最近的 OpenCode 会话
+zhunzou-bridge wake --adapter claude     # claude -p
+zhunzou-bridge wake --adapter command --command 'my-agent --task {taskId} {prompt}'
+```
+
+支持 `opencode` / `opencode-run` / `claude` / `codex` / `gemini` / `cursor-agent` / `aider` /
+`goose` / `amp` / `command` / `notify` 等适配器。注入模式由 Agent 自己调用
+`agent_hub_complete_task` 回报；一次性模式由守护进程按退出码写回 `DONE` / `FAILED`。
+唤醒失败会自动调用 `POST /api/tasks/:id/release` 重新排队，不会把任务卡在 `CLAIMED`。
+
+详见 [packages/bridge/README.md](./packages/bridge/README.md#自动唤醒wake)。
+
+### 环境变量
+
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `HUB_TOKEN` | 是 | - | 与服务端 `HUB_SECRET_TOKEN` 一致 |
+| `HUB_URL` | 否 | `http://127.0.0.1:8787` | 云端地址 |
+| `AGENT_ENV` | 否 | `unknown-<hostname>` | 看板环境标识，如 `company-cursor` |
+| `ZHUNZOU_PROJECT` | 否 | 自动推断 | 当前工作区项目名；默认取启动目录（git 根目录）名，心跳时自动绑定到该环境，下发任务可直接选择 |
+| `ZHUNZOU_FALLBACK`（旧名 `AGENT_HUB_FALLBACK`） | 否 | `cli` | `cli` 或 `mcp` |
+| `ZHUNZOU_WAIT_TIMEOUT_MS`（旧名 `AGENT_HUB_WAIT_TIMEOUT_MS`） | 否 | `40000` | 单次长轮询窗口（1s ~ 55s） |
+| `ZHUNZOU_CLI_COMMAND` | 否 | `npx zhunzou-bridge` | `cli` 策略下提示模型执行的命令；直接运行 `bin/mcp.js` 时自动指向同目录 `cli.js` / `cli.mjs` |
+| `ZHUNZOU_HEARTBEAT_INTERVAL_MS` | 否 | `30000` | 在线心跳间隔（5s ~ 5min） |
+| `ZHUNZOU_WAKE_ADAPTER` | 否 | `auto` | `wake` 守护进程的适配器：`auto` / `opencode` / `claude` / `codex` / `command` / `notify` 等 |
+| `ZHUNZOU_WAKE_COMMAND` | 否 | 空 | `command` 适配器的命令模板，如 `claude -p {prompt}` |
+| `ZHUNZOU_WAKE_ARGS` | 否 | 空 | 追加给 CLI 适配器的参数（空格分隔） |
+| `ZHUNZOU_WAKE_CWD` | 否 | 当前目录 | 一次性适配器的工作目录 |
+| `ZHUNZOU_WAKE_RUN_TIMEOUT_MS` | 否 | `1800000` | 一次性适配器最长执行时间 |
+| `ZHUNZOU_WAKE_POLL_TIMEOUT_MS` | 否 | `40000` | 领取任务的长轮询窗口（1s ~ 55s） |
+
+### 接入模板
+
+- `packages/bridge/templates/.cursorrules`：Cursor 的行为约束（何时升级、如何等待）。
+- `packages/bridge/templates/AGENTS.md`：OpenCode 的行为约束；`init --target opencode` 会写入或追加到目标项目的 `AGENTS.md`。
+- `packages/bridge/templates/cursor-mcp.json.example`：Cursor `.cursor/mcp.json` 示例。
+- `packages/bridge/templates/opencode.json.example`：OpenCode V2 `mcp.servers` 配置示例。
+- `packages/bridge/templates/launchd.plist.example`：macOS 下让 `zhunzou-bridge wake` 登录自启的 launchd 配置。
+
+详见 [packages/bridge/README.md](./packages/bridge/README.md)。
+
+### Windows 外部电脑
+
+在 Mac/Linux 上生成零依赖包：
+
+```bash
+pnpm package:bridge:windows
+# 产物：release/zhunzou-bridge-windows.zip
+```
+
+Windows 只需安装 Node.js 20+，解压 zip 后按包内 `README-WINDOWS.md` 配置
+`.cursor/mcp.json`。包内含 `mcp.mjs` / `cli.mjs`，无需 npm install、无需克隆仓库。
+
+发布新版本到 hub（服务端会以 `/releases/bridge/` 静态托管，客户端 `node cli.mjs upgrade` 自更新）：
+
+```bash
+pnpm publish:bridge          # 构建 standalone + 写 release/bridge + 刷新 zip
+bash deploy/deploy.sh        # 随仓库上传到 hub
+```
+
+---
+
+## 测试
+
+```bash
+pnpm test          # shared 28 + server 149 + bridge 85 + web 28 = 290 个测试
+pnpm typecheck     # 全量类型检查
+pnpm build         # 全量构建（含 Vue 看板）
+pnpm smoke         # 构建、启动真实服务、HTTP 长轮询冒烟测试
+pnpm smoke:bridge  # 真实服务 + MCP stdio 客户端 + CLI 端到端验收
+pnpm smoke:web     # 构建看板 + 单端口静态托管 / SPA fallback / 同源 API 验收
+```
+
+`pnpm smoke` / `pnpm smoke:bridge` / `pnpm smoke:web` 的实际输出（本机）：
+
+```text
+wake latency: 9ms
+SMOKE TEST PASSED
+
+tool wake latency: 12ms
+BRIDGE SMOKE TEST PASSED
+
+  ok - / serves the dashboard
+  ok - hashed asset /assets/index-*.js served
+  ok - SPA fallback works
+  ok - API still served on the same port
+  ok - ticket creation works without CORS
+WEB SMOKE TEST PASSED
+```
+
+验收标准要求「resolve 后 100ms 内返回」，实测分别为 9ms 与 12ms。
+
+---
+
+## 部署（单实例）
+
+> 长轮询唤醒依赖进程内 `EventEmitter`，**必须单实例部署**；多实例会拆散等待者。
+
+### systemd + nginx（推荐）
+
+默认部署到 `/opt/zhunzou`，systemd 常驻，nginx 反代到 `127.0.0.1:8899`（网页与 API 同源）：
+
+```bash
+# 1. DNS：把你的域名 A 记录指向服务器
+# 2. 部署（首次会安装 Node/pnpm、构建、创建 systemd 服务与 nginx 站点）
+bash deploy/deploy.sh --server <服务器IP> --domain hub.example.com
+
+# 3. DNS 生效后申请 Let's Encrypt 证书
+bash deploy/enable-https.sh --domain hub.example.com
+```
+
+- 部署结束会打印 `HUB_SECRET_TOKEN`，登录看板时粘贴即可；Token、数据库与规则保存在
+  `/opt/zhunzou/.env`、`/opt/zhunzou/data/`，重新部署不会覆盖。
+- 若服务器上存在 `/opt/pte-dojo/server/.env`，会自动复用其中的 `AI_*` 配置；也可以直接
+  提供 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `META_AGENT_MODEL` 环境变量。
+- 运维：`systemctl status zhunzou`、`journalctl -u zhunzou -f`。
+- 不想用 nginx 时可加 `--no-nginx`，服务只监听回环，由你自己的网关转发。
+- 详细参数与目录约定见 [deploy/README.md](./deploy/README.md)。
+
+### Docker Compose
+
+```bash
+cp .env.example .env          # 至少设置 HUB_SECRET_TOKEN
+docker compose up -d --build
+docker compose logs -f zhunzou
+```
+
+- 镜像多阶段构建：`deps → build → prod-deps → runtime`；
+- 运行时使用 `node:22-bookworm-slim` 的非 root `node` 用户；
+- SQLite 与 `GLOBAL_RULES.md` 持久化在 `zhunzou-data` 卷的 `/app/data`；
+- 内置 `HEALTHCHECK` 调用 `/healthz`；
+- 只暴露 `8787`，网页与 API 同源。
+
+### pm2
+
+```bash
+npm i -g pm2
+pnpm build
+pm2 start ecosystem.config.cjs
+pm2 logs zhunzou
+# 或使用脚本：pnpm deploy:pm2
+```
+
+`ecosystem.config.cjs` 固定 `instances: 1` + `exec_mode: 'fork'`，默认 `HOST=127.0.0.1`，建议前置 nginx / caddy 提供 HTTPS。更新代码后执行 `pm2 reload ecosystem.config.cjs --update-env`。
+
+---
+
+## 设计说明
+
+- **零消息队列**：长轮询唤醒使用 Node 原生 `EventEmitter`，SQLite 仅持久化；满足单机/单进程部署的规模。若未来要多实例水平扩展，需把唤醒层替换为 Redis pub/sub。
+- **端侧零原生依赖**：bridge 只用 `fetch` + 官方 MCP SDK，Windows / macOS 直接 `node` 运行；MCP 的 stdout 严格留给协议，日志全部走 stderr。
+- **不引入 OpenAI SDK**：用 Node 内置 `fetch` 直连兼容接口，客户端零原生编译依赖，也方便替换 DeepSeek / OpenAI / Moonshot。
+- **工单 ID**：数据库自增整数，API 中以数字字符串返回（`"104"`），展示层格式化为 `#104`，兼顾短 ID 与长轮询路由。
+- **并发安全**：`resolve` / `markAutoResolved` 都带状态条件更新，重复审批返回 `409`，迟到的 Meta-Agent 结果不会覆盖人工决定。
+- **优雅退出**：`SIGINT` / `SIGTERM` 关闭 Fastify 与 SQLite 连接。
+
+---
+
+## 开源与贡献
+
+准奏以 MIT 协议开源，欢迎 Issue / PR。贡献指南见 [CONTRIBUTING.md](./CONTRIBUTING.md)，
+扩展开发见 [docs/PLUGINS.md](./docs/PLUGINS.md)，CI 配置见
+[.github/workflows/ci.yml](./.github/workflows/ci.yml)。
+
+如果你基于准奏接入了新的模型、通知渠道或 Agent 客户端，欢迎把适配方式整理成示例插件提交回来。
+
+---
+
+## 后续可选增强
+
+- 多实例水平扩展：把进程内 `EventEmitter` 唤醒层替换为 Redis pub/sub；
+- 更多内置通知渠道（企业微信、钉钉、Gotify…）；
+- 存储适配器（Postgres / MySQL）与多租户；
+- 工单归档与统计：自动放行率、平均决策耗时。

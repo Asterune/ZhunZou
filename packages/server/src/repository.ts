@@ -1,0 +1,954 @@
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  lte,
+  sql,
+} from 'drizzle-orm';
+
+import type {
+  AgentTask,
+  CompleteTaskInput,
+  CreateTaskInput,
+  CreateTicketInput,
+  DecisionTicket,
+  EnvHeartbeat,
+  HeartbeatInput,
+  ListRuleCandidatesQuery,
+  ListTasksQuery,
+  ListTicketsQuery,
+  ListWorkspaceProjectsQuery,
+  ResolveTicketInput,
+  RuleCandidate,
+  TicketStatus,
+  WorkspaceProject,
+} from '@zhunzou/shared';
+import { HEARTBEAT_ONLINE_WINDOW_MS } from '@zhunzou/shared';
+
+import type { DrizzleDatabase } from './db/client.js';
+import {
+  agentTasks,
+  envHeartbeats,
+  ruleCandidates,
+  tickets,
+  workspaceProjects,
+  type AgentTaskRow,
+  type HeartbeatRow,
+  type RuleCandidateRow,
+  type TicketRow,
+  type WorkspaceProjectRow,
+} from './db/schema.js';
+import { BadRequestError, ConflictError } from './errors.js';
+
+const AWAITING: TicketStatus[] = ['PENDING_META', 'PENDING_HUMAN'];
+
+/**
+ * Older bridge builds hard-coded this label before task reporting existed.
+ * Normalize it so the dashboard never claims the agent is idle while the user
+ * is actually working in the IDE.
+ */
+const LEGACY_IDLE_TASK = 'MCP 已连接，等待任务';
+const LEGACY_IDLE_TASK_LABEL = 'MCP 已连接';
+
+function toTicket(row: TicketRow): DecisionTicket {
+  return {
+    id: String(row.id),
+    env: row.env,
+    projectName: row.projectName,
+    status: row.status,
+    doneSummary: row.doneSummary,
+    blockerQuestion: row.blockerQuestion,
+    nextStepPlan: row.nextStepPlan,
+    options: row.options,
+    recommendedOption: row.recommendedOption,
+    ...(row.selectedOption ? { selectedOption: row.selectedOption } : {}),
+    ...(row.customInstruction ? { customInstruction: row.customInstruction } : {}),
+    ...(row.resolvedBy ? { resolvedBy: row.resolvedBy } : {}),
+    ...(row.resolutionReason ? { resolutionReason: row.resolutionReason } : {}),
+    ...(row.expiresAt !== null ? { expiresAt: row.expiresAt } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toHeartbeat(row: HeartbeatRow, now: number): EnvHeartbeat {
+  return {
+    env: row.env,
+    status: row.status,
+    ...(row.projectName ? { projectName: row.projectName } : {}),
+    ...(row.currentTask ? { currentTask: row.currentTask } : {}),
+    ...(row.note ? { note: row.note } : {}),
+    lastSeenAt: row.lastSeenAt,
+    online: now - row.lastSeenAt <= HEARTBEAT_ONLINE_WINDOW_MS,
+  };
+}
+
+function toTask(row: AgentTaskRow): AgentTask {
+  return {
+    id: String(row.id),
+    env: row.env,
+    ...(row.projectName ? { projectName: row.projectName } : {}),
+    title: row.title,
+    instruction: row.instruction,
+    status: row.status,
+    attempts: row.attempts ?? 0,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    ...(row.claimedAt !== null ? { claimedAt: row.claimedAt } : {}),
+    ...(row.completedAt !== null ? { completedAt: row.completedAt } : {}),
+    ...(row.result ? { result: row.result } : {}),
+  };
+}
+
+function toRuleCandidate(row: RuleCandidateRow): RuleCandidate {
+  return {
+    id: String(row.id),
+    ticketId: String(row.ticketId),
+    content: row.content,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toWorkspaceProject(row: WorkspaceProjectRow): WorkspaceProject {
+  return {
+    id: String(row.id),
+    env: row.env,
+    projectName: row.projectName,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function normalizeSimilarityText(text: string): string {
+  return text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function charBigrams(text: string): Set<string> {
+  const chars = Array.from(normalizeSimilarityText(text));
+  const grams = new Set<string>();
+  if (chars.length === 0) return grams;
+  if (chars.length === 1) {
+    grams.add(chars[0]!);
+    return grams;
+  }
+  for (let index = 0; index < chars.length - 1; index += 1) {
+    grams.add(`${chars[index]}${chars[index + 1]}`);
+  }
+  return grams;
+}
+
+/**
+ * Cheap, dependency-free similarity for short Chinese/English questions.
+ * Character bigrams + containment work surprisingly well for reformulations
+ * ("Toast 还是行内" vs "错误提示用 Toast 还是行内文案？").
+ */
+export function textSimilarity(left: string, right: string): number {
+  const a = charBigrams(left);
+  const b = charBigrams(right);
+  if (a.size === 0 || b.size === 0) return 0;
+
+  let overlap = 0;
+  for (const gram of a) {
+    if (b.has(gram)) overlap += 1;
+  }
+  return overlap / Math.min(a.size, b.size);
+}
+
+export function parseTicketId(raw: string): number {
+  const id = Number.parseInt(raw, 10);
+  if (!Number.isSafeInteger(id) || id <= 0 || String(id) !== raw) {
+    throw new BadRequestError(`invalid ticket id: ${raw}`, 'INVALID_ID');
+  }
+  return id;
+}
+
+export interface TicketStore {
+  create(
+    input: CreateTicketInput,
+    now?: number,
+    expiresAt?: number,
+  ): DecisionTicket;
+  get(id: number): DecisionTicket | null;
+  list(query: ListTicketsQuery): { tickets: DecisionTicket[]; total: number };
+  resolve(id: number, input: ResolveTicketInput, now?: number): DecisionTicket;
+  markAutoResolved(
+    id: number,
+    selectedOption: string,
+    reason: string,
+    now?: number,
+  ): DecisionTicket | null;
+  markPendingHuman(id: number, reason: string, now?: number): DecisionTicket | null;
+  cancel(id: number, now?: number): DecisionTicket | null;
+  /** Pending tickets whose SLA deadline has passed. */
+  findDueTickets(now?: number, limit?: number): DecisionTicket[];
+  /** Atomically apply the timeout default. Never touches resolved tickets. */
+  markTimedOut(
+    id: number,
+    selectedOption: string,
+    reason: string,
+    now?: number,
+  ): DecisionTicket | null;
+  /** Drop the SLA so a high-risk ticket is never auto-approved. */
+  clearExpiry(id: number, now?: number): void;
+  /** Push the SLA deadline out by N minutes; only pending tickets. */
+  extend(id: number, minutes: number, now?: number): DecisionTicket | null;
+  recordHeartbeat(input: HeartbeatInput, now?: number): EnvHeartbeat;
+  listHeartbeats(now?: number): EnvHeartbeat[];
+
+  createTask(input: CreateTaskInput, now?: number): AgentTask;
+  getTask(id: number): AgentTask | null;
+  listTasks(query: ListTasksQuery): { tasks: AgentTask[]; total: number };
+  claimNextTask(env: string, now?: number): AgentTask | null;
+  completeTask(id: number, input: CompleteTaskInput, now?: number): AgentTask;
+  cancelTask(id: number, now?: number): AgentTask | null;
+  /** CLAIMED tasks, oldest claim first (used by the stale-task sweeper). */
+  listClaimedTasks(limit?: number): AgentTask[];
+  /** Requeue a lost task, or fail it after too many attempts. */
+  releaseTask(
+    id: number,
+    requeue: boolean,
+    reason: string,
+    now?: number,
+  ): AgentTask | null;
+  /** Pending/CLAIMED tasks for an env, for bridge restart recovery. */
+  listActiveTasks(env: string, limit?: number): AgentTask[];
+  /** Awaiting tickets plus recently terminal ones, for bridge restart recovery. */
+  listResumeTickets(env: string, since: number, limit?: number): DecisionTicket[];
+
+  /** Bind a project to a workspace/env (idempotent). */
+  bindWorkspaceProject(
+    env: string,
+    projectName: string,
+    now?: number,
+  ): WorkspaceProject;
+  listWorkspaceProjects(query?: ListWorkspaceProjectsQuery): {
+    projects: WorkspaceProject[];
+    total: number;
+  };
+  getWorkspaceProject(id: number): WorkspaceProject | null;
+  unbindWorkspaceProject(id: number): WorkspaceProject | null;
+
+  /** Recent resolved tickets in the same project, ranked by text similarity. */
+  findSimilarTickets(input: {
+    projectName: string;
+    blockerQuestion: string;
+    excludeId?: number;
+    limit?: number;
+  }): DecisionTicket[];
+
+  createRuleCandidate(
+    ticketId: number,
+    content: string,
+    now?: number,
+  ): RuleCandidate | null;
+  getRuleCandidate(id: number): RuleCandidate | null;
+  listRuleCandidates(query: ListRuleCandidatesQuery): {
+    candidates: RuleCandidate[];
+    total: number;
+  };
+  markRuleCandidate(
+    id: number,
+    status: 'ACCEPTED' | 'DISMISSED',
+    now?: number,
+  ): RuleCandidate | null;
+}
+
+export class TicketRepository implements TicketStore {
+  constructor(private readonly db: DrizzleDatabase) {}
+
+  create(
+    input: CreateTicketInput,
+    now = Date.now(),
+    expiresAt?: number,
+  ): DecisionTicket {
+    const row = this.db
+      .insert(tickets)
+      .values({
+        env: input.env,
+        projectName: input.projectName,
+        status: 'PENDING_META',
+        doneSummary: input.doneSummary,
+        blockerQuestion: input.blockerQuestion,
+        nextStepPlan: input.nextStepPlan,
+        options: input.options,
+        recommendedOption: input.recommendedOption,
+        expiresAt: expiresAt ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+
+    // Every ticket implies the workspace works on this project; keep the
+    // dispatch dropdown in sync without asking the human to bind it twice.
+    this.bindWorkspaceProject(input.env, input.projectName, now);
+
+    return toTicket(row);
+  }
+
+  get(id: number): DecisionTicket | null {
+    const row = this.db.select().from(tickets).where(eq(tickets.id, id)).get();
+    return row ? toTicket(row) : null;
+  }
+
+  list(query: ListTicketsQuery): { tickets: DecisionTicket[]; total: number } {
+    const filters = [
+      ...(query.status ? [eq(tickets.status, query.status)] : []),
+      ...(query.projectName ? [eq(tickets.projectName, query.projectName)] : []),
+    ];
+    const where = filters.length > 0 ? and(...filters) : undefined;
+
+    const rows = this.db
+      .select()
+      .from(tickets)
+      .where(where)
+      .orderBy(desc(tickets.createdAt), desc(tickets.id))
+      .limit(query.limit)
+      .all();
+
+    const countRow = this.db
+      .select({ value: count() })
+      .from(tickets)
+      .where(where)
+      .get();
+
+    return {
+      tickets: rows.map(toTicket),
+      total: countRow?.value ?? 0,
+    };
+  }
+
+  /**
+   * Apply a human decision. Fails if the ticket was already resolved or
+   * cancelled (prevents double-approval from two browser tabs).
+   */
+  resolve(id: number, input: ResolveTicketInput, now = Date.now()): DecisionTicket {
+    const current = this.get(id);
+    if (!current) {
+      throw new ConflictError(`ticket #${id} not found`, 'NOT_FOUND');
+    }
+    if (!AWAITING.includes(current.status)) {
+      throw new ConflictError(
+        `ticket #${id} is already ${current.status}`,
+        'ALREADY_FINALIZED',
+      );
+    }
+    const selected = current.options.find(
+      (option) => option.key === input.selectedOption,
+    );
+    if (!selected) {
+      throw new ConflictError(
+        `option "${input.selectedOption}" does not exist on ticket #${id}`,
+        'INVALID_OPTION',
+      );
+    }
+    if (selected.risk === 'destructive' && input.confirmDestructive !== true) {
+      throw new ConflictError(
+        `option "${input.selectedOption}" is destructive and requires confirmation`,
+        'DESTRUCTIVE_OPTION_REQUIRES_CONFIRMATION',
+      );
+    }
+
+    const row = this.db
+      .update(tickets)
+      .set({
+        status: 'HUMAN_RESOLVED',
+        selectedOption: input.selectedOption,
+        customInstruction: input.customInstruction ?? null,
+        resolvedBy: 'HUMAN',
+        resolutionReason: null,
+        updatedAt: now,
+      })
+      .where(and(eq(tickets.id, id), inArray(tickets.status, AWAITING)))
+      .returning()
+      .get();
+
+    if (!row) {
+      throw new ConflictError(`ticket #${id} changed while resolving`, 'RACE_LOST');
+    }
+
+    return toTicket(row);
+  }
+
+  /** Only a still-pending ticket can be auto-resolved by the Meta-Agent. */
+  markAutoResolved(
+    id: number,
+    selectedOption: string,
+    reason: string,
+    now = Date.now(),
+  ): DecisionTicket | null {
+    const row = this.db
+      .update(tickets)
+      .set({
+        status: 'AUTO_RESOLVED',
+        selectedOption,
+        resolvedBy: 'META_AGENT',
+        resolutionReason: reason,
+        updatedAt: now,
+      })
+      .where(and(eq(tickets.id, id), inArray(tickets.status, AWAITING)))
+      .returning()
+      .get();
+
+    return row ? toTicket(row) : null;
+  }
+
+  markPendingHuman(id: number, reason: string, now = Date.now()): DecisionTicket | null {
+    const row = this.db
+      .update(tickets)
+      .set({
+        status: 'PENDING_HUMAN',
+        resolutionReason: reason,
+        updatedAt: now,
+      })
+      .where(and(eq(tickets.id, id), eq(tickets.status, 'PENDING_META')))
+      .returning()
+      .get();
+
+    return row ? toTicket(row) : null;
+  }
+
+  cancel(id: number, now = Date.now()): DecisionTicket | null {
+    const row = this.db
+      .update(tickets)
+      .set({ status: 'CANCELLED', updatedAt: now })
+      .where(and(eq(tickets.id, id), inArray(tickets.status, AWAITING)))
+      .returning()
+      .get();
+
+    return row ? toTicket(row) : null;
+  }
+
+  findDueTickets(now = Date.now(), limit = 50): DecisionTicket[] {
+    return this.db
+      .select()
+      .from(tickets)
+      .where(
+        and(
+          inArray(tickets.status, AWAITING),
+          isNotNull(tickets.expiresAt),
+          lte(tickets.expiresAt, now),
+        ),
+      )
+      .orderBy(asc(tickets.expiresAt), asc(tickets.id))
+      .limit(limit)
+      .all()
+      .map(toTicket);
+  }
+
+  markTimedOut(
+    id: number,
+    selectedOption: string,
+    reason: string,
+    now = Date.now(),
+  ): DecisionTicket | null {
+    const row = this.db
+      .update(tickets)
+      .set({
+        status: 'AUTO_RESOLVED',
+        selectedOption,
+        resolvedBy: 'TIMEOUT',
+        resolutionReason: reason,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(tickets.id, id),
+          inArray(tickets.status, AWAITING),
+          isNotNull(tickets.expiresAt),
+          lte(tickets.expiresAt, now),
+        ),
+      )
+      .returning()
+      .get();
+
+    return row ? toTicket(row) : null;
+  }
+
+  clearExpiry(id: number, now = Date.now()): void {
+    this.db
+      .update(tickets)
+      .set({ expiresAt: null, updatedAt: now })
+      .where(and(eq(tickets.id, id), inArray(tickets.status, AWAITING)))
+      .run();
+  }
+
+  extend(id: number, minutes: number, now = Date.now()): DecisionTicket | null {
+    const row = this.db
+      .update(tickets)
+      .set({ expiresAt: now + minutes * 60_000, updatedAt: now })
+      .where(and(eq(tickets.id, id), inArray(tickets.status, AWAITING)))
+      .returning()
+      .get();
+
+    return row ? toTicket(row) : null;
+  }
+
+  recordHeartbeat(input: HeartbeatInput, now = Date.now()): EnvHeartbeat {
+    const currentTask =
+      input.currentTask === LEGACY_IDLE_TASK
+        ? LEGACY_IDLE_TASK_LABEL
+        : (input.currentTask ?? null);
+
+    const row = this.db
+      .insert(envHeartbeats)
+      .values({
+        env: input.env,
+        status: input.status,
+        projectName: input.projectName ?? null,
+        currentTask,
+        note: input.note ?? null,
+        lastSeenAt: now,
+      })
+      .onConflictDoUpdate({
+        target: envHeartbeats.env,
+        set: {
+          status: input.status,
+          projectName: input.projectName ?? null,
+          currentTask,
+          note: input.note ?? null,
+          lastSeenAt: now,
+        },
+      })
+      .returning()
+      .get();
+
+    if (input.projectName) {
+      this.bindWorkspaceProject(input.env, input.projectName, now);
+    }
+
+    return toHeartbeat(row, now);
+  }
+
+  listHeartbeats(now = Date.now()): EnvHeartbeat[] {
+    return this.db
+      .select()
+      .from(envHeartbeats)
+      .orderBy(envHeartbeats.env)
+      .all()
+      .map((row) => toHeartbeat(row, now));
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Human → Agent tasks                                              */
+  /* ---------------------------------------------------------------- */
+
+  createTask(input: CreateTaskInput, now = Date.now()): AgentTask {
+    const row = this.db
+      .insert(agentTasks)
+      .values({
+        env: input.env,
+        projectName: input.projectName ?? null,
+        title: input.title,
+        instruction: input.instruction,
+        status: 'PENDING',
+        attempts: 0,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+
+    if (input.projectName) {
+      this.bindWorkspaceProject(input.env, input.projectName, now);
+    }
+
+    return toTask(row);
+  }
+
+  getTask(id: number): AgentTask | null {
+    const row = this.db.select().from(agentTasks).where(eq(agentTasks.id, id)).get();
+    return row ? toTask(row) : null;
+  }
+
+  listTasks(query: ListTasksQuery): { tasks: AgentTask[]; total: number } {
+    const filters = [
+      ...(query.env ? [eq(agentTasks.env, query.env)] : []),
+      ...(query.status ? [eq(agentTasks.status, query.status)] : []),
+    ];
+    const where = filters.length > 0 ? and(...filters) : undefined;
+
+    const rows = this.db
+      .select()
+      .from(agentTasks)
+      .where(where)
+      .orderBy(desc(agentTasks.createdAt), desc(agentTasks.id))
+      .limit(query.limit)
+      .all();
+
+    const countRow = this.db
+      .select({ value: count() })
+      .from(agentTasks)
+      .where(where)
+      .get();
+
+    return {
+      tasks: rows.map(toTask),
+      total: countRow?.value ?? 0,
+    };
+  }
+
+  /**
+   * Atomically claim the oldest pending task for an env. If another bridge
+   * wins the race, try the next pending task until none remain.
+   */
+  claimNextTask(env: string, now = Date.now()): AgentTask | null {
+    for (;;) {
+      const candidate = this.db
+        .select()
+        .from(agentTasks)
+        .where(and(eq(agentTasks.env, env), eq(agentTasks.status, 'PENDING')))
+        .orderBy(asc(agentTasks.createdAt), asc(agentTasks.id))
+        .limit(1)
+        .get();
+
+      if (!candidate) return null;
+
+      const row = this.db
+        .update(agentTasks)
+        .set({
+          status: 'CLAIMED',
+          claimedAt: now,
+          updatedAt: now,
+          attempts: sql`${agentTasks.attempts} + 1`,
+        })
+        .where(and(eq(agentTasks.id, candidate.id), eq(agentTasks.status, 'PENDING')))
+        .returning()
+        .get();
+
+      if (row) return toTask(row);
+    }
+  }
+
+  completeTask(id: number, input: CompleteTaskInput, now = Date.now()): AgentTask {
+    const current = this.getTask(id);
+    if (!current) {
+      throw new ConflictError(`task #${id} not found`, 'NOT_FOUND');
+    }
+    if (current.status !== 'CLAIMED') {
+      throw new ConflictError(
+        `task #${id} is ${current.status}, expected CLAIMED`,
+        'INVALID_TASK_STATUS',
+      );
+    }
+
+    const row = this.db
+      .update(agentTasks)
+      .set({
+        status: input.status,
+        result: input.result ?? null,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(agentTasks.id, id), eq(agentTasks.status, 'CLAIMED')))
+      .returning()
+      .get();
+
+    if (!row) {
+      throw new ConflictError(`task #${id} changed while completing`, 'RACE_LOST');
+    }
+
+    return toTask(row);
+  }
+
+  cancelTask(id: number, now = Date.now()): AgentTask | null {
+    const row = this.db
+      .update(agentTasks)
+      .set({ status: 'CANCELLED', updatedAt: now })
+      .where(
+        and(
+          eq(agentTasks.id, id),
+          inArray(agentTasks.status, ['PENDING', 'CLAIMED']),
+        ),
+      )
+      .returning()
+      .get();
+
+    return row ? toTask(row) : null;
+  }
+
+  listClaimedTasks(limit = 100): AgentTask[] {
+    return this.db
+      .select()
+      .from(agentTasks)
+      .where(eq(agentTasks.status, 'CLAIMED'))
+      .orderBy(asc(agentTasks.claimedAt), asc(agentTasks.id))
+      .limit(limit)
+      .all()
+      .map(toTask);
+  }
+
+  releaseTask(
+    id: number,
+    requeue: boolean,
+    reason: string,
+    now = Date.now(),
+  ): AgentTask | null {
+    const row = this.db
+      .update(agentTasks)
+      .set(
+        requeue
+          ? {
+              status: 'PENDING',
+              claimedAt: null,
+              completedAt: null,
+              updatedAt: now,
+            }
+          : {
+              status: 'FAILED',
+              result: reason,
+              completedAt: now,
+              updatedAt: now,
+            },
+      )
+      .where(and(eq(agentTasks.id, id), eq(agentTasks.status, 'CLAIMED')))
+      .returning()
+      .get();
+
+    return row ? toTask(row) : null;
+  }
+
+  listActiveTasks(env: string, limit = 50): AgentTask[] {
+    return this.db
+      .select()
+      .from(agentTasks)
+      .where(
+        and(
+          eq(agentTasks.env, env),
+          inArray(agentTasks.status, ['PENDING', 'CLAIMED']),
+        ),
+      )
+      .orderBy(asc(agentTasks.createdAt), asc(agentTasks.id))
+      .limit(limit)
+      .all()
+      .map(toTask);
+  }
+
+  listResumeTickets(
+    env: string,
+    since: number,
+    limit = 20,
+  ): DecisionTicket[] {
+    return this.db
+      .select()
+      .from(tickets)
+      .where(
+        and(
+          eq(tickets.env, env),
+          sql`(${tickets.status} IN ('PENDING_META', 'PENDING_HUMAN') OR ${tickets.updatedAt} >= ${since})`,
+        ),
+      )
+      .orderBy(
+        sql`CASE WHEN ${tickets.status} IN ('PENDING_META', 'PENDING_HUMAN') THEN 0 ELSE 1 END`,
+        desc(tickets.updatedAt),
+        desc(tickets.id),
+      )
+      .limit(limit)
+      .all()
+      .map(toTicket);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Workspace ↔ project bindings                                     */
+  /* ---------------------------------------------------------------- */
+
+  bindWorkspaceProject(
+    env: string,
+    projectName: string,
+    now = Date.now(),
+  ): WorkspaceProject {
+    const row = this.db
+      .insert(workspaceProjects)
+      .values({
+        env,
+        projectName,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [workspaceProjects.env, workspaceProjects.projectName],
+        set: { updatedAt: now },
+      })
+      .returning()
+      .get();
+
+    return toWorkspaceProject(row);
+  }
+
+  listWorkspaceProjects(query: ListWorkspaceProjectsQuery = {}): {
+    projects: WorkspaceProject[];
+    total: number;
+  } {
+    const where = query.env ? eq(workspaceProjects.env, query.env) : undefined;
+
+    const rows = this.db
+      .select()
+      .from(workspaceProjects)
+      .where(where)
+      .orderBy(asc(workspaceProjects.env), asc(workspaceProjects.projectName))
+      .all();
+
+    const countRow = this.db
+      .select({ value: count() })
+      .from(workspaceProjects)
+      .where(where)
+      .get();
+
+    return {
+      projects: rows.map(toWorkspaceProject),
+      total: countRow?.value ?? 0,
+    };
+  }
+
+  getWorkspaceProject(id: number): WorkspaceProject | null {
+    const row = this.db
+      .select()
+      .from(workspaceProjects)
+      .where(eq(workspaceProjects.id, id))
+      .get();
+    return row ? toWorkspaceProject(row) : null;
+  }
+
+  unbindWorkspaceProject(id: number): WorkspaceProject | null {
+    const row = this.db
+      .delete(workspaceProjects)
+      .where(eq(workspaceProjects.id, id))
+      .returning()
+      .get();
+    return row ? toWorkspaceProject(row) : null;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Decision memory & rule candidates                                */
+  /* ---------------------------------------------------------------- */
+
+  findSimilarTickets(input: {
+    projectName: string;
+    blockerQuestion: string;
+    excludeId?: number;
+    limit?: number;
+  }): DecisionTicket[] {
+    const limit = Math.min(Math.max(input.limit ?? 5, 1), 20);
+    const rows = this.db
+      .select()
+      .from(tickets)
+      .where(
+        and(
+          eq(tickets.projectName, input.projectName),
+          inArray(tickets.status, ['AUTO_RESOLVED', 'HUMAN_RESOLVED']),
+        ),
+      )
+      .orderBy(desc(tickets.updatedAt), desc(tickets.id))
+      .limit(120)
+      .all();
+
+    return rows
+      .filter((row) => row.id !== input.excludeId)
+      .map((row) => ({
+        row,
+        score: textSimilarity(input.blockerQuestion, row.blockerQuestion),
+      }))
+      .filter((entry) => entry.score >= 0.18)
+      .sort(
+        (left, right) =>
+          right.score - left.score || right.row.updatedAt - left.row.updatedAt,
+      )
+      .slice(0, limit)
+      .map((entry) => toTicket(entry.row));
+  }
+
+  createRuleCandidate(
+    ticketId: number,
+    content: string,
+    now = Date.now(),
+  ): RuleCandidate | null {
+    const normalized = content.trim();
+    if (!normalized) return null;
+
+    const duplicate = this.db
+      .select()
+      .from(ruleCandidates)
+      .where(
+        and(
+          eq(ruleCandidates.content, normalized),
+          inArray(ruleCandidates.status, ['PENDING', 'ACCEPTED']),
+        ),
+      )
+      .get();
+    if (duplicate) return null;
+
+    const row = this.db
+      .insert(ruleCandidates)
+      .values({
+        ticketId,
+        content: normalized,
+        status: 'PENDING',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+
+    return toRuleCandidate(row);
+  }
+
+  getRuleCandidate(id: number): RuleCandidate | null {
+    const row = this.db
+      .select()
+      .from(ruleCandidates)
+      .where(eq(ruleCandidates.id, id))
+      .get();
+    return row ? toRuleCandidate(row) : null;
+  }
+
+  listRuleCandidates(query: ListRuleCandidatesQuery): {
+    candidates: RuleCandidate[];
+    total: number;
+  } {
+    const where = query.status
+      ? eq(ruleCandidates.status, query.status)
+      : undefined;
+
+    const rows = this.db
+      .select()
+      .from(ruleCandidates)
+      .where(where)
+      .orderBy(desc(ruleCandidates.createdAt), desc(ruleCandidates.id))
+      .limit(query.limit)
+      .all();
+
+    const countRow = this.db
+      .select({ value: count() })
+      .from(ruleCandidates)
+      .where(where)
+      .get();
+
+    return {
+      candidates: rows.map(toRuleCandidate),
+      total: countRow?.value ?? 0,
+    };
+  }
+
+  markRuleCandidate(
+    id: number,
+    status: 'ACCEPTED' | 'DISMISSED',
+    now = Date.now(),
+  ): RuleCandidate | null {
+    const row = this.db
+      .update(ruleCandidates)
+      .set({ status, updatedAt: now })
+      .where(
+        and(eq(ruleCandidates.id, id), eq(ruleCandidates.status, 'PENDING')),
+      )
+      .returning()
+      .get();
+
+    return row ? toRuleCandidate(row) : null;
+  }
+}

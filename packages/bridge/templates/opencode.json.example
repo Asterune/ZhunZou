@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "zhunzou": {
+        "type": "local",
+        "command": [
+          "node",
+          "/absolute/path/to/zhunzou/packages/bridge/bin/mcp.js"
+        ],
+        "enabled": true,
+        "environment": {
+          "HUB_URL": "https://hub.example.com",
+          "HUB_TOKEN": "same-value-as-HUB_SECRET_TOKEN",
+          "AGENT_ENV": "home-opencode",
+          "ZHUNZOU_PROJECT": "your-project-name",
+          "ZHUNZOU_FALLBACK": "mcp",
+          "ZHUNZOU_WAIT_TIMEOUT_MS": "40000"
+        }
+      }
+    }
+  }
+}

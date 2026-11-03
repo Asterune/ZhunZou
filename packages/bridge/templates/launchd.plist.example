@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  zhunzou-bridge wake 的 launchd 常驻配置（macOS）。
+
+  1. 把 __NODE__ / __BRIDGE_DIR__ / __PROJECT_DIR__ / __HOME__ 换成你的绝对路径；
+  2. 保存为 ~/Library/LaunchAgents/com.zhunzou.wake.plist；
+  3. 启动并设为登录自启：
+       launchctl unload ~/Library/LaunchAgents/com.zhunzou.wake.plist 2>/dev/null
+       launchctl load ~/Library/LaunchAgents/com.zhunzou.wake.plist
+  4. 查看日志：
+       tail -f /tmp/zhunzou-wake.log
+
+  停止 / 卸载：
+       launchctl unload ~/Library/LaunchAgents/com.zhunzou.wake.plist
+       rm ~/Library/LaunchAgents/com.zhunzou.wake.plist
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.zhunzou.wake</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>__NODE__</string>
+      <string>__BRIDGE_DIR__/bin/cli.js</string>
+      <string>wake</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <!-- 与 MCP 配置保持一致；包含 opencode 所在目录，launchd 默认 PATH 很短。 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>HUB_URL</key>
+      <string>https://hub.example.com</string>
+      <key>HUB_TOKEN</key>
+      <string>same-value-as-HUB_SECRET_TOKEN</string>
+      <key>AGENT_ENV</key>
+      <string>home-mac-opencode</string>
+      <key>ZHUNZOU_PROJECT</key>
+      <string>agent-hub</string>
+      <key>ZHUNZOU_WAKE_ADAPTER</key>
+      <string>auto</string>
+      <key>PATH</key>
+      <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:__HOME__/.opencode/bin:__HOME__/.local/node/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/zhunzou-wake.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/zhunzou-wake.log</string>
+  </dict>
+</plist>

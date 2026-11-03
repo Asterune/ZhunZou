@@ -1,0 +1,43 @@
+{
+  "name": "zhunzou",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source async decision hub for AI agents (准奏)",
+  "license": "MIT",
+  "keywords": [
+    "ai-agents",
+    "mcp",
+    "decision-making",
+    "approval",
+    "long-polling",
+    "fastify",
+    "vue"
+  ],
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm --filter @zhunzou/shared build && pnpm --filter @zhunzou/server dev",
+    "dev:web": "pnpm --filter @zhunzou/web dev",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "server": "pnpm --filter @zhunzou/server start",
+    "smoke": "bash scripts/smoke-test.sh",
+    "smoke:bridge": "bash scripts/bridge-smoke-test.sh",
+    "smoke:web": "bash scripts/web-smoke-test.sh",
+    "package:bridge:windows": "pnpm --filter zhunzou-bridge package:windows",
+    "publish:bridge": "pnpm --filter zhunzou-bridge publish:release",
+    "deploy": "bash deploy/deploy.sh",
+    "deploy:https": "bash deploy/enable-https.sh",
+    "deploy:pm2": "bash scripts/deploy-pm2.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
