@@ -128,6 +128,19 @@ zhunzou-bridge fleet
 
 The config lists `hubUrl`, an optional `adminToken` (used once to register agents and issue scoped tokens, cached at `~/.zhunzou/fleet-tokens.json` with `0600`), and `projects: [{ env, path, project?, adapter?, token?, args? }]`. Each project appears as its own agent in the dashboard; `--refresh-tokens` rotates tokens and `--once` handles a single cycle.
 
+Start it at login:
+
+```bash
+# macOS
+zhunzou-bridge fleet --print-launchd > ~/Library/LaunchAgents/com.zhunzou.fleet.plist
+launchctl load ~/Library/LaunchAgents/com.zhunzou.fleet.plist
+
+# pm2
+pm2 start "zhunzou-bridge fleet" --name zhunzou-fleet && pm2 save
+```
+
+The "接入端" page groups agents by host, so one card shows how many projects that machine hosts and how many are online.
+
 Or configure manually:
 
 ```bash

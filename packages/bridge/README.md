@@ -238,7 +238,20 @@ zhunzou-bridge fleet
 - 没有 `token` 时会自动登记并签发专属 Token，缓存在
   `~/.zhunzou/fleet-tokens.json`（`0600`）；`--refresh-tokens` 强制轮换。
 - 子循环崩溃会以 2 秒退避自动重启；`--once` 适合 cron 式调用。
-- 开机自启：launchd / systemd / pm2 托管 `zhunzou-bridge fleet` 即可。
+- 看板「接入端」页按 host 汇总运行节点：托管项目数、在线数、bridge 版本。
+- 开机自启：
+
+  ```bash
+  # macOS
+  zhunzou-bridge fleet --print-launchd > ~/Library/LaunchAgents/com.zhunzou.fleet.plist
+  launchctl load ~/Library/LaunchAgents/com.zhunzou.fleet.plist
+
+  # pm2
+  pm2 start "zhunzou-bridge fleet" --name zhunzou-fleet && pm2 save
+  ```
+
+  `--print-launchd` 使用当前 node/CLI 的绝对路径，请用全局安装或独立包，
+  不要指向 npx 临时目录。
 
 ## 验证
 

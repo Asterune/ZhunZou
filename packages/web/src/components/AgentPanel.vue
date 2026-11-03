@@ -4,9 +4,11 @@ import {
   Check,
   Copy,
   KeyRound,
+  Monitor,
   Pencil,
   Plus,
   RefreshCw,
+  Server,
   ShieldOff,
   Trash2,
   UserRoundCheck,
@@ -52,6 +54,52 @@ const agentCount = computed(() => store.agents.length);
 const offlineCount = computed(
   () => store.agents.filter((agent) => !agent.online).length,
 );
+
+interface NodeCard {
+  host: string;
+  os?: string;
+  version?: string;
+  total: number;
+  online: number;
+  disabled: number;
+  lastSeenAt?: number;
+}
+
+/** Group agents by the host reported in their heartbeat. */
+const nodes = computed<NodeCard[]>(() => {
+  const groups = new Map<string, NodeCard>();
+
+  for (const agent of store.agents) {
+    const host = agent.host?.trim() || '未上报主机';
+    const node = groups.get(host) ?? {
+      host,
+      total: 0,
+      online: 0,
+      disabled: 0,
+    };
+
+    node.total += 1;
+    if (agent.online) node.online += 1;
+    if (agent.status === 'disabled') node.disabled += 1;
+    if (!node.os && agent.os) node.os = agent.os;
+    if (!node.version && agent.version) node.version = agent.version;
+    if (
+      agent.lastSeenAt &&
+      (!node.lastSeenAt || agent.lastSeenAt > node.lastSeenAt)
+    ) {
+      node.lastSeenAt = agent.lastSeenAt;
+    }
+
+    groups.set(host, node);
+  }
+
+  return [...groups.values()].sort(
+    (left, right) =>
+      right.online - left.online ||
+      right.total - left.total ||
+      left.host.localeCompare(right.host),
+  );
+});
 
 function kindLabel(agent: Agent): string {
   return KIND_LABELS[agent.kind] ?? agent.kind;
@@ -178,6 +226,49 @@ async function copyToken(): Promise<void> {
           <Plus :size="14" />
           登记接入端
         </button>
+      </div>
+    </div>
+
+    <div v-if="nodes.length" class="mb-5">
+      <div class="mb-2 flex items-center gap-1.5 px-0.5 text-[11px] font-medium text-on-surface-variant">
+        <Server :size="13" />
+        运行节点
+        <span class="text-on-surface-variant/50">· {{ nodes.length }}</span>
+      </div>
+      <div class="grid gap-2 sm:grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
+        <article
+          v-for="node in nodes"
+          :key="node.host"
+          class="rounded-xl border border-outline-variant/35 bg-surface-container-low px-3.5 py-3 shadow-sm"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex min-w-0 items-center gap-1.5">
+              <Monitor :size="14" class="shrink-0 text-on-surface-variant" />
+              <span class="truncate font-mono text-[12px] font-semibold text-on-surface">
+                {{ node.host }}
+              </span>
+            </div>
+            <span
+              class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+              :class="
+                node.online > 0
+                  ? 'bg-secondary/10 text-secondary'
+                  : 'bg-surface-container-high text-on-surface-variant'
+              "
+            >
+              {{ node.online }} / {{ node.total }} 在线
+            </span>
+          </div>
+          <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-on-surface-variant">
+            <span>托管 {{ node.total }} 个项目</span>
+            <span v-if="node.disabled">· {{ node.disabled }} 个停用</span>
+            <span v-if="node.os" class="font-mono">· {{ node.os }}</span>
+            <span v-if="node.version" class="font-mono">· bridge {{ node.version }}</span>
+          </div>
+          <p class="mt-1 text-[11px] text-on-surface-variant/60">
+            最近心跳 {{ node.lastSeenAt ? relativeTime(node.lastSeenAt) : '—' }}
+          </p>
+        </article>
       </div>
     </div>
 

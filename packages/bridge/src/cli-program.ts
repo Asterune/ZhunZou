@@ -1,8 +1,14 @@
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { Command } from 'commander';
 
 import { loadBridgeConfig } from './config.js';
 import {
+  buildLaunchdPlist,
   defaultFleetConfigPath,
+  expandHome,
   loadFleetConfig,
   runFleet,
 } from './fleet.js';
@@ -29,12 +35,10 @@ function clampInterval(raw: string): number {
   return Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, parsed));
 }
 
-/** `upgrade` must work before HUB_TOKEN is configured, so it does not reuse loadBridgeConfig. */
 function resolveHubUrl(flag: string | undefined): string {
   const raw = (flag ?? process.env.HUB_URL ?? DEFAULT_HUB_URL)
     .trim()
-    .replace(/\/+$/, '');
-  let parsed: URL;
+    .replace(/\/+$/, '');  let parsed: URL;
   try {
     parsed = new URL(raw);
   } catch {
@@ -44,6 +48,16 @@ function resolveHubUrl(flag: string | undefined): string {
     throw new Error(`HUB_URL 必须使用 http 或 https：${raw}`);
   }
   return raw;
+}
+
+/** Path of the CLI entry, for launchd ProgramArguments. */
+function currentCliPath(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const name of ['cli.js', 'cli.mjs']) {
+    const candidate = join(here, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return process.argv[1] ?? join(here, 'cli.js');
 }
 
 export function createProgram(): Command {
@@ -251,15 +265,32 @@ export function createProgram(): Command {
     )
     .option('--once', 'handle at most one poll cycle per project')
     .option('--refresh-tokens', 'rotate and cache a new token for every project')
+    .option('--print-launchd', 'print a launchd plist for auto-start and exit')
     .action(
       async (options: {
         config?: string;
         once?: boolean;
         refreshTokens?: boolean;
+        printLaunchd?: boolean;
       }) => {
+        const configPath = resolve(
+          expandHome(options.config ?? defaultFleetConfigPath()),
+        );
+
+        if (options.printLaunchd) {
+          process.stdout.write(
+            buildLaunchdPlist({
+              nodePath: process.execPath,
+              cliPath: currentCliPath(),
+              configPath,
+            }),
+          );
+          return;
+        }
+
         let config;
         try {
-          config = loadFleetConfig(options.config);
+          config = loadFleetConfig(configPath);
         } catch (error) {
           process.stderr.write(`[zhunzou] ${(error as Error).message}\n`);
           process.exitCode = 1;

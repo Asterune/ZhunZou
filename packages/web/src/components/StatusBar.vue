@@ -12,6 +12,22 @@ import { useHubStore } from '../stores/hub';
 
 const store = useHubStore();
 const envs = computed(() => store.envs);
+const disabledEnvs = computed(
+  () =>
+    new Set(
+      store.agents
+        .filter((agent) => agent.status === 'disabled')
+        .map((agent) => agent.env),
+    ),
+);
+const onlineCount = computed(
+  () =>
+    envs.value.filter(
+      (env) => env.online && !disabledEnvs.value.has(env.env),
+    ).length,
+);
+const isDisabled = (env: { env: string }): boolean =>
+  disabledEnvs.value.has(env.env);
 </script>
 
 <template>
@@ -26,7 +42,7 @@ const envs = computed(() => store.envs);
           环境状态卷轴
         </h2>
         <span class="text-[11px] text-on-surface-variant/70">
-          {{ store.onlineCount }} / {{ envs.length }} 在线
+          {{ onlineCount }} / {{ envs.length }} 在线
         </span>
       </div>
       <span class="flex items-center gap-1 text-[11px] font-medium text-secondary">
@@ -54,7 +70,7 @@ const envs = computed(() => store.envs);
                 />
                 <span
                   class="relative inline-flex h-2 w-2 rounded-full"
-                  :class="envDotClass(env)"
+                  :class="isDisabled(env) ? 'bg-outline' : envDotClass(env)"
                 />
               </span>
               <span class="truncate font-mono text-[13px] font-semibold text-on-surface">
@@ -69,9 +85,19 @@ const envs = computed(() => store.envs);
 
           <span
             class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold"
-            :class="envBadgeClass(env)"
+            :class="
+              isDisabled(env)
+                ? 'bg-surface-container-high text-on-surface-variant'
+                : envBadgeClass(env)
+            "
           >
-            {{ env.online ? ENV_STATUS_LABELS[env.status] : '离线' }}
+            {{
+              isDisabled(env)
+                ? '已停用'
+                : env.online
+                  ? ENV_STATUS_LABELS[env.status]
+                  : '离线'
+            }}
           </span>
         </div>
 

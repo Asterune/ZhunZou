@@ -74,9 +74,83 @@ export interface FleetOptions {
 const DEFAULT_CONFIG_PATH = join(homedir(), '.zhunzou', 'fleet.json');
 const DEFAULT_CACHE_PATH = join(homedir(), '.zhunzou', 'fleet-tokens.json');
 const DEFAULT_RESTART_DELAY_MS = 2_000;
+const LAUNCHD_LABEL = 'com.zhunzou.fleet';
 
 export function defaultFleetConfigPath(): string {
   return DEFAULT_CONFIG_PATH;
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+export interface LaunchdOptions {
+  nodePath: string;
+  cliPath: string;
+  configPath: string;
+  logDir?: string;
+  label?: string;
+}
+
+/**
+ * Render a launchd plist for `fleet` without touching the filesystem.
+ *
+ * launchd starts jobs with a minimal PATH, so the plist adds the common
+ * locations of cursor-agent / opencode; otherwise the adapter cannot spawn.
+ */
+export function buildLaunchdPlist(options: LaunchdOptions): string {
+  const label = options.label ?? LAUNCHD_LABEL;
+  const logDir = options.logDir ?? join(homedir(), 'Library', 'Logs');
+  const path = [
+    join(homedir(), '.local', 'bin'),
+    join(homedir(), '.opencode', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+  ].join(':');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${xmlEscape(label)}</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>${xmlEscape(options.nodePath)}</string>
+    <string>${xmlEscape(options.cliPath)}</string>
+    <string>fleet</string>
+    <string>--config</string>
+    <string>${xmlEscape(options.configPath)}</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${xmlEscape(path)}</string>
+    <key>HOME</key>
+    <string>${xmlEscape(homedir())}</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>${xmlEscape(homedir())}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(join(logDir, 'zhunzou-fleet.log'))}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(join(logDir, 'zhunzou-fleet.error.log'))}</string>
+</dict>
+</plist>
+`;
 }
 
 export function expandHome(value: string): string {

@@ -112,7 +112,7 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 
 - **登录门**：粘贴 `HUB_SECRET_TOKEN`，仅存于本机 `localStorage`（`zhunzou.token`，自动兼容旧的 `agent-hub.token`）。
 - **接入端状态栏**：展示每个 `env` 的在线心跳、Running / Blocked / Idle 状态与当前任务，90 秒无心跳自动置灰。
-- **接入端管理**：把每个 `env` 当作可管理的 Agent——客户端类型、版本、主机、系统、当前项目、专属 Token 的签发/轮换/吊销，以及改名、停用、删除。
+- **接入端管理**：把每个 `env` 当作可管理的 Agent——客户端类型、版本、主机、系统、当前项目、专属 Token 的签发/轮换/吊销，以及改名、停用、删除；顶部按 host 汇总运行节点（托管项目数、在线数、bridge 版本）。
 - **待批奏折**：`PENDING_META` / `PENDING_HUMAN` 工单按创建时间排队；卡片即三行简报（已完成 / 卡点 / 下一步），点击任一方案即提交审批，可附带补充指令。推荐方案会高亮，但不影响选择。
 - **超时默认裁决**：开启 `AUTO_RESOLVE_TIMEOUT_MS` 后，待批卡片显示倒计时，到期按推荐方案自动准奏；可「暂缓 10 分钟」。推荐方案标记为 `destructive` 时永不自动执行。
 - **批量准奏**：积压多封时一键按各自推荐方案批复，提交前有 3 秒撤销窗口；高风险方案默认跳过，需勾选后才会一并批准。
@@ -486,7 +486,22 @@ zhunzou-bridge fleet
   编辑器开没开都不影响。
 - 某个项目的循环崩溃会自动重启；`--refresh-tokens` 强制轮换所有 Token，
   `--once` 只处理一轮（适合 cron / 定时任务）。
-- 开机自启用 `launchd` / `systemd` / `pm2` 托管 `zhunzou-bridge fleet` 即可。
+- 看板「接入端」页会按运行节点（host）汇总：这台机器托管了多少项目、多少在线。
+
+开机自启：
+
+```bash
+# macOS（launchd）
+zhunzou-bridge fleet --print-launchd > ~/Library/LaunchAgents/com.zhunzou.fleet.plist
+launchctl load ~/Library/LaunchAgents/com.zhunzou.fleet.plist
+
+# 通用（pm2）
+pm2 start "zhunzou-bridge fleet" --name zhunzou-fleet
+pm2 save
+```
+
+> `--print-launchd` 会写入当前 `node` 和 CLI 的绝对路径。请使用全局安装
+> （`npm i -g zhunzou-bridge`）或独立包，避免指向 npx 临时缓存。
 
 ### 环境变量
 

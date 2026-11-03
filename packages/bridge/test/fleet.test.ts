@@ -11,6 +11,7 @@ import type { AgentTask } from '@zhunzou/shared';
 import {
   agentKindForAdapter,
   buildFleetRuntimes,
+  buildLaunchdPlist,
   loadFleetConfig,
   resolveFleetTokens,
   runFleet,
@@ -122,6 +123,24 @@ describe('agentKindForAdapter', () => {
     expect(agentKindForAdapter('opencode-run')).toBe('opencode');
     expect(agentKindForAdapter('claude')).toBe('claude-code');
     expect(agentKindForAdapter('command')).toBe('other');
+  });
+});
+
+describe('buildLaunchdPlist', () => {
+  it('runs fleet at login with a PATH that finds CLI agents', () => {
+    const plist = buildLaunchdPlist({
+      nodePath: '/usr/local/bin/node',
+      cliPath: '/opt/zhunzou/packages/bridge/bin/cli.js',
+      configPath: '/Users/me/.zhunzou/fleet.json',
+      logDir: '/tmp/logs',
+    });
+
+    expect(plist).toContain('com.zhunzou.fleet');
+    expect(plist).toContain('<string>fleet</string>');
+    expect(plist).toContain('/Users/me/.zhunzou/fleet.json');
+    expect(plist).toContain('.local/bin');
+    expect(plist).toContain('/tmp/logs/zhunzou-fleet.log');
+    expect(plist).toContain('<key>KeepAlive</key>');
   });
 });
 
