@@ -117,6 +117,17 @@ AGENT_ENV=cursor-my-project HUB_URL=... HUB_TOKEN=zz_... \
 
 The daemon runs `cursor-agent -p --force "<task brief>"` and reports `DONE` / `FAILED` from the exit code. If the CLI sandbox blocks the hub, adjust `--sandbox` or allow the hub domain. Without Cursor CLI, `--adapter opencode-run` and `--adapter claude` work the same way.
 
+### One process for every project (fleet)
+
+`fleet` runs one wake loop per repository in a single process, so the hub can dispatch to any project without an editor or a terminal per repo:
+
+```bash
+cp packages/bridge/templates/fleet.example.json ~/.zhunzou/fleet.json
+zhunzou-bridge fleet
+```
+
+The config lists `hubUrl`, an optional `adminToken` (used once to register agents and issue scoped tokens, cached at `~/.zhunzou/fleet-tokens.json` with `0600`), and `projects: [{ env, path, project?, adapter?, token?, args? }]`. Each project appears as its own agent in the dashboard; `--refresh-tokens` rotates tokens and `--once` handles a single cycle.
+
 Or configure manually:
 
 ```bash

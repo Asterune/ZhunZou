@@ -212,10 +212,38 @@ Linux 用 systemd `ExecStart=/path/to/node /path/to/cli.js wake`；也可以交�
 pm2 start "zhunzou-bridge wake" --name zhunzou-wake
 ```
 
+### 多项目托管（fleet）
+
+`wake` 一次只管一个目录。`fleet` 在一个进程里为每个项目跑一条 wake 循环：
+
+```bash
+cp templates/fleet.example.json ~/.zhunzou/fleet.json
+# 编辑 hubUrl / adminToken / projects
+zhunzou-bridge fleet
+```
+
+```json
+{
+  "hubUrl": "https://hub.example.com",
+  "adminToken": "HUB_SECRET_TOKEN，仅用于首次登记与签发",
+  "adapter": "cursor-agent",
+  "projects": [
+    { "env": "cursor-yikuaomed-erp", "path": "~/code/yikuaomed-erp" },
+    { "env": "opencode-zhunzou", "path": "~/code/zhunzou", "adapter": "opencode-run" }
+  ]
+}
+```
+
+- 每个项目对应 Hub 里的一个 `env`，可以独立下发任务、看状态、停用/轮换 Token。
+- 没有 `token` 时会自动登记并签发专属 Token，缓存在
+  `~/.zhunzou/fleet-tokens.json`（`0600`）；`--refresh-tokens` 强制轮换。
+- 子循环崩溃会以 2 秒退避自动重启；`--once` 适合 cron 式调用。
+- 开机自启：launchd / systemd / pm2 托管 `zhunzou-bridge fleet` 即可。
+
 ## 验证
 
 ```bash
-pnpm --filter zhunzou-bridge test    # 32 个单元/集成测试
+pnpm --filter zhunzou-bridge test    # 单元 + 集成测试
 pnpm smoke:bridge                      # 真实服务 + MCP stdio + CLI 端到端
 ```
 

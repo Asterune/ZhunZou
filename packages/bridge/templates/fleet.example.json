@@ -1,0 +1,23 @@
+{
+  "hubUrl": "https://hub.example.com",
+  "adminToken": "REPLACE_WITH_HUB_SECRET_TOKEN",
+  "adapter": "cursor-agent",
+  "projects": [
+    {
+      "env": "cursor-yikuaomed-erp",
+      "path": "~/code/yikuaomed-erp",
+      "project": "yikuaomed-erp"
+    },
+    {
+      "env": "opencode-zhunzou",
+      "path": "~/code/zhunzou",
+      "adapter": "opencode-run"
+    },
+    {
+      "env": "cursor-design-system",
+      "path": "~/code/design-system",
+      "adapter": "cursor-agent",
+      "args": ["--model", "gpt-5"]
+    }
+  ]
+}

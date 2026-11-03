@@ -456,6 +456,38 @@ zhunzou-bridge wake --adapter cursor-agent --cwd /path/to/project
 - 不方便装 Cursor CLI 时，`--adapter opencode-run`（本机已装 OpenCode）或
   `--adapter claude` 同样可以无人值守运行，准奏不绑定某一个客户端。
 
+### 一条命令托管所有项目（fleet）
+
+为每个仓库单独开终端很快会变成负担。`fleet` 用**一个进程**托管本机所有项目，每个项目一条
+wake 循环，Hub 仍然是唯一控制面：
+
+```bash
+mkdir -p ~/.zhunzou
+cp packages/bridge/templates/fleet.example.json ~/.zhunzou/fleet.json
+# 编辑 hubUrl / adminToken / projects
+zhunzou-bridge fleet
+```
+
+```json
+{
+  "hubUrl": "https://hub.example.com",
+  "adminToken": "REPLACE_WITH_HUB_SECRET_TOKEN",
+  "adapter": "cursor-agent",
+  "projects": [
+    { "env": "cursor-yikuaomed-erp", "path": "~/code/yikuaomed-erp" },
+    { "env": "opencode-zhunzou", "path": "~/code/zhunzou", "adapter": "opencode-run" }
+  ]
+}
+```
+
+- `adminToken` 只用于首次登记接入端和签发 Token；签发结果缓存在
+  `~/.zhunzou/fleet-tokens.json`（权限 `0600`），之后不再需要管理员 Token。
+- 每个项目在 Hub 里就是一个独立 Agent（`env`），在「下发任务」页选择它即可；
+  编辑器开没开都不影响。
+- 某个项目的循环崩溃会自动重启；`--refresh-tokens` 强制轮换所有 Token，
+  `--once` 只处理一轮（适合 cron / 定时任务）。
+- 开机自启用 `launchd` / `systemd` / `pm2` 托管 `zhunzou-bridge fleet` 即可。
+
 ### 环境变量
 
 | 变量 | 必填 | 默认值 | 说明 |

@@ -1,6 +1,11 @@
 import { Command } from 'commander';
 
 import { loadBridgeConfig } from './config.js';
+import {
+  defaultFleetConfigPath,
+  loadFleetConfig,
+  runFleet,
+} from './fleet.js';
 import { HubClient } from './hub-client.js';
 import { runInit } from './init.js';
 import { BRIDGE_VERSION } from './version.js';
@@ -232,6 +237,52 @@ export function createProgram(): Command {
           wake,
           ...(options.once === true ? { once: true } : {}),
         });
+      },
+    );
+
+  program
+    .command('fleet')
+    .description(
+      'Run one wake daemon per project on this machine (hub dispatches, no editor needed)',
+    )
+    .option(
+      '--config <path>',
+      `fleet config file (default ${defaultFleetConfigPath()})`,
+    )
+    .option('--once', 'handle at most one poll cycle per project')
+    .option('--refresh-tokens', 'rotate and cache a new token for every project')
+    .action(
+      async (options: {
+        config?: string;
+        once?: boolean;
+        refreshTokens?: boolean;
+      }) => {
+        let config;
+        try {
+          config = loadFleetConfig(options.config);
+        } catch (error) {
+          process.stderr.write(`[zhunzou] ${(error as Error).message}\n`);
+          process.exitCode = 1;
+          return;
+        }
+
+        const controller = new AbortController();
+        const stop = (): void => controller.abort();
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+
+        try {
+          process.exitCode = await runFleet(config, {
+            ...(options.once === true ? { once: true } : {}),
+            ...(options.refreshTokens === true
+              ? { refreshTokens: true }
+              : {}),
+            signal: controller.signal,
+          });
+        } catch (error) {
+          process.stderr.write(`[zhunzou] fleet failed: ${(error as Error).message}\n`);
+          process.exitCode = 1;
+        }
       },
     );
 
