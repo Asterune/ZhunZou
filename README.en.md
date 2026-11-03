@@ -213,6 +213,7 @@ All `/api/*` routes require `Authorization: Bearer <HUB_SECRET_TOKEN>`. `/health
 | `GET` | `/api/sessions/next?env=...` | Runner claims the next message |
 | `POST` | `/api/sessions/:id/messages/:messageId/events` | Append streamed output |
 | `POST` | `/api/sessions/:id/messages/:messageId/complete` | Finish a turn (content + session id) |
+| `POST` | `/api/sessions/:id/messages/:messageId/retry` | Requeue a failed turn |
 | `POST` | `/api/status/heartbeat` | Bridge heartbeat |
 | `GET` | `/api/status` | Online environments |
 | `GET` | `/api/resume?env=...` | Pending/recent tickets + active tasks |

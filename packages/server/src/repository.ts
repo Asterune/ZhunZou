@@ -394,6 +394,16 @@ export interface TicketStore {
     query: ListChatEventsQuery,
   ): ChatEventListResponse;
   closeChatSession(sessionId: number, now?: number): ChatSession | null;
+  failStaleChatMessages(
+    onlineEnvs: Set<string>,
+    cutoff: number,
+    now?: number,
+  ): number;
+  retryChatMessage(
+    sessionId: number,
+    messageId: number,
+    now?: number,
+  ): ChatMessage | null;
   /** Awaiting tickets plus recently terminal ones, for bridge restart recovery. */
   listResumeTickets(env: string, since: number, limit?: number): DecisionTicket[];
 
@@ -1269,6 +1279,74 @@ export class TicketRepository implements TicketStore {
       .returning()
       .get();
     return row ? toChatSession(row) : null;
+  }
+
+  /**
+   * A runner that died mid-turn leaves the message RUNNING forever. Only fail
+   * messages whose env stopped sending heartbeats, so a slow model on a live
+   * runner is never interrupted.
+   */
+  failStaleChatMessages(
+    onlineEnvs: Set<string>,
+    cutoff: number,
+    now = Date.now(),
+  ): number {
+    const rows = this.db
+      .select({ id: chatMessages.id, env: chatSessions.env })
+      .from(chatMessages)
+      .innerJoin(chatSessions, eq(chatMessages.sessionId, chatSessions.id))
+      .where(
+        and(
+          eq(chatMessages.role, 'user'),
+          eq(chatMessages.status, 'RUNNING'),
+          lte(chatMessages.updatedAt, cutoff),
+        ),
+      )
+      .all();
+
+    const ids = rows
+      .filter((row) => !onlineEnvs.has(row.env))
+      .map((row) => row.id);
+    if (ids.length === 0) return 0;
+
+    return this.db
+      .update(chatMessages)
+      .set({
+        status: 'FAILED',
+        error: '端侧离线，执行已中断；可以重试',
+        updatedAt: now,
+      })
+      .where(inArray(chatMessages.id, ids))
+      .run().changes;
+  }
+
+  retryChatMessage(
+    sessionId: number,
+    messageId: number,
+    now = Date.now(),
+  ): ChatMessage | null {
+    const row = this.db
+      .update(chatMessages)
+      .set({ status: 'PENDING', error: null, updatedAt: now })
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.sessionId, sessionId),
+          eq(chatMessages.role, 'user'),
+          eq(chatMessages.status, 'FAILED'),
+        ),
+      )
+      .returning()
+      .get();
+
+    if (!row) return null;
+
+    this.db
+      .update(chatSessions)
+      .set({ updatedAt: now, lastMessageAt: now })
+      .where(eq(chatSessions.id, sessionId))
+      .run();
+    return toChatMessage(row);
   }
 
   private trimChatEvents(sessionId: number): void {

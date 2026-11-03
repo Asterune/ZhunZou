@@ -176,6 +176,68 @@ describe('interactive sessions', () => {
     }
   });
 
+  it('fails a RUNNING message only when its env is offline, then supports retry', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const agentAuth = await issueAgentToken(ctx);
+
+      await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: { content: 'long turn' },
+      });
+      const next = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10`,
+        headers: agentAuth,
+      });
+      const message = next.json().message as ChatMessage;
+
+      // A live env is never interrupted, even with an aggressive cutoff.
+      expect(
+        ctx.app.repo.failStaleChatMessages(
+          new Set([ENV]),
+          Date.now() + 60_000,
+        ),
+      ).toBe(0);
+
+      // Offline + past cutoff → failed with a retryable error.
+      expect(
+        ctx.app.repo.failStaleChatMessages(new Set(), Date.now() + 60_000),
+      ).toBe(1);
+
+      const failed = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}`,
+        headers: ctx.auth,
+      });
+      expect(failed.json().messages[0]).toMatchObject({
+        status: 'FAILED',
+        error: expect.stringContaining('可以重试'),
+      });
+
+      const retry = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages/${message.id}/retry`,
+        headers: ctx.auth,
+      });
+      expect(retry.statusCode).toBe(200);
+      expect(retry.json().message.status).toBe('PENDING');
+
+      const reclaimed = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10`,
+        headers: agentAuth,
+      });
+      expect(reclaimed.json().message.id).toBe(message.id);
+      expect(reclaimed.json().message.status).toBe('RUNNING');
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('wakes a long-poll as soon as the human sends a message', async () => {
     const ctx = await createTestContext();
     try {

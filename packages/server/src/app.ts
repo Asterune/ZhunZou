@@ -550,6 +550,30 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     }
   };
 
+  const sweepStaleChatMessages = async (): Promise<void> => {
+    if (config.chatMessageTimeoutMs <= 0) return;
+
+    const now = Date.now();
+    const onlineEnvs = new Set(
+      repo
+        .listHeartbeats(now)
+        .filter((heartbeat) => heartbeat.online)
+        .map((heartbeat) => heartbeat.env),
+    );
+    const failed = repo.failStaleChatMessages(
+      onlineEnvs,
+      now - config.chatMessageTimeoutMs,
+      now,
+    );
+
+    if (failed > 0) {
+      app.log.warn(
+        { count: failed },
+        'failed chat messages left RUNNING by an offline runner',
+      );
+    }
+  };
+
   // -----------------------------------------------------------------
   // Public health check (no auth)
   // -----------------------------------------------------------------
@@ -1228,6 +1252,36 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         );
       });
 
+      // Human retries a failed turn in place; the runner claims it again.
+      api.post('/sessions/:id/messages/:messageId/retry', async (request) => {
+        requireAdmin(request);
+        const { id, messageId } = chatMessageParamsSchema.parse(request.params);
+        const session = repo.getChatSession(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+        if (session.status !== 'ACTIVE') {
+          throw new ConflictError(
+            `session ${formatTicketId(id)} is ${session.status}`,
+            'SESSION_CLOSED',
+          );
+        }
+
+        const message = repo.retryChatMessage(
+          Number(session.id),
+          parseTicketId(messageId),
+        );
+        if (!message) {
+          throw new ConflictError(
+            `message ${formatTicketId(messageId)} is not FAILED`,
+            'INVALID_MESSAGE_STATUS',
+          );
+        }
+
+        sessionBus.publish(session);
+        return { session, message };
+      });
+
       // Bridge hands a claimed task back when no local agent could be woken.
       // Requeueing lets the next bridge / wake adapter retry it immediately
       // instead of waiting for the stale-task sweeper.
@@ -1512,6 +1566,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       app.log.error(
         { err: (error as Error).message },
         'stale task sweep failed',
+      );
+    });
+    void sweepStaleChatMessages().catch((error: unknown) => {
+      app.log.error(
+        { err: (error as Error).message },
+        'stale chat sweep failed',
       );
     });
   }, config.sweepIntervalMs);

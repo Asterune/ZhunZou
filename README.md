@@ -167,6 +167,7 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `POST` | `/api/sessions/:id/messages/:messageId/events` | Agent 追加输出 `{ stream, chunk }` |
 | `GET` | `/api/sessions/:id/events` | 增量读取会话输出 `?after=&messageId=` |
 | `POST` | `/api/sessions/:id/messages/:messageId/complete` | 回报结果 `{ status, content?, externalId?, error? }` |
+| `POST` | `/api/sessions/:id/messages/:messageId/retry` | 重试失败的轮次（重置为待领取） |
 | `POST` | `/api/tasks/:id/cancel` | 人取消尚未结束的任务 |
 | `GET` | `/api/workspace-projects` | 工作区项目绑定列表，支持 `?env=` |
 | `POST` | `/api/workspace-projects` | 绑定项目 `{ env, projectName }`，幂等 |
@@ -544,7 +545,9 @@ pm2 save
 </p>
 
 > 当前是「每条消息一个进程」的会话，不是 token 级流式；命令是否需要确认由各 CLI 的
-> `--force` / `--auto` 决定。需要真正的交互式权限事件时再升级到 ACP。
+> `--force` / `--auto` 决定。runner 掉线超过 `CHAT_MESSAGE_TIMEOUT_MS`（默认 5 分钟）后，
+> `RUNNING` 的消息会自动标记失败，可在气泡里点「重试」重新排队。需要真正的交互式
+> 权限事件时再升级到 ACP。
 
 ### 环境变量
 

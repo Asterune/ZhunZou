@@ -33,6 +33,7 @@ const loadingSession = ref(false);
 const creating = ref(false);
 const sending = ref(false);
 const closing = ref(false);
+const retrying = ref('');
 const error = ref('');
 
 const formOpen = ref(false);
@@ -192,6 +193,24 @@ async function send(): Promise<void> {
     pushToast(describe(cause), 'error');
   } finally {
     sending.value = false;
+  }
+}
+
+async function retryMessage(message: ChatMessage): Promise<void> {
+  if (!session.value || retrying.value || session.value.status !== 'ACTIVE') {
+    return;
+  }
+
+  retrying.value = message.id;
+  try {
+    await hubApi.retryChatMessage(store.token, session.value.id, message.id);
+    await refreshSession();
+    await loadSessions();
+    pushToast('已重新排队，等待端侧领取', 'success');
+  } catch (cause) {
+    pushToast(describe(cause), 'error');
+  } finally {
+    retrying.value = '';
   }
 }
 
@@ -473,9 +492,17 @@ onBeforeUnmount(stopPolling);
               <p class="whitespace-pre-wrap break-words">{{ message.content }}</p>
               <p
                 v-if="message.role === 'user' && message.status === 'FAILED'"
-                class="mt-1 text-[11px] text-[#ffd5d0]"
+                class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-[#ffd5d0]"
               >
-                执行失败{{ message.error ? `：${message.error}` : '' }}
+                <span>执行失败{{ message.error ? `：${message.error}` : '' }}</span>
+                <button
+                  type="button"
+                  class="rounded bg-white/15 px-1.5 py-0.5 text-[10px] font-medium text-white transition hover:bg-white/25 disabled:opacity-50"
+                  :disabled="retrying === message.id || activeSession.status !== 'ACTIVE'"
+                  @click="retryMessage(message)"
+                >
+                  {{ retrying === message.id ? '重试中…' : '重试' }}
+                </button>
               </p>
               <p
                 v-if="message.role === 'user' && message.status === 'PENDING'"

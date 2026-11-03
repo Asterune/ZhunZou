@@ -114,6 +114,11 @@ export interface HubApi {
     token: string,
     sessionId: string,
   ): Promise<ChatSessionResponse>;
+  retryChatMessage(
+    token: string,
+    sessionId: string,
+    messageId: string,
+  ): Promise<ChatSessionResponse>;
   getChatEvents(
     token: string,
     sessionId: string,
@@ -311,6 +316,13 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
       request<ChatSessionResponse>(token, `/api/sessions/${sessionId}/close`, {
         method: 'POST',
       }),
+
+    retryChatMessage: (token, sessionId, messageId) =>
+      request<ChatSessionResponse>(
+        token,
+        `/api/sessions/${sessionId}/messages/${messageId}/retry`,
+        { method: 'POST' },
+      ),
 
     getChatEvents: (token, sessionId, after = 0, messageId) => {
       const params = new URLSearchParams({ after: String(after) });

@@ -68,6 +68,11 @@ export interface ServerConfig {
   taskHardTimeoutMs: number;
   /** How many claims before a repeatedly-lost task is marked FAILED. */
   taskMaxAttempts: number;
+  /**
+   * Fail a RUNNING chat message when its env has been offline for this long.
+   * 0 disables chat-message recovery.
+   */
+  chatMessageTimeoutMs: number;
 
   /** Public origin used in notification links, e.g. https://hub.example.com. */
   publicBaseUrl: string;
@@ -295,6 +300,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       max: 7 * 24 * 60 * 60 * 1000,
     }),
     taskMaxAttempts: readInt(env.TASK_MAX_ATTEMPTS, 3, { min: 1, max: 10 }),
+    chatMessageTimeoutMs: readInt(
+      env.CHAT_MESSAGE_TIMEOUT_MS,
+      5 * 60 * 1000,
+      { min: 0, max: 7 * 24 * 60 * 60 * 1000 },
+    ),
     publicBaseUrl: (env.PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, ''),
     approvalLinkSecret:
       (env.APPROVAL_LINK_SECRET ?? '').trim() || token || 'dev-token',

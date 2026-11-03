@@ -176,6 +176,11 @@ describe('createHubApi', () => {
     expect(
       JSON.parse(String((fetchImpl.mock.calls[1]?.[1] as RequestInit).body)),
     ).toEqual({ content: 'hello' });
+
+    await api.retryChatMessage(token, '1', '2');
+    expect(fetchImpl.mock.calls[2]?.[0]).toBe(
+      '/api/sessions/1/messages/2/retry',
+    );
   });
 
   it('tails chat events after a cursor', async () => {
