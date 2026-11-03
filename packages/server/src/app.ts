@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -14,6 +15,7 @@ import {
   bindWorkspaceProjectSchema,
   bridgeReleaseManifestSchema,
   completeTaskSchema,
+  createAgentSchema,
   createTaskSchema,
   createTicketSchema,
   extendTicketSchema,
@@ -21,6 +23,7 @@ import {
   heartbeatSchema,
   isResolvedStatus,
   isTerminalStatus,
+  listAgentsQuerySchema,
   listRuleCandidatesQuerySchema,
   listTasksQuerySchema,
   listTicketsQuerySchema,
@@ -30,6 +33,7 @@ import {
   resolveTicketSchema,
   resumeQuerySchema,
   ticketIdSchema,
+  updateAgentSchema,
   updateRulesSchema,
   waitQuerySchema,
 } from '@zhunzou/shared';
@@ -41,7 +45,7 @@ import {
   renderApprovalResultPage,
   verifyApprovalToken,
 } from './approval-link.js';
-import { createAuthHook } from './auth.js';
+import { createAuthHook, hashToken, requireAdmin, requireEnvAccess } from './auth.js';
 import type { ServerConfig } from './config.js';
 import { createDatabase } from './db/client.js';
 import {
@@ -82,6 +86,9 @@ declare module 'fastify' {
 
 const APP_VERSION = '0.1.0';
 const paramsSchema = z.object({ id: ticketIdSchema });
+const agentParamsSchema = z.object({
+  env: z.string().trim().min(1).max(64),
+});
 const approvalParamsSchema = z.object({
   token: z.string().min(1).max(512),
 });
@@ -159,6 +166,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const notifiers = options.notifiers ?? createNotifiers(config.notifications, app.log);
   let plugins: HubPlugin[] = [];
   let sweeper: ReturnType<typeof setInterval> | null = null;
+  let closing = false;
 
   app.decorate('repo', repo);
   app.decorate('bus', bus);
@@ -166,6 +174,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   app.decorate('rulesStore', rulesStore);
 
   app.addHook('onClose', async () => {
+    closing = true;
     if (sweeper !== null) {
       clearInterval(sweeper);
       sweeper = null;
@@ -290,6 +299,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   // Meta-Agent pipeline (runs after the create response has been sent)
   // -----------------------------------------------------------------
   const runMetaReview = async (ticketId: number): Promise<void> => {
+    if (closing) return;
     const ticket = repo.get(ticketId);
     if (!ticket || ticket.status !== 'PENDING_META') return;
 
@@ -484,12 +494,13 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
     for (const task of repo.listClaimedTasks()) {
       const claimedAt = task.claimedAt ?? task.updatedAt;
+      const leaseAt = task.leaseAt ?? claimedAt;
       const hardExpired =
         config.taskHardTimeoutMs > 0 &&
         claimedAt <= now - config.taskHardTimeoutMs;
       const offlineExpired =
         !onlineEnvs.has(task.env) &&
-        claimedAt <= now - config.taskClaimTimeoutMs;
+        leaseAt <= now - config.taskClaimTimeoutMs;
 
       if (!hardExpired && !offlineExpired) continue;
 
@@ -755,11 +766,21 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   // -----------------------------------------------------------------
   await app.register(
     async (api) => {
-      api.addHook('preHandler', createAuthHook(config.token));
+      api.addHook(
+        'preHandler',
+        createAuthHook({
+          adminToken: config.token,
+          resolveAgent: (tokenHash) => {
+            const agent = repo.findAgentByTokenHash(tokenHash);
+            return agent ? { env: agent.env, status: agent.status } : null;
+          },
+        }),
+      );
 
       // Create a ticket; Meta-Agent pre-review is scheduled immediately after.
       api.post('/tickets', async (request, reply) => {
         const input = createTicketSchema.parse(request.body);
+        requireEnvAccess(request, input.env);
         const now = Date.now();
         const expiresAt = autoResolveEligible(input.projectName)
           ? now + config.autoResolveTimeoutMs
@@ -778,6 +799,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       // unless the caller pins one. Destructive options require an explicit
       // confirmDestructive=true and are skipped otherwise.
       api.post('/tickets/batch-resolve', async (request) => {
+        requireAdmin(request);
         const input = batchResolveTicketsSchema.parse(request.body);
         const resolved: DecisionTicket[] = [];
         const skipped: Array<{ id: string; reason: string }> = [];
@@ -845,6 +867,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
         const existing = repo.get(ticketId);
         if (!existing) throw new NotFoundError(`ticket ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, existing.env);
 
         if (isTerminalStatus(existing.status)) {
           return {
@@ -870,16 +893,23 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         const { id } = paramsSchema.parse(request.params);
         const ticket = repo.get(parseTicketId(id));
         if (!ticket) throw new NotFoundError(`ticket ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, ticket.env);
         return { ticket };
       });
 
       api.get('/tickets', async (request) => {
         const query = listTicketsQuerySchema.parse(request.query);
-        return repo.list(query);
+        // Agent tokens only see their own environment.
+        const scoped =
+          request.principal?.role === 'agent'
+            ? { ...query, env: request.principal.env }
+            : query;
+        return repo.list(scoped);
       });
 
       // Human approval from the web console.
       api.post('/tickets/:id/resolve', async (request) => {
+        requireAdmin(request);
         const { id } = paramsSchema.parse(request.params);
         const input = resolveTicketSchema.parse(request.body);
         const ticket = repo.resolve(parseTicketId(id), input);
@@ -893,6 +923,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       // Snooze the timeout SLA. Useful when the human is away but does not
       // want the recommended option to be applied automatically yet.
       api.post('/tickets/:id/extend', async (request) => {
+        requireAdmin(request);
         const { id } = paramsSchema.parse(request.params);
         const input = extendTicketSchema.parse(request.body ?? {});
         const ticketId = parseTicketId(id);
@@ -918,6 +949,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         const ticketId = parseTicketId(id);
         const current = repo.get(ticketId);
         if (!current) throw new NotFoundError(`ticket ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, current.env);
 
         const cancelled = repo.cancel(ticketId);
         if (!cancelled) {
@@ -938,6 +970,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
       // Human dispatches a task from the dashboard.
       api.post('/tasks', async (request, reply) => {
+        requireAdmin(request);
         const input = createTaskSchema.parse(request.body);
         const task = repo.createTask(input);
         taskBus.publish(task);
@@ -945,6 +978,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       });
 
       api.get('/tasks', async (request) => {
+        requireAdmin(request);
         const query = listTasksQuerySchema.parse(request.query);
         return repo.listTasks(query);
       });
@@ -952,6 +986,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       // Bridge long-polls for the next task assigned to its env.
       api.get('/tasks/next', async (request) => {
         const query = nextTaskQuerySchema.parse(request.query);
+        requireEnvAccess(request, query.env);
         const deadline = Date.now() + query.timeout;
 
         for (;;) {
@@ -974,14 +1009,19 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         const { id } = paramsSchema.parse(request.params);
         const task = repo.getTask(parseTicketId(id));
         if (!task) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, task.env);
         return { task };
       });
 
       // Agent reports completion / failure.
       api.post('/tasks/:id/complete', async (request) => {
         const { id } = paramsSchema.parse(request.params);
+        const taskId = parseTicketId(id);
+        const current = repo.getTask(taskId);
+        if (!current) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, current.env);
         const input = completeTaskSchema.parse(request.body);
-        const task = repo.completeTask(parseTicketId(id), input);
+        const task = repo.completeTask(taskId, input);
         return { task };
       });
 
@@ -992,6 +1032,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         const { id } = paramsSchema.parse(request.params);
         const input = releaseTaskSchema.parse(request.body ?? {});
         const taskId = parseTicketId(id);
+        const current = repo.getTask(taskId);
+        if (!current) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, current.env);
         const reason =
           input.reason ??
           (input.requeue
@@ -1018,6 +1061,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
       // Human cancels a task that has not finished.
       api.post('/tasks/:id/cancel', async (request) => {
+        requireAdmin(request);
         const { id } = paramsSchema.parse(request.params);
         const taskId = parseTicketId(id);
         const current = repo.getTask(taskId);
@@ -1037,15 +1081,20 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       // Bridge heartbeat: Running / Blocked / Idle.
       api.post('/status/heartbeat', async (request) => {
         const input = heartbeatSchema.parse(request.body);
+        requireEnvAccess(request, input.env);
         return { heartbeat: repo.recordHeartbeat(input) };
       });
 
-      api.get('/status', async () => ({ envs: repo.listHeartbeats() }));
+      api.get('/status', async (request) => {
+        requireAdmin(request);
+        return { envs: repo.listHeartbeats() };
+      });
 
       // Bridge restart recovery: pending decisions plus recently terminal
       // tickets and still-active tasks for this env.
       api.get('/resume', async (request) => {
         const query = resumeQuerySchema.parse(request.query);
+        requireEnvAccess(request, query.env);
         const since = query.since ?? Date.now() - 24 * 60 * 60 * 1000;
 
         return {
@@ -1055,17 +1104,87 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       });
 
       // -----------------------------------------------------------------
+      // Agent registry & per-agent tokens
+      // -----------------------------------------------------------------
+
+      api.get('/agents', async (request) => {
+        requireAdmin(request);
+        const query = listAgentsQuerySchema.parse(request.query);
+        return { agents: repo.listAgents(query) };
+      });
+
+      // Explicit registration (also happens automatically on heartbeat).
+      api.post('/agents', async (request, reply) => {
+        requireAdmin(request);
+        const input = createAgentSchema.parse(request.body);
+        const existed = repo.getAgent(input.env) !== null;
+        const agent = repo.registerAgent(input);
+        return reply.code(existed ? 200 : 201).send({ agent });
+      });
+
+      api.patch('/agents/:env', async (request) => {
+        requireAdmin(request);
+        const { env } = agentParamsSchema.parse(request.params);
+        const input = updateAgentSchema.parse(request.body);
+        const agent = repo.updateAgent(env, input);
+        if (!agent) throw new NotFoundError(`agent ${env} not found`);
+        return { agent };
+      });
+
+      api.delete('/agents/:env', async (request) => {
+        requireAdmin(request);
+        const { env } = agentParamsSchema.parse(request.params);
+        if (!repo.deleteAgent(env)) {
+          throw new NotFoundError(`agent ${env} not found`);
+        }
+        return { deleted: true, env };
+      });
+
+      // Issue or rotate a scoped token. The plaintext value is returned once
+      // and never stored; only a sha256 hash stays in the database.
+      api.post('/agents/:env/token', async (request) => {
+        requireAdmin(request);
+        const { env } = agentParamsSchema.parse(request.params);
+        const agent = repo.getAgent(env) ?? repo.registerAgent({ env });
+        if (agent.status !== 'active') {
+          throw new ConflictError(
+            `agent ${env} is disabled; enable it before issuing a token`,
+            'AGENT_DISABLED',
+          );
+        }
+
+        const token = `zz_${randomBytes(32).toString('base64url')}`;
+        const updated = repo.setAgentToken(
+          env,
+          hashToken(token),
+          token.slice(0, 10),
+        );
+        if (!updated) throw new NotFoundError(`agent ${env} not found`);
+        return { agent: updated, token };
+      });
+
+      api.delete('/agents/:env/token', async (request) => {
+        requireAdmin(request);
+        const { env } = agentParamsSchema.parse(request.params);
+        const agent = repo.clearAgentToken(env);
+        if (!agent) throw new NotFoundError(`agent ${env} not found`);
+        return { agent };
+      });
+
+      // -----------------------------------------------------------------
       // Workspace ↔ project bindings
       // -----------------------------------------------------------------
 
       // Projects a workspace has worked on; feeds the dispatch dropdown.
       api.get('/workspace-projects', async (request) => {
+        requireAdmin(request);
         const query = listWorkspaceProjectsQuerySchema.parse(request.query);
         return repo.listWorkspaceProjects(query);
       });
 
       // Explicit bind from the dashboard (idempotent).
       api.post('/workspace-projects', async (request, reply) => {
+        requireAdmin(request);
         const input = bindWorkspaceProjectSchema.parse(request.body);
         const project = repo.bindWorkspaceProject(
           input.env,
@@ -1075,6 +1194,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       });
 
       api.delete('/workspace-projects/:id', async (request) => {
+        requireAdmin(request);
         const { id } = paramsSchema.parse(request.params);
         const project = repo.unbindWorkspaceProject(parseTicketId(id));
         if (!project) {
@@ -1086,20 +1206,26 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       });
 
       // GLOBAL_RULES.md online editing.
-      api.get('/rules', async () => rulesStore.read());
+      api.get('/rules', async (request) => {
+        requireAdmin(request);
+        return rulesStore.read();
+      });
 
       api.put('/rules', async (request) => {
+        requireAdmin(request);
         const { content } = updateRulesSchema.parse(request.body);
         return rulesStore.write(content);
       });
 
       // Candidate rules distilled from past human approvals.
       api.get('/rules/candidates', async (request) => {
+        requireAdmin(request);
         const query = listRuleCandidatesQuerySchema.parse(request.query);
         return repo.listRuleCandidates(query);
       });
 
       api.post('/rules/candidates/:id/accept', async (request) => {
+        requireAdmin(request);
         const { id } = paramsSchema.parse(request.params);
         const candidateId = parseTicketId(id);
         const candidate = repo.getRuleCandidate(candidateId);
@@ -1129,6 +1255,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       });
 
       api.post('/rules/candidates/:id/dismiss', async (request) => {
+        requireAdmin(request);
         const { id } = paramsSchema.parse(request.params);
         const candidateId = parseTicketId(id);
         const candidate = repo.getRuleCandidate(candidateId);

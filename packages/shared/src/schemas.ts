@@ -5,6 +5,8 @@ import {
   ENV_STATUSES,
   MAX_WAIT_TIMEOUT_MS,
   OPTION_RISKS,
+  AGENT_KINDS,
+  AGENT_STATUSES,
   RULE_CANDIDATE_STATUSES,
   TASK_STATUSES,
   TICKET_STATUSES,
@@ -131,6 +133,7 @@ export const batchResolveTicketsSchema = z.object({
 export const listTicketsQuerySchema = z.object({
   status: ticketStatusSchema.optional(),
   projectName: projectNameSchema.optional(),
+  env: envSchema.optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
@@ -148,12 +151,22 @@ export const waitQuerySchema = z.object({
 /* Heartbeat                                                           */
 /* ------------------------------------------------------------------ */
 
+/** Metadata a bridge can attach to its heartbeats (and first escalation). */
+export const agentMetaSchema = z.object({
+  kind: z.enum(AGENT_KINDS).optional(),
+  version: z.string().trim().max(40).optional(),
+  host: z.string().trim().max(120).optional(),
+  os: z.string().trim().max(60).optional(),
+});
+
 export const heartbeatSchema = z.object({
   env: envSchema,
   status: z.enum(ENV_STATUSES),
   projectName: projectNameSchema.optional(),
   currentTask: z.string().trim().max(300).optional(),
   note: z.string().trim().max(500).optional(),
+  /** Optional client metadata; the hub auto-registers the agent from it. */
+  agent: agentMetaSchema.optional(),
 });
 
 export const envHeartbeatSchema = z.object({
@@ -164,6 +177,56 @@ export const envHeartbeatSchema = z.object({
   note: z.string().trim().max(500).optional(),
   lastSeenAt: z.number().int().nonnegative(),
   online: z.boolean(),
+});
+
+/* ------------------------------------------------------------------ */
+/* Agent registry                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A registered bridge/agent. `env` is the stable identity used by tickets,
+ * tasks and heartbeats; the other fields make it manageable from the console.
+ *
+ * Tokens are never returned in this shape — only a prefix for identification.
+ */
+export const agentSchema = z.object({
+  env: envSchema,
+  name: z.string().trim().min(1).max(64),
+  kind: z.enum(AGENT_KINDS),
+  status: z.enum(AGENT_STATUSES),
+  version: z.string().max(40).optional(),
+  host: z.string().max(120).optional(),
+  os: z.string().max(60).optional(),
+  /** First characters of the active token, for display; never the secret. */
+  tokenPrefix: z.string().max(16).optional(),
+  hasToken: z.boolean(),
+  online: z.boolean(),
+  lastSeenAt: z.number().int().nonnegative().optional(),
+  projectName: projectNameSchema.optional(),
+  currentTask: z.string().max(300).optional(),
+  note: z.string().max(500).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+export const createAgentSchema = z.object({
+  env: envSchema,
+  name: z.string().trim().min(1).max(64).optional(),
+  kind: z.enum(AGENT_KINDS).optional(),
+});
+
+export const updateAgentSchema = z
+  .object({
+    name: z.string().trim().min(1).max(64).optional(),
+    kind: z.enum(AGENT_KINDS).optional(),
+    status: z.enum(AGENT_STATUSES).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'at least one field must be provided',
+  });
+
+export const listAgentsQuerySchema = z.object({
+  status: z.enum(AGENT_STATUSES).optional(),
 });
 
 /* ------------------------------------------------------------------ */
@@ -186,6 +249,8 @@ export const agentTaskSchema = z.object({
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   claimedAt: z.number().int().nonnegative().optional(),
+  /** Last lease renewal; a live agent keeps it fresh while working. */
+  leaseAt: z.number().int().nonnegative().optional(),
   completedAt: z.number().int().nonnegative().optional(),
   result: z.string().trim().max(4000).optional(),
 });
@@ -321,6 +386,18 @@ export const envListResponseSchema = z.object({
   envs: z.array(envHeartbeatSchema),
 });
 
+export const agentResponseSchema = z.object({ agent: agentSchema });
+
+export const agentListResponseSchema = z.object({
+  agents: z.array(agentSchema),
+});
+
+/** Issued once: the plaintext token is never stored or returned again. */
+export const agentTokenResponseSchema = z.object({
+  agent: agentSchema,
+  token: z.string().min(1),
+});
+
 export const taskResponseSchema = z.object({ task: agentTaskSchema });
 
 export const taskListResponseSchema = z.object({
@@ -435,6 +512,14 @@ export type ListTicketsQuery = z.infer<typeof listTicketsQuerySchema>;
 export type WaitQuery = z.infer<typeof waitQuerySchema>;
 export type HeartbeatInput = z.infer<typeof heartbeatSchema>;
 export type EnvHeartbeat = z.infer<typeof envHeartbeatSchema>;
+export type Agent = z.infer<typeof agentSchema>;
+export type AgentMeta = z.infer<typeof agentMetaSchema>;
+export type ListAgentsQuery = z.infer<typeof listAgentsQuerySchema>;
+export type CreateAgentInput = z.infer<typeof createAgentSchema>;
+export type UpdateAgentInput = z.infer<typeof updateAgentSchema>;
+export type AgentListResponse = z.infer<typeof agentListResponseSchema>;
+export type AgentResponse = z.infer<typeof agentResponseSchema>;
+export type AgentTokenResponse = z.infer<typeof agentTokenResponseSchema>;
 export type TicketResponse = z.infer<typeof ticketResponseSchema>;
 export type TicketListResponse = z.infer<typeof ticketListResponseSchema>;
 export type WaitResponse = z.infer<typeof waitResponseSchema>;

@@ -1,6 +1,8 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 import type {
+  AgentKind,
+  AgentStatus,
   EnvStatus,
   RuleCandidateStatus,
   TaskStatus,
@@ -50,8 +52,40 @@ export const envHeartbeats = sqliteTable('env_heartbeats', {
   lastSeenAt: integer('last_seen_at').notNull(),
 });
 
-export const agentTasks = sqliteTable(
-  'agent_tasks',
+/**
+ * Registry of bridges/agents. `env` stays the identity used by tickets and
+ * tasks, so existing deployments keep working; the extra columns make agents
+ * manageable from the console and let each agent carry its own token.
+ */
+export const agents = sqliteTable(
+  'agents',
+  {
+    env: text('env').primaryKey(),
+    name: text('name').notNull(),
+    kind: text('kind').$type<AgentKind>().notNull(),
+    status: text('status').$type<AgentStatus>().notNull(),
+
+    version: text('version'),
+    host: text('host'),
+    os: text('os'),
+
+    /** sha256(token); the plaintext is returned once at issuance. */
+    tokenHash: text('token_hash'),
+    tokenPrefix: text('token_prefix'),
+    tokenCreatedAt: integer('token_created_at'),
+
+    lastSeenAt: integer('last_seen_at'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_agents_token_hash').on(table.tokenHash),
+    index('idx_agents_status').on(table.status),
+    index('idx_agents_kind').on(table.kind),
+  ],
+);
+
+export const agentTasks = sqliteTable(  'agent_tasks',
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
     env: text('env').notNull(),
@@ -64,6 +98,8 @@ export const agentTasks = sqliteTable(
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     claimedAt: integer('claimed_at'),
+    /** Last time the agent proved it is still working on the task. */
+    leaseAt: integer('lease_at'),
     completedAt: integer('completed_at'),
     result: text('result'),
   },
@@ -114,6 +150,8 @@ export type RuleCandidateRow = typeof ruleCandidates.$inferSelect;
 export type RuleCandidateInsert = typeof ruleCandidates.$inferInsert;
 export type TicketInsert = typeof tickets.$inferInsert;
 export type HeartbeatRow = typeof envHeartbeats.$inferSelect;
+export type AgentRow = typeof agents.$inferSelect;
+export type AgentInsert = typeof agents.$inferInsert;
 export type AgentTaskRow = typeof agentTasks.$inferSelect;
 export type AgentTaskInsert = typeof agentTasks.$inferInsert;
 export type WorkspaceProjectRow = typeof workspaceProjects.$inferSelect;

@@ -39,6 +39,26 @@ CREATE TABLE IF NOT EXISTS env_heartbeats (
   last_seen_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agents (
+  env TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  version TEXT,
+  host TEXT,
+  os TEXT,
+  token_hash TEXT,
+  token_prefix TEXT,
+  token_created_at INTEGER,
+  last_seen_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_token_hash ON agents(token_hash);
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+CREATE INDEX IF NOT EXISTS idx_agents_kind ON agents(kind);
+
 CREATE TABLE IF NOT EXISTS agent_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   env TEXT NOT NULL,
@@ -51,7 +71,8 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
   updated_at INTEGER NOT NULL,
   claimed_at INTEGER,
   completed_at INTEGER,
-  result TEXT
+  result TEXT,
+  lease_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status);
@@ -120,6 +141,7 @@ export function createDatabase(dbPath: string): {
 
   ensureColumn(sqlite, 'tickets', 'expires_at', 'INTEGER');
   ensureColumn(sqlite, 'agent_tasks', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(sqlite, 'agent_tasks', 'lease_at', 'INTEGER');
 
   const db = drizzle(sqlite, { schema });
   return { sqlite, db };

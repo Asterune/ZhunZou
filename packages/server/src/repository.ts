@@ -11,13 +11,17 @@ import {
 } from 'drizzle-orm';
 
 import type {
+  Agent,
+  AgentMeta,
   AgentTask,
   CompleteTaskInput,
+  CreateAgentInput,
   CreateTaskInput,
   CreateTicketInput,
   DecisionTicket,
   EnvHeartbeat,
   HeartbeatInput,
+  ListAgentsQuery,
   ListRuleCandidatesQuery,
   ListTasksQuery,
   ListTicketsQuery,
@@ -25,6 +29,7 @@ import type {
   ResolveTicketInput,
   RuleCandidate,
   TicketStatus,
+  UpdateAgentInput,
   WorkspaceProject,
 } from '@zhunzou/shared';
 import { HEARTBEAT_ONLINE_WINDOW_MS } from '@zhunzou/shared';
@@ -32,10 +37,12 @@ import { HEARTBEAT_ONLINE_WINDOW_MS } from '@zhunzou/shared';
 import type { DrizzleDatabase } from './db/client.js';
 import {
   agentTasks,
+  agents,
   envHeartbeats,
   ruleCandidates,
   tickets,
   workspaceProjects,
+  type AgentRow,
   type AgentTaskRow,
   type HeartbeatRow,
   type RuleCandidateRow,
@@ -87,6 +94,36 @@ function toHeartbeat(row: HeartbeatRow, now: number): EnvHeartbeat {
   };
 }
 
+function toAgent(
+  row: AgentRow,
+  heartbeat: HeartbeatRow | undefined,
+  now: number,
+): Agent {
+  const lastSeenAt = heartbeat?.lastSeenAt ?? row.lastSeenAt ?? undefined;
+
+  return {
+    env: row.env,
+    name: row.name,
+    kind: row.kind,
+    status: row.status,
+    ...(row.version ? { version: row.version } : {}),
+    ...(row.host ? { host: row.host } : {}),
+    ...(row.os ? { os: row.os } : {}),
+    ...(row.tokenPrefix ? { tokenPrefix: row.tokenPrefix } : {}),
+    hasToken: Boolean(row.tokenHash),
+    online:
+      row.status === 'active' &&
+      lastSeenAt !== undefined &&
+      now - lastSeenAt <= HEARTBEAT_ONLINE_WINDOW_MS,
+    ...(lastSeenAt !== undefined ? { lastSeenAt } : {}),
+    ...(heartbeat?.projectName ? { projectName: heartbeat.projectName } : {}),
+    ...(heartbeat?.currentTask ? { currentTask: heartbeat.currentTask } : {}),
+    ...(heartbeat?.note ? { note: heartbeat.note } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function toTask(row: AgentTaskRow): AgentTask {
   return {
     id: String(row.id),
@@ -99,6 +136,7 @@ function toTask(row: AgentTaskRow): AgentTask {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ...(row.claimedAt !== null ? { claimedAt: row.claimedAt } : {}),
+    ...(row.leaseAt !== null ? { leaseAt: row.leaseAt } : {}),
     ...(row.completedAt !== null ? { completedAt: row.completedAt } : {}),
     ...(row.result ? { result: row.result } : {}),
   };
@@ -201,6 +239,28 @@ export interface TicketStore {
   recordHeartbeat(input: HeartbeatInput, now?: number): EnvHeartbeat;
   listHeartbeats(now?: number): EnvHeartbeat[];
 
+  /* Agent registry */
+  registerAgent(input: CreateAgentInput, now?: number): Agent;
+  getAgent(env: string, now?: number): Agent | null;
+  listAgents(query?: ListAgentsQuery, now?: number): Agent[];
+  updateAgent(env: string, input: UpdateAgentInput, now?: number): Agent | null;
+  deleteAgent(env: string): boolean;
+  setAgentToken(
+    env: string,
+    tokenHash: string,
+    tokenPrefix: string,
+    now?: number,
+  ): Agent | null;
+  clearAgentToken(env: string, now?: number): Agent | null;
+  findAgentByTokenHash(tokenHash: string): Agent | null;
+  recordAgentPresence(
+    env: string,
+    meta: AgentMeta | undefined,
+    now?: number,
+  ): void;
+  /** Refresh the lease of every CLAIMED task owned by this env. */
+  renewTaskLease(env: string, now?: number): number;
+
   createTask(input: CreateTaskInput, now?: number): AgentTask;
   getTask(id: number): AgentTask | null;
   listTasks(query: ListTasksQuery): { tasks: AgentTask[]; total: number };
@@ -301,6 +361,7 @@ export class TicketRepository implements TicketStore {
     const filters = [
       ...(query.status ? [eq(tickets.status, query.status)] : []),
       ...(query.projectName ? [eq(tickets.projectName, query.projectName)] : []),
+      ...(query.env ? [eq(tickets.env, query.env)] : []),
     ];
     const where = filters.length > 0 ? and(...filters) : undefined;
 
@@ -523,6 +584,13 @@ export class TicketRepository implements TicketStore {
       this.bindWorkspaceProject(input.env, input.projectName, now);
     }
 
+    // An active agent proves the task is still being worked on, so refresh
+    // the lease. Idle agents do not, which keeps stale-task recovery honest.
+    if (input.status !== 'Idle') {
+      this.renewTaskLease(input.env, now);
+    }
+    this.recordAgentPresence(input.env, input.agent, now);
+
     return toHeartbeat(row, now);
   }
 
@@ -533,6 +601,178 @@ export class TicketRepository implements TicketStore {
       .orderBy(envHeartbeats.env)
       .all()
       .map((row) => toHeartbeat(row, now));
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Agent registry                                                   */
+  /* ---------------------------------------------------------------- */
+
+  registerAgent(input: CreateAgentInput, now = Date.now()): Agent {
+    const row = this.db
+      .insert(agents)
+      .values({
+        env: input.env,
+        name: input.name ?? input.env,
+        kind: input.kind ?? 'other',
+        status: 'active',
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: agents.env,
+        set: {
+          ...(input.name ? { name: input.name } : {}),
+          ...(input.kind ? { kind: input.kind } : {}),
+          updatedAt: now,
+        },
+      })
+      .returning()
+      .get();
+
+    return toAgent(row, undefined, now);
+  }
+
+  getAgent(env: string, now = Date.now()): Agent | null {
+    const row = this.db.select().from(agents).where(eq(agents.env, env)).get();
+    if (!row) return null;
+    const heartbeat = this.db
+      .select()
+      .from(envHeartbeats)
+      .where(eq(envHeartbeats.env, env))
+      .get();
+    return toAgent(row, heartbeat, now);
+  }
+
+  listAgents(query: ListAgentsQuery = {}, now = Date.now()): Agent[] {
+    const rows = this.db
+      .select()
+      .from(agents)
+      .where(query.status ? eq(agents.status, query.status) : undefined)
+      .orderBy(asc(agents.env))
+      .all();
+
+    const heartbeats = new Map(
+      this.db
+        .select()
+        .from(envHeartbeats)
+        .all()
+        .map((row) => [row.env, row]),
+    );
+
+    return rows.map((row) => toAgent(row, heartbeats.get(row.env), now));
+  }
+
+  updateAgent(
+    env: string,
+    input: UpdateAgentInput,
+    now = Date.now(),
+  ): Agent | null {
+    const row = this.db
+      .update(agents)
+      .set({
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.kind !== undefined ? { kind: input.kind } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
+        updatedAt: now,
+      })
+      .where(eq(agents.env, env))
+      .returning()
+      .get();
+
+    return row ? this.getAgent(env, now) : null;
+  }
+
+  deleteAgent(env: string): boolean {
+    const result = this.db.delete(agents).where(eq(agents.env, env)).run();
+    return result.changes > 0;
+  }
+
+  setAgentToken(
+    env: string,
+    tokenHash: string,
+    tokenPrefix: string,
+    now = Date.now(),
+  ): Agent | null {
+    const row = this.db
+      .update(agents)
+      .set({
+        tokenHash,
+        tokenPrefix,
+        tokenCreatedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(agents.env, env))
+      .returning()
+      .get();
+
+    return row ? this.getAgent(env, now) : null;
+  }
+
+  clearAgentToken(env: string, now = Date.now()): Agent | null {
+    const row = this.db
+      .update(agents)
+      .set({
+        tokenHash: null,
+        tokenPrefix: null,
+        tokenCreatedAt: null,
+        updatedAt: now,
+      })
+      .where(eq(agents.env, env))
+      .returning()
+      .get();
+
+    return row ? this.getAgent(env, now) : null;
+  }
+
+  findAgentByTokenHash(tokenHash: string): Agent | null {
+    const row = this.db
+      .select()
+      .from(agents)
+      .where(eq(agents.tokenHash, tokenHash))
+      .get();
+    return row ? toAgent(row, undefined, Date.now()) : null;
+  }
+
+  recordAgentPresence(
+    env: string,
+    meta: AgentMeta | undefined,
+    now = Date.now(),
+  ): void {
+    this.db
+      .insert(agents)
+      .values({
+        env,
+        name: env,
+        kind: meta?.kind ?? 'other',
+        status: 'active',
+        ...(meta?.version ? { version: meta.version } : {}),
+        ...(meta?.host ? { host: meta.host } : {}),
+        ...(meta?.os ? { os: meta.os } : {}),
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: agents.env,
+        set: {
+          ...(meta?.kind ? { kind: meta.kind } : {}),
+          ...(meta?.version ? { version: meta.version } : {}),
+          ...(meta?.host ? { host: meta.host } : {}),
+          ...(meta?.os ? { os: meta.os } : {}),
+          lastSeenAt: now,
+          updatedAt: now,
+        },
+      })
+      .run();
+  }
+
+  renewTaskLease(env: string, now = Date.now()): number {
+    return this.db
+      .update(agentTasks)
+      .set({ leaseAt: now, updatedAt: now })
+      .where(and(eq(agentTasks.env, env), eq(agentTasks.status, 'CLAIMED')))
+      .run().changes;
   }
 
   /* ---------------------------------------------------------------- */
@@ -615,6 +855,7 @@ export class TicketRepository implements TicketStore {
         .set({
           status: 'CLAIMED',
           claimedAt: now,
+          leaseAt: now,
           updatedAt: now,
           attempts: sql`${agentTasks.attempts} + 1`,
         })
@@ -697,6 +938,7 @@ export class TicketRepository implements TicketStore {
           ? {
               status: 'PENDING',
               claimedAt: null,
+              leaseAt: null,
               completedAt: null,
               updatedAt: now,
             }

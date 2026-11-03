@@ -105,6 +105,30 @@ export const MAX_WAIT_TIMEOUT_MS = 55_000;
 /** An env is shown as online if it sent a heartbeat within this window. */
 export const HEARTBEAT_ONLINE_WINDOW_MS = 90_000;
 
+/* ------------------------------------------------------------------ */
+/* Agent registry                                                      */
+/* ------------------------------------------------------------------ */
+
+/** Local clients the dashboard can recognise. */
+export const AGENT_KINDS = [
+  'cursor',
+  'opencode',
+  'claude-code',
+  'codex',
+  'gemini',
+  'windsurf',
+  'other',
+] as const;
+
+export type AgentKind = (typeof AGENT_KINDS)[number];
+
+/** Disabled agents keep their history but their tokens stop working. */
+export const AGENT_STATUSES = ['active', 'disabled'] as const;
+export type AgentStatus = (typeof AGENT_STATUSES)[number];
+
+/** Prefix of every per-agent bearer token issued by the hub. */
+export const AGENT_TOKEN_PREFIX = 'zz_';
+
 /** Display helper: 104 -> "#104". */
 export function formatTicketId(id: string | number): string {
   return `#${id}`;
