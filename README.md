@@ -112,6 +112,7 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 
 - **登录门**：粘贴 `HUB_SECRET_TOKEN`，仅存于本机 `localStorage`（`zhunzou.token`，自动兼容旧的 `agent-hub.token`）。
 - **接入端状态栏**：展示每个 `env` 的在线心跳、Running / Blocked / Idle 状态与当前任务，90 秒无心跳自动置灰。
+- **接入端管理**：把每个 `env` 当作可管理的 Agent——客户端类型、版本、主机、系统、当前项目、专属 Token 的签发/轮换/吊销，以及改名、停用、删除。
 - **待批奏折**：`PENDING_META` / `PENDING_HUMAN` 工单按创建时间排队；卡片即三行简报（已完成 / 卡点 / 下一步），点击任一方案即提交审批，可附带补充指令。推荐方案会高亮，但不影响选择。
 - **超时默认裁决**：开启 `AUTO_RESOLVE_TIMEOUT_MS` 后，待批卡片显示倒计时，到期按推荐方案自动准奏；可「暂缓 10 分钟」。推荐方案标记为 `destructive` 时永不自动执行。
 - **批量准奏**：积压多封时一键按各自推荐方案批复，提交前有 3 秒撤销窗口；高风险方案默认跳过，需勾选后才会一并批准。
@@ -131,7 +132,9 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 
 ## API
 
-除 `GET /healthz` 与签名审批页 `/a/:token` 外，所有接口都需要 `Authorization: Bearer <HUB_SECRET_TOKEN>`。
+除 `GET /healthz` 与签名审批页 `/a/:token` 外，所有接口都需要 `Authorization: Bearer <token>`。
+Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看板「接入端」页签发的专属 Agent Token
+（只能操作自己的 `env`）。服务端未配置专属 Token 时，继续用管理员 Token 也完全兼容。
 错误统一返回 `{ "error": { "code": "...", "message": "...", "details"?: ... } }`。
 
 | 方法 | 路径 | 说明 |
@@ -141,7 +144,7 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 | `POST` | `/a/:token/resolve` | 从签名审批页提交决定 |
 | `POST` | `/api/tickets` | 创建工单，返回 `201`，随后异步触发 Meta-Agent 预审 |
 | `GET` | `/api/tickets/:id` | 查询单个工单 |
-| `GET` | `/api/tickets` | 列表，支持 `?status=&projectName=&limit=` |
+| `GET` | `/api/tickets` | 列表，支持 `?status=&projectName=&env=&limit=` |
 | `GET` | `/api/tickets/:id/wait?timeout=40000` | 长轮询；返回 `{ resolved, timedOut, ticket }` |
 | `POST` | `/api/tickets/:id/resolve` | 人工审批 `{ selectedOption, customInstruction?, confirmDestructive? }` |
 | `POST` | `/api/tickets/batch-resolve` | 批量审批 `{ ticketIds, selectedOption?, confirmDestructive? }` |
@@ -155,8 +158,14 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 | `GET` | `/api/workspace-projects` | 工作区项目绑定列表，支持 `?env=` |
 | `POST` | `/api/workspace-projects` | 绑定项目 `{ env, projectName }`，幂等 |
 | `DELETE` | `/api/workspace-projects/:id` | 解除一条工作区项目绑定 |
-| `POST` | `/api/status/heartbeat` | 端侧上报 `{ env, status, projectName?, currentTask? }` |
+| `POST` | `/api/status/heartbeat` | 端侧上报 `{ env, status, projectName?, currentTask?, agent? }`，同时续租该端执行中的任务 |
 | `GET` | `/api/status` | 各接入端在线状态（90s 内有心跳视为在线） |
+| `GET` | `/api/agents` | 接入端列表，支持 `?status=active\|disabled` |
+| `POST` | `/api/agents` | 手动登记接入端 `{ env, name?, kind? }` |
+| `PATCH` | `/api/agents/:env` | 改名 / 改类型 / 停用 `{ name?, kind?, status? }` |
+| `DELETE` | `/api/agents/:env` | 删除接入端（历史工单保留） |
+| `POST` | `/api/agents/:env/token` | 签发或轮换专属 Token，明文只返回一次 |
+| `DELETE` | `/api/agents/:env/token` | 吊销专属 Token |
 | `GET` | `/api/resume?env=...&since=...` | 端侧重启恢复：未决/近期工单 + 活跃任务 |
 | `GET` | `/api/rules` | 读取 `GLOBAL_RULES.md` |
 | `PUT` | `/api/rules` | 在线更新规则 `{ content }` |
@@ -333,6 +342,42 @@ npx zhunzou-bridge wake
 
 桥接会从启动目录（编辑器打开的 OpenCode / Cursor 工作区）自动推断项目名：优先使用 `ZHUNZOU_PROJECT`，未设置时取 git 仓库根目录（非 git 项目取当前目录）的目录名。每次心跳都会上报它，服务端据此自动完成「工作区 ↔ 项目」绑定，看板的项目下拉框无需手动输入即可选择。
 
+### 多个工作区（Cursor 只看到当前工作区）
+
+Cursor / VS Code 的一个窗口只对应一个工作区，MCP Server 的 cwd 就是该工作区。因此「让一个 Cursor 会话同时读写多个仓库」是客户端本身的限制；准奏能做的是**让每个工作区成为独立的接入端**，在看板上同时看到并分别调度：
+
+```bash
+# 在每个仓库根目录各跑一次
+npx zhunzou-bridge init
+```
+
+`init` 默认把 `AGENT_ENV` 设为 `<客户端>-<项目名>`（例如 `cursor-yikuaomed-erp`），并为每个环境签发独立 Token。这样多个 Cursor 窗口会分别出现在看板的「接入端」页，各自保留自己的项目、状态和待办。
+
+注意：
+
+- **不要让多个工作区共用同一个 `AGENT_ENV`**。心跳会互相覆盖，看板只会显示最后一个活跃的项目——旧版默认 `unknown-<hostname>` 就有这个问题，在仓库里重新跑一次 `init` 即可修正。
+- 想让一个会话同时访问多个目录：在 Cursor 里用 **Add Folder to Workspace** 打开多根工作区。
+- 想让**没打开的**仓库也能接任务：为每个项目常驻一个 wake 守护进程，并让 `AGENT_ENV` 与该项目 MCP 配置保持一致：
+  ```bash
+  cd /path/to/project
+  AGENT_ENV=cursor-my-project zhunzou-bridge wake
+  ```
+
+### 接入端管理
+
+看板「接入端」页把每个 `env` 当成一个可管理的 Agent：
+
+- 在线 / 离线 / 已停用，客户端类型、版本、主机、系统、当前项目与当前任务；
+- 签发 / 轮换 / 吊销专属 Token（明文只显示一次）；
+- 改名、改类型、停用、删除；
+- `init` 会自动签发专属 Token；服务端较旧时会回退为继续使用管理员 Token。
+
+专属 Token 只能操作自己的 `env`：可以上报心跳、提交/等待自己的工单、领取/回报自己的任务；不能审批工单、读取别的环境、修改规则或下发任务。管理员 Token 仍然拥有全部权限，因此老配置无需迁移。
+
+<p align="center">
+  <img src="./docs/assets/agents.png" alt="接入端管理：在线状态、客户端类型、专属 Token 与启停" width="920" />
+</p>
+
 ### MCP Tools
 
 | Tool | 作用 |
@@ -375,7 +420,8 @@ zhunzou-bridge wake --adapter command --command 'my-agent --task {taskId} {promp
 | --- | --- | --- | --- |
 | `HUB_TOKEN` | 是 | - | 与服务端 `HUB_SECRET_TOKEN` 一致 |
 | `HUB_URL` | 否 | `http://127.0.0.1:8787` | 云端地址 |
-| `AGENT_ENV` | 否 | `unknown-<hostname>` | 看板环境标识，如 `company-cursor` |
+| `AGENT_ENV` | 否 | `unknown-<hostname>` | 看板环境标识，如 `company-cursor`；`init` 会按项目写入 `<客户端>-<项目名>`，多个工作区请勿共用 |
+| `ZHUNZOU_AGENT_KIND` | 否 | `other` | 客户端类型：`cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `windsurf` / `other`；`init` 自动写入 |
 | `ZHUNZOU_PROJECT` | 否 | 自动推断 | 当前工作区项目名；默认取启动目录（git 根目录）名，心跳时自动绑定到该环境，下发任务可直接选择 |
 | `ZHUNZOU_FALLBACK`（旧名 `AGENT_HUB_FALLBACK`） | 否 | `cli` | `cli` 或 `mcp` |
 | `ZHUNZOU_WAIT_TIMEOUT_MS`（旧名 `AGENT_HUB_WAIT_TIMEOUT_MS`） | 否 | `40000` | 单次长轮询窗口（1s ~ 55s） |

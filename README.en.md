@@ -42,6 +42,8 @@ Zhunzou turns those interruptions into an async inbox:
 | One-click approval | HMAC-signed, expiring mobile page that works from any notification channel |
 | Human → Agent tasks | Dispatch work from the dashboard; bridges claim it with `agent_hub_next_task` |
 | Stale task recovery | Offline `CLAIMED` tasks are requeued; hard timeouts fail them instead of blocking the queue |
+| Agent registry | Every `env` is manageable: client type, version, host, current project, enable/disable/delete |
+| Scoped tokens | Per-agent Bearer tokens can only touch their own env; rotate or revoke without restarting the hub |
 | Resume | `agent_hub_resume` restores pending decisions and active tasks after a restart |
 | Plugins | Lifecycle hooks for audit logs, IM bots, metrics, custom integrations |
 
@@ -93,6 +95,8 @@ npx -y zhunzou-bridge init
 
 The wizard asks for the hub URL and token, detects Cursor / OpenCode / Claude Code, writes the MCP config, copies a rules template, and verifies connectivity. It never overwrites unrelated MCP servers.
 
+Run `init` once **per workspace**. The wizard derives `AGENT_ENV` from the project name (`cursor-yikuaomed-erp`) and provisions a scoped token, so multiple Cursor windows show up as separate agents instead of overwriting each other's heartbeat. Cursor can only read the workspace it has open; to work across repositories, use a multi-root workspace or run one agent per repository.
+
 Or configure manually:
 
 ```bash
@@ -125,7 +129,8 @@ Environment variables:
 | --- | --- | --- | --- |
 | `HUB_TOKEN` | yes | — | Same as server `HUB_SECRET_TOKEN` |
 | `HUB_URL` | no | `http://127.0.0.1:8787` | Server URL |
-| `AGENT_ENV` | no | `unknown-<hostname>` | Environment label, e.g. `company-cursor` |
+| `AGENT_ENV` | no | `unknown-<hostname>` | Environment label, e.g. `company-cursor`. `init` writes `<client>-<project>` so each workspace stays distinct |
+| `ZHUNZOU_AGENT_KIND` | no | `other` | Client type: `cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `windsurf` / `other`; written by `init` |
 | `ZHUNZOU_PROJECT` | no | auto-detected | Project name reported in heartbeats; defaults to the git root / cwd basename |
 | `ZHUNZOU_FALLBACK` | no | `cli` | `cli` or `mcp` after a 40s timeout |
 | `ZHUNZOU_WAIT_TIMEOUT_MS` | no | `40000` | Single long-poll window |

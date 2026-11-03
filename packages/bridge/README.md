@@ -89,7 +89,8 @@ Windows 上的文件占用打架，回滚也只是改一行指针。
 | --- | --- | --- | --- |
 | `HUB_TOKEN` | 是 | - | 与服务端 `HUB_SECRET_TOKEN` 一致 |
 | `HUB_URL` | 否 | `http://127.0.0.1:8787` | 云端地址 |
-| `AGENT_ENV` | 否 | `unknown-<hostname>` | 看板上的环境标识，如 `company-cursor` |
+| `AGENT_ENV` | 否 | `unknown-<hostname>` | 看板上的环境标识，如 `company-cursor`；`init` 会按项目写入 `<客户端>-<项目名>`，多个工作区请勿共用 |
+| `ZHUNZOU_AGENT_KIND` | 否 | `other` | 客户端类型：`cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `windsurf` / `other`；`init` 自动写入 |
 | `ZHUNZOU_PROJECT` | 否 | 空 | 当前工作区的项目名，如 `agent-hub`；每次心跳自动绑定到该环境，下发任务的项目下拉框可直接选择 |
 | `ZHUNZOU_FALLBACK`（旧名 `AGENT_HUB_FALLBACK`） | 否 | `cli` | 超时策略：`cli`（策略 1）或 `mcp`（策略 2） |
 | `ZHUNZOU_WAIT_TIMEOUT_MS`（旧名 `AGENT_HUB_WAIT_TIMEOUT_MS`） | 否 | `40000` | 单次长轮询窗口，1s ~ 55s |

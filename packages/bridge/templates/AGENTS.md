@@ -4,8 +4,12 @@
 本文件告诉 OpenCode：遇到需要人类拍板的卡点时，不要只在对话里问一句就停下，
 而是把卡点提交到准奏（Zhunzou），由人类在看板上批复。
 
-工具名以 `agent_hub_*` 开头。OpenCode 的 Code Mode 下可能通过
-`tools.zhunzou.agent_hub_*` 暴露；以你实际可用的名称为准。
+工具名以 `agent_hub_*` 开头。OpenCode 的 Code Mode 下通过 `tools.zhunzou.agent_hub_*` 调用。
+
+> ⚠️ Code Mode 的系统目录是**部分目录**（会显示 `7 tools, 6 shown` 这类字样），
+> `agent_hub_escalate` 经常不在目录里被逐条列出——**这不代表它不存在**。
+> 看不到时先 `search({ query: "agent_hub_escalate" })` 拿到路径再调用；
+> 绝对不要因为「目录里没看到这个工具」就放弃上奏、改在对话里直接问用户。
 
 ## 开始任务时（让看板显示真实状态）
 
@@ -23,7 +27,7 @@
 
 ## 何时升级
 
-出现以下任一情况时，调用 `agent_hub_escalate`：
+出现以下任一情况时，调用 `agent_hub_escalate`（Code Mode 目录里没列出时先 `search` 取路径）：
 
 - 两个以上方案各有明显利弊，无法从现有规范推断；
 - 涉及产品交互、API 契约、数据库 schema、删除功能、新依赖、部署/域名变更；
