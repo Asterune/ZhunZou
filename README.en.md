@@ -97,6 +97,26 @@ The wizard asks for the hub URL and token, detects Cursor / OpenCode / Claude Co
 
 Run `init` once **per workspace**. The wizard derives `AGENT_ENV` from the project name (`cursor-yikuaomed-erp`) and provisions a scoped token, so multiple Cursor windows show up as separate agents instead of overwriting each other's heartbeat. Cursor can only read the workspace it has open; to work across repositories, use a multi-root workspace or run one agent per repository.
 
+### Headless: keep working when the editor is closed
+
+Cursor CLI runs the same agent without the editor (`agent`, with `cursor-agent` as an alias):
+
+```bash
+curl https://cursor.com/install -fsS | bash
+agent login                     # or export CURSOR_API_KEY=...
+agent -p --force "list TODOs"   # print mode; --force applies edits
+```
+
+Then keep one wake daemon per repository; it dispatches tasks even when Cursor is not running:
+
+```bash
+cd /path/to/project
+AGENT_ENV=cursor-my-project HUB_URL=... HUB_TOKEN=zz_... \
+  zhunzou-bridge wake --adapter cursor-agent --cwd /path/to/project
+```
+
+The daemon runs `cursor-agent -p --force "<task brief>"` and reports `DONE` / `FAILED` from the exit code. If the CLI sandbox blocks the hub, adjust `--sandbox` or allow the hub domain. Without Cursor CLI, `--adapter opencode-run` and `--adapter claude` work the same way.
+
 Or configure manually:
 
 ```bash

@@ -200,7 +200,9 @@ const PRESETS: Record<string, Preset> = {
   'cursor-agent': {
     name: 'cursor-agent',
     binary: 'cursor-agent',
-    args: (prompt, extra) => ['-p', ...extra, prompt],
+    // Print mode only proposes edits unless --force is set; a dispatched task
+    // is expected to actually apply its changes.
+    args: (prompt, extra) => ['-p', '--force', ...extra, prompt],
   },
   aider: {
     name: 'aider',

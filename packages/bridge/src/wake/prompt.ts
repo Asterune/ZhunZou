@@ -43,5 +43,6 @@ export function buildRunPrompt(task: AgentTask): string {
     task.instruction,
     '',
     '请直接在当前工作区内完成上述任务，完成后输出一段简要总结（改了什么、如何验证）。',
+    '如果遇到需要人类拍板的卡点，按项目规则调用 agent_hub_escalate 上奏并等待结果；不要自行决定不可逆操作。',
   ].join('\n');
 }

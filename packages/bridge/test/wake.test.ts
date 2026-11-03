@@ -120,12 +120,13 @@ describe('buildInjectPrompt', () => {
 });
 
 describe('buildRunPrompt', () => {
-  it('describes the task without MCP instructions', () => {
+  it('describes the task and asks for escalation instead of guessing', () => {
     const prompt = buildRunPrompt(makeTask({ projectName: 'erp' }));
 
     expect(prompt).toContain('项目：erp');
     expect(prompt).toContain('指令：');
     expect(prompt).not.toContain('agent_hub_next_task');
+    expect(prompt).toContain('agent_hub_escalate');
   });
 });
 

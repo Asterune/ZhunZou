@@ -414,6 +414,48 @@ zhunzou-bridge wake --adapter command --command 'my-agent --task {taskId} {promp
 
 详见 [packages/bridge/README.md](./packages/bridge/README.md#自动唤醒wake)。
 
+### Cursor 没启动也能用（headless）
+
+Cursor 的图形界面只是其中一个客户端；真正执行任务的是 Cursor CLI（二进制名 `agent`，兼容别名
+`cursor-agent`），它不需要打开编辑器：
+
+```bash
+# 1. 安装（官方脚本，装到 ~/.local/bin）
+curl https://cursor.com/install -fsS | bash
+# 若 zsh 找不到命令：
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+
+# 2. 登录（服务器无浏览器时用 CURSOR_API_KEY）
+agent login
+agent status
+
+# 3. 验证 print 模式（--force 才会真正改文件）
+cd /path/to/project
+agent -p --force "列出这个项目里未处理的 TODO"
+```
+
+然后让准奏的 wake 守护进程在该项目目录常驻。Cursor 是否打开都不影响：
+
+```bash
+cd /path/to/project
+AGENT_ENV=cursor-my-project \
+HUB_URL=https://hub.example.com \
+HUB_TOKEN=zz_xxx \
+zhunzou-bridge wake --adapter cursor-agent --cwd /path/to/project
+```
+
+看板下发任务后，守护进程会执行 `cursor-agent -p --force "<任务简报>"`，按退出码回报
+`DONE` / `FAILED`。多个仓库就为每个仓库各跑一个守护进程（`pm2` / `launchd` / systemd 均可托管）。
+
+注意：
+
+- `cursor-agent` 适配器默认带 `--force`，否则 print 模式只给建议、不改文件。
+- Cursor CLI 自带沙箱，默认可能限制网络；如果 headless Agent 无法调用 `agent_hub_escalate`
+  连上准奏，按 Cursor 文档调整 `--sandbox` 或放行 hub 域名。先在项目里跑一次
+  `zhunzou-bridge init --target cursor`，让 headless 会话也拿到 `.cursor/mcp.json` 与规则。
+- 不方便装 Cursor CLI 时，`--adapter opencode-run`（本机已装 OpenCode）或
+  `--adapter claude` 同样可以无人值守运行，准奏不绑定某一个客户端。
+
 ### 环境变量
 
 | 变量 | 必填 | 默认值 | 说明 |
