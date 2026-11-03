@@ -21,6 +21,22 @@ describe('loadBridgeConfig', () => {
     expect(config.projectName).toBe('demo-project');
     expect(config.cliCommand).toBe('npx zhunzou-bridge');
     expect(config.heartbeatIntervalMs).toBe(30_000);
+    expect(config.agentKind).toBe('other');
+  });
+
+  it('parses ZHUNZOU_AGENT_KIND and falls back to other', () => {
+    expect(
+      loadBridgeConfig({
+        HUB_TOKEN: 'secret',
+        ZHUNZOU_AGENT_KIND: 'opencode',
+      }).agentKind,
+    ).toBe('opencode');
+    expect(
+      loadBridgeConfig({
+        HUB_TOKEN: 'secret',
+        ZHUNZOU_AGENT_KIND: 'not-a-client',
+      }).agentKind,
+    ).toBe('other');
   });
 
   it('auto-detects the project from the git workspace root', () => {

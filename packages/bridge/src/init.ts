@@ -10,6 +10,8 @@ import { dirname, join, basename, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
+import type { AgentKind } from '@zhunzou/shared';
+
 export type InitTarget = 'cursor' | 'opencode' | 'claude' | 'all';
 
 export interface InitSettings {
@@ -22,6 +24,7 @@ export interface InitSettings {
   cliCommand: string;
   waitTimeoutMs: number;
   heartbeatIntervalMs: number;
+  agentKind: AgentKind;
 }
 
 export interface InitOptions {
@@ -34,6 +37,10 @@ export interface InitOptions {
   yes?: boolean;
   skipCheck?: boolean;
   dryRun?: boolean;
+  /** Override the client type written to ZHUNZOU_AGENT_KIND. */
+  agentKind?: string;
+  /** Keep using the admin token instead of provisioning a scoped one. */
+  noAgentToken?: boolean;
 }
 
 const DEFAULT_HUB_URL = 'http://127.0.0.1:8787';
@@ -57,6 +64,7 @@ export function buildSettings(
     agentEnv: string;
     projectName?: string;
     fallback?: 'cli' | 'mcp';
+    agentKind?: AgentKind;
   },
 ): InitSettings {
   const mcpBin = localBin('mcp');
@@ -81,6 +89,7 @@ export function buildSettings(
       : 'npx zhunzou-bridge',
     waitTimeoutMs: WAIT_TIMEOUT_MS,
     heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+    agentKind: input.agentKind ?? 'other',
   };
 }
 
@@ -92,6 +101,7 @@ export function buildMcpEnv(settings: InitSettings): Record<string, string> {
     ZHUNZOU_FALLBACK: settings.fallback,
     ZHUNZOU_WAIT_TIMEOUT_MS: String(settings.waitTimeoutMs),
     ZHUNZOU_HEARTBEAT_INTERVAL_MS: String(settings.heartbeatIntervalMs),
+    ZHUNZOU_AGENT_KIND: settings.agentKind,
     ZHUNZOU_CLI_COMMAND: settings.cliCommand,
     ...(settings.projectName
       ? { ZHUNZOU_PROJECT: settings.projectName }
@@ -198,6 +208,77 @@ function parseTarget(raw: string | undefined, fallback: InitTarget): InitTarget 
     return value;
   }
   throw new Error(`未知 target "${raw}"，可选 cursor / opencode / claude / all`);
+}
+
+function kindForTarget(target: InitTarget): AgentKind {
+  if (target === 'cursor') return 'cursor';
+  if (target === 'opencode') return 'opencode';
+  if (target === 'claude') return 'claude-code';
+  return 'other';
+}
+
+function envSlug(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s/\\]+/g, '-')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '')
+    .replace(/^-+|-+$/g, '');
+}
+
+/** `cursor-yikuaomed-erp`, so each workspace becomes a separate agent. */
+function defaultAgentEnv(target: InitTarget, project: string): string {
+  const prefix =
+    target === 'cursor'
+      ? 'cursor'
+      : target === 'opencode'
+        ? 'opencode'
+        : target === 'claude'
+          ? 'claude'
+          : 'agent';
+  const slug = envSlug(project) || envSlug(hostname()) || 'agent';
+  return `${prefix}-${slug}`.slice(0, 64);
+}
+
+function parseAgentKind(raw: string | undefined): AgentKind | undefined {
+  if (!raw) return undefined;
+  const value = raw.trim().toLowerCase();
+  const allowed: AgentKind[] = [
+    'cursor',
+    'opencode',
+    'claude-code',
+    'codex',
+    'gemini',
+    'windsurf',
+    'other',
+  ];
+  if (!allowed.includes(value as AgentKind)) {
+    throw new Error(
+      `未知 agent kind "${raw}"，可选 ${allowed.join(' / ')}`,
+    );
+  }
+  return value as AgentKind;
+}
+
+/**
+ * Ask the hub for a scoped token. Falls back to the admin token when the
+ * server is older than the agent registry, so `init` keeps working.
+ */
+async function provisionAgentToken(
+  settings: InitSettings,
+): Promise<string | null> {
+  const url = `${settings.hubUrl}/api/agents/${encodeURIComponent(settings.agentEnv)}/token`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${settings.token}` },
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) return null;
+
+  const body = (await response.json().catch(() => null)) as
+    | { token?: unknown }
+    | null;
+  return typeof body?.token === 'string' && body.token ? body.token : null;
 }
 
 async function checkHub(settings: InitSettings): Promise<string> {
@@ -339,16 +420,15 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
 
     let token = options.token ?? '';
     if (!token && rl) {
-      token = await ask(rl, 'HUB_TOKEN（与服务端一致，会写入本地配置）', '');
+      token = await ask(
+        rl,
+        'HUB_SECRET_TOKEN（管理员 Token，用于签发该工作区的专属 Token）',
+        '',
+      );
     }
     if (!token) {
       throw new Error('缺少 HUB_TOKEN；请加 --token 或在交互模式下输入');
     }
-
-    const defaultEnv = `unknown-${hostname()}`;
-    const agentEnv =
-      options.env ??
-      (rl ? await ask(rl, '环境标识 AGENT_ENV', defaultEnv) : defaultEnv);
 
     let projectName = options.project;
     if (projectName === undefined) {
@@ -368,11 +448,27 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
       detectTarget(dir),
     );
 
+    // Cursor spawns one MCP server per opened workspace. If every workspace
+    // shares one AGENT_ENV, their heartbeats overwrite each other and the
+    // dashboard only ever shows the most recently active project. Deriving the
+    // env from the project keeps each workspace visible as its own agent.
+    const defaultEnv = defaultAgentEnv(target, projectName || basename(dir));
+    const agentEnv =
+      options.env ??
+      (rl
+        ? await ask(
+            rl,
+            '环境标识 AGENT_ENV（每个工作区应不同）',
+            defaultEnv,
+          )
+        : defaultEnv);
+
     const settings = buildSettings({
       hubUrl,
       token,
       agentEnv,
       ...(projectName ? { projectName } : {}),
+      agentKind: parseAgentKind(options.agentKind) ?? kindForTarget(target),
     });
 
     if (rl) {
@@ -405,6 +501,26 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
         if (!rl) return 1;
         const proceed = await ask(rl, '仍然写入配置？(y/n)', 'n');
         if (!/^y(es)?$/i.test(proceed)) return 1;
+      }
+    }
+
+    // Provision a scoped token after the admin-token connectivity check.
+    // The admin token stays in the terminal; the project config gets `zz_…`.
+    if (!options.dryRun && !options.noAgentToken) {
+      try {
+        const issued = await provisionAgentToken(settings);
+        if (issued) {
+          settings.token = issued;
+          process.stdout.write('✓ 已签发专属 Agent Token（只显示一次，已写入配置）\n');
+        } else {
+          process.stdout.write(
+            '· 未能签发专属 Token（服务端较旧或无权限），继续使用 HUB_TOKEN\n',
+          );
+        }
+      } catch (error) {
+        process.stdout.write(
+          `· 签发专属 Token 失败：${(error as Error).message}；继续使用 HUB_TOKEN\n`,
+        );
       }
     }
 
@@ -450,6 +566,7 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
         '1. 重启对应客户端，或重新加载 MCP Server。',
         '2. 在新会话里调用 agent_hub_resume，恢复未决奏折与任务。',
         '3. Token 会写入本地配置，请勿把 .cursor/mcp.json / .mcp.json 提交到公开仓库。',
+        '4. 每个工作区单独运行一次 init；AGENT_ENV 默认按项目名区分。多个工作区共用同一个 env 时，看板只会显示最后心跳的那个项目。',
         '',
       ].join('\n'),
     );

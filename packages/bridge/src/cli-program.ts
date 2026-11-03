@@ -59,6 +59,8 @@ export function createProgram(): Command {
     .option('--env <name>', 'environment label shown on the dashboard')
     .option('--project <name>', 'project name reported in heartbeats')
     .option('--target <target>', 'cursor | opencode | claude | all')
+    .option('--agent-kind <kind>', 'cursor | opencode | claude-code | codex | gemini | other')
+    .option('--no-agent-token', 'keep using the admin token instead of issuing a scoped one')
     .option('--dir <path>', 'workspace directory (defaults to cwd)')
     .option('--yes', 'non-interactive; use flags and defaults')
     .option('--skip-check', 'skip the server connectivity check')
@@ -78,6 +80,10 @@ export function createProgram(): Command {
         ...(typeof options.target === 'string'
           ? { target: options.target }
           : {}),
+        ...(typeof options.agentKind === 'string'
+          ? { agentKind: options.agentKind }
+          : {}),
+        ...(options.agentToken === false ? { noAgentToken: true } : {}),
         ...(typeof options.dir === 'string' ? { dir: options.dir } : {}),
         ...(options.yes === true ? { yes: true } : {}),
         ...(options.skipCheck === true ? { skipCheck: true } : {}),

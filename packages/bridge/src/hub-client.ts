@@ -1,3 +1,5 @@
+import { arch, hostname, platform } from 'node:os';
+
 import type {
   AgentTask,
   CompleteTaskInput,
@@ -21,6 +23,7 @@ import {
 } from '@zhunzou/shared';
 
 import type { BridgeConfig } from './config.js';
+import { BRIDGE_VERSION } from './version.js';
 
 export class HubApiError extends Error {
   /** HTTP status, or 0 for network/timeout failures. */
@@ -141,6 +144,15 @@ export class HubClient implements HubApi {
     const payload = heartbeatSchema.parse({
       ...input,
       env: this.config.agentEnv,
+      // Every heartbeat doubles as a registry update, so the dashboard can
+      // show the client type / version / host without extra setup.
+      agent: {
+        kind: this.config.agentKind,
+        version: BRIDGE_VERSION,
+        host: hostname(),
+        os: `${platform()}-${arch()}`,
+        ...(input.agent ?? {}),
+      },
     });
 
     const body = await this.request<{ heartbeat: EnvHeartbeat }>(

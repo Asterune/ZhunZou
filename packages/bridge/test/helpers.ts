@@ -49,6 +49,7 @@ export function testConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     waitTimeoutMs: 40_000,
     cliCommand: 'npx zhunzou-bridge',
     heartbeatIntervalMs: 30_000,
+    agentKind: 'cursor',
     ...overrides,
   };
 }

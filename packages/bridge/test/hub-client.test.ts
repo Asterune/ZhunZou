@@ -126,6 +126,10 @@ describe('HubClient', () => {
     expect(hub.requests[0]?.body).toMatchObject({
       env: 'company-cursor',
       status: 'Idle',
+      agent: {
+        kind: 'cursor',
+        os: expect.stringMatching(/^(darwin|linux|win32)-/),
+      },
     });
   });
 

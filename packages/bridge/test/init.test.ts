@@ -1,4 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -157,6 +159,7 @@ describe('OpenCode instructions', () => {
       target: 'opencode',
       yes: true,
       skipCheck: true,
+      noAgentToken: true,
     });
     expect(code).toBe(0);
   }
@@ -197,5 +200,75 @@ describe('OpenCode instructions', () => {
     const instructions = readFileSync(join(dir, 'AGENTS.md'), 'utf8');
     expect(instructions.match(/<!-- zhunzou:begin -->/g)).toHaveLength(1);
     expect(instructions.match(/<!-- zhunzou:end -->/g)).toHaveLength(1);
+  });
+
+  it('derives a per-workspace AGENT_ENV so multiple Cursor windows stay visible', async () => {
+    const root = tempDir();
+
+    async function initProject(name: string): Promise<string> {
+      const dir = join(root, name);
+      mkdirSync(dir, { recursive: true });
+      const code = await runInit({
+        dir,
+        hubUrl: 'https://hub.example.com',
+        token: 'secret-token',
+        target: 'cursor',
+        yes: true,
+        skipCheck: true,
+        noAgentToken: true,
+      });
+      expect(code).toBe(0);
+      const config = JSON.parse(
+        readFileSync(join(dir, '.cursor', 'mcp.json'), 'utf8'),
+      ) as { mcpServers: { zhunzou: { env: Record<string, string> } } };
+      return config.mcpServers.zhunzou.env.AGENT_ENV;
+    }
+
+    expect(await initProject('yikuaomed-erp')).toBe('cursor-yikuaomed-erp');
+    expect(await initProject('design-system')).toBe('cursor-design-system');
+  });
+
+  it('provisions a scoped agent token instead of writing the admin token', async () => {
+    const dir = tempDir();
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(`${request.method} ${request.url}`);
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ token: 'zz_issued_token', agent: {} }));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address() as AddressInfo;
+
+    try {
+      const code = await runInit({
+        dir,
+        hubUrl: `http://127.0.0.1:${address.port}`,
+        token: 'admin-secret-token',
+        env: 'home-opencode',
+        target: 'opencode',
+        yes: true,
+        skipCheck: true,
+      });
+      expect(code).toBe(0);
+      expect(requests).toContain('POST /api/agents/home-opencode/token');
+
+      const config = JSON.parse(
+        readFileSync(join(dir, 'opencode.json'), 'utf8'),
+      ) as {
+        mcp: {
+          servers: {
+            zhunzou: { environment: Record<string, string> };
+          };
+        };
+      };
+      const env = config.mcp.servers.zhunzou.environment;
+      expect(env.HUB_TOKEN).toBe('zz_issued_token');
+      expect(env.HUB_TOKEN).not.toBe('admin-secret-token');
+      expect(env.ZHUNZOU_AGENT_KIND).toBe('opencode');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

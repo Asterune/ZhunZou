@@ -2,6 +2,9 @@ import { existsSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
+import type { AgentKind } from '@zhunzou/shared';
+import { AGENT_KINDS } from '@zhunzou/shared';
+
 export type FallbackStrategy = 'cli' | 'mcp';
 
 export interface BridgeConfig {
@@ -24,6 +27,8 @@ export interface BridgeConfig {
   cliCommand: string;
   /** How often the bridge refreshes its online heartbeat. */
   heartbeatIntervalMs: number;
+  /** Local client type shown in the dashboard's agent registry. */
+  agentKind: AgentKind;
 }
 
 const DEFAULT_HUB_URL = 'http://127.0.0.1:8787';
@@ -39,6 +44,13 @@ function readInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readAgentKind(raw: string | undefined): AgentKind {
+  const value = (raw ?? '').trim().toLowerCase();
+  return (AGENT_KINDS as readonly string[]).includes(value)
+    ? (value as AgentKind)
+    : 'other';
 }
 
 /** Walk up from `start` until a directory containing `.git` is found. */
@@ -110,5 +122,6 @@ export function loadBridgeConfig(
       5_000,
       300_000,
     ),
+    agentKind: readAgentKind(env.ZHUNZOU_AGENT_KIND),
   };
 }
