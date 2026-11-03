@@ -2,13 +2,18 @@ import { arch, hostname, platform } from 'node:os';
 
 import type {
   AgentTask,
+  AppendChatEventInput,
   AppendTaskLogInput,
+  ChatEvent,
+  ChatMessageResponse,
+  CompleteChatMessageInput,
   CompleteTaskInput,
   CreateTicketInput,
   DecisionTicket,
   EnvHeartbeat,
   HeartbeatInput,
   ListTasksQuery,
+  NextChatMessageResponse,
   NextTaskResponse,
   ReleaseTaskInput,
   ResumeResponse,
@@ -17,7 +22,9 @@ import type {
   WaitResponse,
 } from '@zhunzou/shared';
 import {
+  appendChatEventSchema,
   appendTaskLogSchema,
+  completeChatMessageSchema,
   completeTaskSchema,
   createTicketSchema,
   heartbeatSchema,
@@ -50,6 +57,17 @@ export interface HubApi {
   wait(ticketId: string, timeoutMs?: number): Promise<WaitResponse>;
   heartbeat(input: Omit<HeartbeatInput, 'env'>): Promise<EnvHeartbeat>;
   nextTask(timeoutMs?: number): Promise<NextTaskResponse>;
+  nextChatMessage(timeoutMs?: number): Promise<NextChatMessageResponse>;
+  appendChatEvent(
+    sessionId: string,
+    messageId: string,
+    input: AppendChatEventInput,
+  ): Promise<ChatEvent>;
+  completeChatMessage(
+    sessionId: string,
+    messageId: string,
+    input: CompleteChatMessageInput,
+  ): Promise<ChatMessageResponse>;
   listTasks(query?: Omit<ListTasksQuery, 'env'>): Promise<TaskListResponse>;
   completeTask(taskId: string, input: CompleteTaskInput): Promise<AgentTask>;
   appendTaskLog(taskId: string, input: AppendTaskLogInput): Promise<TaskLog>;
@@ -166,6 +184,51 @@ export class HubClient implements HubApi {
     );
 
     return body.heartbeat;
+  }
+
+  async nextChatMessage(
+    timeoutMs = this.config.waitTimeoutMs,
+  ): Promise<NextChatMessageResponse> {
+    const query = new URLSearchParams({
+      env: this.config.agentEnv,
+      timeout: String(timeoutMs),
+    });
+    return this.request<NextChatMessageResponse>(
+      `/api/sessions/next?${query.toString()}`,
+      { method: 'GET' },
+      timeoutMs + REQUEST_GRACE_MS,
+    );
+  }
+
+  async appendChatEvent(
+    sessionId: string,
+    messageId: string,
+    input: AppendChatEventInput,
+  ): Promise<ChatEvent> {
+    const sid = ticketIdSchema.parse(String(sessionId));
+    const mid = ticketIdSchema.parse(String(messageId));
+    const payload = appendChatEventSchema.parse(input);
+    const body = await this.request<{ event: ChatEvent }>(
+      `/api/sessions/${sid}/messages/${mid}/events`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
+    return body.event;
+  }
+
+  async completeChatMessage(
+    sessionId: string,
+    messageId: string,
+    input: CompleteChatMessageInput,
+  ): Promise<ChatMessageResponse> {
+    const sid = ticketIdSchema.parse(String(sessionId));
+    const mid = ticketIdSchema.parse(String(messageId));
+    const payload = completeChatMessageSchema.parse(input);
+    return this.request<ChatMessageResponse>(
+      `/api/sessions/${sid}/messages/${mid}/complete`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
   }
 
   async nextTask(timeoutMs = this.config.waitTimeoutMs): Promise<NextTaskResponse> {

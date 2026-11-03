@@ -45,6 +45,7 @@ Zhunzou turns those interruptions into an async inbox:
 | Agent registry | Every `env` is manageable: client type, version, host, current project, enable/disable/delete |
 | Scoped tokens | Per-agent Bearer tokens can only touch their own env; rotate or revoke without restarting the hub |
 | Live task output | Expand a task card to tail `stdout` / `stderr` / system events while it runs; retained after completion |
+| Interactive sessions | Chat with any project's agent from the hub; each turn resumes the CLI session (`--session` / `--resume`) |
 | Resume | `agent_hub_resume` restores pending decisions and active tasks after a restart |
 | Plugins | Lifecycle hooks for audit logs, IM bots, metrics, custom integrations |
 
@@ -206,6 +207,12 @@ All `/api/*` routes require `Authorization: Bearer <HUB_SECRET_TOKEN>`. `/health
 | `POST` | `/api/tasks/:id/complete` | Report task result |
 | `POST` | `/api/tasks/:id/log` | Append live output (`stdout` / `stderr` / `system`) |
 | `GET` | `/api/tasks/:id/logs` | Incremental log tail (`?after=&limit=`) |
+| `POST` | `/api/sessions` | Create a chat session |
+| `GET` | `/api/sessions` | List sessions |
+| `POST` | `/api/sessions/:id/messages` | Send a user message |
+| `GET` | `/api/sessions/next?env=...` | Runner claims the next message |
+| `POST` | `/api/sessions/:id/messages/:messageId/events` | Append streamed output |
+| `POST` | `/api/sessions/:id/messages/:messageId/complete` | Finish a turn (content + session id) |
 | `POST` | `/api/status/heartbeat` | Bridge heartbeat |
 | `GET` | `/api/status` | Online environments |
 | `GET` | `/api/resume?env=...` | Pending/recent tickets + active tasks |

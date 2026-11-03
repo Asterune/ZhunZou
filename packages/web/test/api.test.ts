@@ -150,6 +150,61 @@ describe('createHubApi', () => {
     );
   });
 
+  it('lists chat sessions and sends a message', async () => {
+    const fetchImpl = mockFetch(
+      jsonResponse({
+        sessions: [
+          {
+            id: '1',
+            env: 'company-cursor',
+            title: '会话',
+            status: 'ACTIVE',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      }),
+    );
+    const api = createHubApi(fetchImpl);
+
+    const list = await api.listChatSessions(token);
+    expect(list.sessions).toHaveLength(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('/api/sessions?limit=50');
+
+    await api.sendChatMessage(token, '1', 'hello');
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe('/api/sessions/1/messages');
+    expect(
+      JSON.parse(String((fetchImpl.mock.calls[1]?.[1] as RequestInit).body)),
+    ).toEqual({ content: 'hello' });
+  });
+
+  it('tails chat events after a cursor', async () => {
+    const fetchImpl = mockFetch(
+      jsonResponse({
+        events: [
+          {
+            id: 3,
+            sessionId: '1',
+            messageId: '2',
+            stream: 'stdout',
+            chunk: 'hi',
+            createdAt: 1,
+          },
+        ],
+        nextAfter: 3,
+        truncated: false,
+      }),
+    );
+    const api = createHubApi(fetchImpl);
+
+    const result = await api.getChatEvents(token, '1', 2, '2');
+
+    expect(result.nextAfter).toBe(3);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      '/api/sessions/1/events?after=2&messageId=2',
+    );
+  });
+
   it('loads tickets with the requested limit', async () => {
     const fetchImpl = mockFetch(jsonResponse({ tickets: [ticket], total: 1 }));
     const api = createHubApi(fetchImpl);

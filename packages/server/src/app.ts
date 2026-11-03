@@ -11,12 +11,15 @@ import { z, ZodError } from 'zod';
 
 import type { DecisionTicket } from '@zhunzou/shared';
 import {
+  appendChatEventSchema,
   appendTaskLogSchema,
   batchResolveTicketsSchema,
   bindWorkspaceProjectSchema,
   bridgeReleaseManifestSchema,
+  completeChatMessageSchema,
   completeTaskSchema,
   createAgentSchema,
+  createChatSessionSchema,
   createTaskSchema,
   createTicketSchema,
   extendTicketSchema,
@@ -25,15 +28,19 @@ import {
   isResolvedStatus,
   isTerminalStatus,
   listAgentsQuerySchema,
+  listChatEventsQuerySchema,
+  listChatSessionsQuerySchema,
   listRuleCandidatesQuerySchema,
   listTaskLogsQuerySchema,
   listTasksQuerySchema,
   listTicketsQuerySchema,
   listWorkspaceProjectsQuerySchema,
+  nextChatMessageQuerySchema,
   nextTaskQuerySchema,
   releaseTaskSchema,
   resolveTicketSchema,
   resumeQuerySchema,
+  sendChatMessageSchema,
   ticketIdSchema,
   updateAgentSchema,
   updateRulesSchema,
@@ -56,7 +63,7 @@ import {
   ConflictError,
   NotFoundError,
 } from './errors.js';
-import { TaskEventBus, TicketEventBus } from './events.js';
+import { TaskEventBus, SessionEventBus, TicketEventBus } from './events.js';
 import { createMetaAgent, type MetaAgent } from './meta-agent.js';
 import {
   createNotifiers,
@@ -82,12 +89,17 @@ declare module 'fastify' {
     repo: TicketStore;
     bus: TicketEventBus;
     taskBus: TaskEventBus;
+    sessionBus: SessionEventBus;
     rulesStore: RulesStore;
   }
 }
 
 const APP_VERSION = '0.1.0';
 const paramsSchema = z.object({ id: ticketIdSchema });
+const chatMessageParamsSchema = z.object({
+  id: ticketIdSchema,
+  messageId: ticketIdSchema,
+});
 const agentParamsSchema = z.object({
   env: z.string().trim().min(1).max(64),
 });
@@ -159,6 +171,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const repo: TicketStore = options.repo ?? new TicketRepository(db);
   const bus = new TicketEventBus();
   const taskBus = new TaskEventBus();
+  const sessionBus = new SessionEventBus();
   const rulesStore = new RulesStore(config.rulesPath);
   const metaAgent =
     options.metaAgent ?? createMetaAgent(config.metaAgent, fetch);
@@ -173,6 +186,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   app.decorate('repo', repo);
   app.decorate('bus', bus);
   app.decorate('taskBus', taskBus);
+  app.decorate('sessionBus', sessionBus);
   app.decorate('rulesStore', rulesStore);
 
   app.addHook('onClose', async () => {
@@ -1055,6 +1069,163 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         requireEnvAccess(request, task.env);
         const query = listTaskLogsQuerySchema.parse(request.query);
         return repo.listTaskLogs(taskId, query);
+      });
+
+      // -----------------------------------------------------------------
+      // Interactive sessions (human ↔ project agent)
+      // -----------------------------------------------------------------
+
+      api.post('/sessions', async (request, reply) => {
+        requireAdmin(request);
+        const input = createChatSessionSchema.parse(request.body);
+        const session = repo.createChatSession(input);
+        return reply.code(201).send({ session, messages: [] });
+      });
+
+      api.get('/sessions', async (request) => {
+        requireAdmin(request);
+        const query = listChatSessionsQuerySchema.parse(request.query);
+        return { sessions: repo.listChatSessions(query) };
+      });
+
+      // The bridge long-polls for the next user message in its env.
+      api.get('/sessions/next', async (request) => {
+        const query = nextChatMessageQuerySchema.parse(request.query);
+        requireEnvAccess(request, query.env);
+        const deadline = Date.now() + query.timeout;
+
+        for (;;) {
+          const claimed = repo.claimNextChatMessage(query.env);
+          if (claimed) return { ...claimed, timedOut: false };
+
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            return { session: null, message: null, timedOut: true };
+          }
+
+          const wake = await sessionBus.wait(query.env, remaining, () =>
+            repo.claimNextChatMessage(query.env),
+          );
+          if (wake.claim) return { ...wake.claim, timedOut: false };
+          if (wake.timedOut) {
+            return { session: null, message: null, timedOut: true };
+          }
+        }
+      });
+
+      api.get('/sessions/:id', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const session = repo.getChatSession(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+        requireEnvAccess(request, session.env);
+        return {
+          session,
+          messages: repo.listChatMessages(Number(session.id)),
+        };
+      });
+
+      api.post('/sessions/:id/messages', async (request, reply) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const session = repo.getChatSession(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+        if (session.status !== 'ACTIVE') {
+          throw new ConflictError(
+            `session ${formatTicketId(id)} is ${session.status}`,
+            'SESSION_CLOSED',
+          );
+        }
+
+        const input = sendChatMessageSchema.parse(request.body);
+        const message = repo.sendChatMessage(Number(session.id), input);
+        sessionBus.publish(session);
+        return reply.code(201).send({ session, message });
+      });
+
+      api.post('/sessions/:id/close', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const session = repo.getChatSession(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+
+        const closed = repo.closeChatSession(Number(session.id));
+        if (!closed) {
+          throw new ConflictError(
+            `session ${formatTicketId(id)} is already ${session.status}`,
+            'ALREADY_FINALIZED',
+          );
+        }
+        return { session: closed };
+      });
+
+      api.post('/sessions/:id/messages/:messageId/events', async (request, reply) => {
+        const { id, messageId } = chatMessageParamsSchema.parse(request.params);
+        const session = repo.getChatSession(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+        requireEnvAccess(request, session.env);
+
+        const message = repo.getChatMessage(parseTicketId(messageId));
+        if (!message || message.sessionId !== session.id) {
+          throw new NotFoundError(
+            `message ${formatTicketId(messageId)} not found in session ${formatTicketId(id)}`,
+          );
+        }
+        if (message.status !== 'RUNNING') {
+          throw new ConflictError(
+            `message ${formatTicketId(messageId)} is ${message.status}, expected RUNNING`,
+            'INVALID_MESSAGE_STATUS',
+          );
+        }
+
+        const input = appendChatEventSchema.parse(request.body);
+        const event = repo.appendChatEvent(
+          Number(session.id),
+          Number(message.id),
+          input,
+        );
+        return reply.code(201).send({ event });
+      });
+
+      api.get('/sessions/:id/events', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const session = repo.getChatSession(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+        requireEnvAccess(request, session.env);
+        const query = listChatEventsQuerySchema.parse(request.query);
+        return repo.listChatEvents(Number(session.id), query);
+      });
+
+      api.post('/sessions/:id/messages/:messageId/complete', async (request) => {
+        const { id, messageId } = chatMessageParamsSchema.parse(request.params);
+        const session = repo.getChatSession(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+        requireEnvAccess(request, session.env);
+
+        const message = repo.getChatMessage(parseTicketId(messageId));
+        if (!message || message.sessionId !== session.id) {
+          throw new NotFoundError(
+            `message ${formatTicketId(messageId)} not found in session ${formatTicketId(id)}`,
+          );
+        }
+
+        const input = completeChatMessageSchema.parse(request.body);
+        return repo.completeChatMessage(
+          Number(session.id),
+          Number(message.id),
+          input,
+        );
       });
 
       // Bridge hands a claimed task back when no local agent could be woken.

@@ -114,6 +114,7 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 - **接入端状态栏**：展示每个 `env` 的在线心跳、Running / Blocked / Idle 状态与当前任务，90 秒无心跳自动置灰。
 - **接入端管理**：把每个 `env` 当作可管理的 Agent——客户端类型、版本、主机、系统、当前项目、专属 Token 的签发/轮换/吊销，以及改名、停用、删除；顶部按 host 汇总运行节点（托管项目数、在线数、bridge 版本）。
 - **任务实时输出**：任务卡展开即可看 `stdout` / `stderr` / 系统事件，执行中每 1.2 秒增量拉取；每个任务最多保留 256 KB，结束后仍可回看。
+- **交互式会话**：在「会话」页直接和任意项目的 Agent 多轮对话；每条消息由端侧 runner 用可恢复 CLI（`--session` / `--resume`）执行，输出实时回传并保留上下文。
 - **待批奏折**：`PENDING_META` / `PENDING_HUMAN` 工单按创建时间排队；卡片即三行简报（已完成 / 卡点 / 下一步），点击任一方案即提交审批，可附带补充指令。推荐方案会高亮，但不影响选择。
 - **超时默认裁决**：开启 `AUTO_RESOLVE_TIMEOUT_MS` 后，待批卡片显示倒计时，到期按推荐方案自动准奏；可「暂缓 10 分钟」。推荐方案标记为 `destructive` 时永不自动执行。
 - **批量准奏**：积压多封时一键按各自推荐方案批复，提交前有 3 秒撤销窗口；高风险方案默认跳过，需勾选后才会一并批准。
@@ -157,6 +158,15 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `POST` | `/api/tasks/:id/complete` | Agent 回报完成 / 失败 `{ status, result? }` |
 | `POST` | `/api/tasks/:id/log` | Agent 追加执行输出 `{ stream: stdout\|stderr\|system, chunk }` |
 | `GET` | `/api/tasks/:id/logs` | 增量读取执行输出 `?after=<id>&limit=` |
+| `POST` | `/api/sessions` | 新建会话 `{ env, projectName?, title? }` |
+| `GET` | `/api/sessions` | 会话列表，支持 `?env=&limit=` |
+| `GET` | `/api/sessions/:id` | 会话详情与消息 |
+| `POST` | `/api/sessions/:id/messages` | 发送用户消息 `{ content }` |
+| `POST` | `/api/sessions/:id/close` | 关闭会话 |
+| `GET` | `/api/sessions/next?env=...&timeout=40000` | 端侧长轮询领取待处理消息 |
+| `POST` | `/api/sessions/:id/messages/:messageId/events` | Agent 追加输出 `{ stream, chunk }` |
+| `GET` | `/api/sessions/:id/events` | 增量读取会话输出 `?after=&messageId=` |
+| `POST` | `/api/sessions/:id/messages/:messageId/complete` | 回报结果 `{ status, content?, externalId?, error? }` |
 | `POST` | `/api/tasks/:id/cancel` | 人取消尚未结束的任务 |
 | `GET` | `/api/workspace-projects` | 工作区项目绑定列表，支持 `?env=` |
 | `POST` | `/api/workspace-projects` | 绑定项目 `{ env, projectName }`，幂等 |
@@ -514,6 +524,27 @@ pm2 save
 <p align="center">
   <img src="./docs/assets/task-logs.png" alt="任务执行输出：实时 stdout、stderr 与系统事件" width="920" />
 </p>
+
+### 交互式会话
+
+看板「会话」页选择一个在线 Agent，新建会话后即可多轮对话。端侧 `fleet` 会在每个项目上同时跑
+任务循环和会话循环；每条用户消息 spawn 一次可恢复 CLI：
+
+| 适配器 | 行为 |
+| --- | --- |
+| `opencode` / `opencode-run` | `opencode run --auto --session <id>`，首次自动生成并保存 session id |
+| `cursor-agent` | `agent -p --force --output-format json [--resume <id>]`，从 JSON 输出捕获 session id |
+| `claude` | `claude -p --output-format json [--resume <id>]` |
+| `command` | `ZHUNZOU_WAKE_COMMAND` 模板，支持 `{message}` / `{session}` / `{env}` / `{project}` |
+
+输出会像任务日志一样实时回传；完成后写入一条 assistant 消息，`externalId` 持久化用于下一轮续聊。
+
+<p align="center">
+  <img src="./docs/assets/chat.png" alt="Hub 内与项目 Agent 多轮对话" width="920" />
+</p>
+
+> 当前是「每条消息一个进程」的会话，不是 token 级流式；命令是否需要确认由各 CLI 的
+> `--force` / `--auto` 决定。需要真正的交互式权限事件时再升级到 ACP。
 
 ### 环境变量
 

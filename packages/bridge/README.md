@@ -237,9 +237,13 @@ zhunzou-bridge fleet
 ```
 
 - 每个项目对应 Hub 里的一个 `env`，可以独立下发任务、看状态、停用/轮换 Token。
+- 每个项目会同时跑**任务循环**和**会话循环**：会话消息用 `opencode run --session` /
+  `agent -p --resume` / `claude -p --resume` 续聊，`command` 适配器支持
+  `{message}` / `{session}` 占位符。
 - 没有 `token` 时会自动登记并签发专属 Token，缓存在
   `~/.zhunzou/fleet-tokens.json`（`0600`）；`--refresh-tokens` 强制轮换。
 - 子循环崩溃会以 2 秒退避自动重启；`--once` 适合 cron 式调用。
+- 共享 presence 心跳：任务/会话循环不会互相覆盖 Running / Idle 状态。
 - 看板「接入端」页按 host 汇总运行节点：托管项目数、在线数、bridge 版本。
 - 开机自启：
 

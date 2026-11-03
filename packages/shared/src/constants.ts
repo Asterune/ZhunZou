@@ -66,6 +66,24 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const TASK_LOG_STREAMS = ['stdout', 'stderr', 'system'] as const;
 export type TaskLogStream = (typeof TASK_LOG_STREAMS)[number];
 
+/* ------------------------------------------------------------------ */
+/* Interactive sessions                                                */
+/* ------------------------------------------------------------------ */
+
+export const CHAT_ROLES = ['user', 'assistant', 'system'] as const;
+export type ChatRole = (typeof CHAT_ROLES)[number];
+
+export const CHAT_MESSAGE_STATUSES = [
+  'PENDING',
+  'RUNNING',
+  'DONE',
+  'FAILED',
+] as const;
+export type ChatMessageStatus = (typeof CHAT_MESSAGE_STATUSES)[number];
+
+export const CHAT_SESSION_STATUSES = ['ACTIVE', 'CLOSED'] as const;
+export type ChatSessionStatus = (typeof CHAT_SESSION_STATUSES)[number];
+
 /** Statuses after which a dispatched task never changes again. */
 export const TERMINAL_TASK_STATUSES = [
   'DONE',

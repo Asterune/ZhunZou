@@ -15,15 +15,25 @@ import type {
   Agent,
   AgentMeta,
   AgentTask,
+  AppendChatEventInput,
   AppendTaskLogInput,
+  ChatEvent,
+  ChatEventListResponse,
+  ChatMessage,
+  ChatMessageResponse,
+  ChatSession,
+  CompleteChatMessageInput,
   CompleteTaskInput,
   CreateAgentInput,
+  CreateChatSessionInput,
   CreateTaskInput,
   CreateTicketInput,
   DecisionTicket,
   EnvHeartbeat,
   HeartbeatInput,
   ListAgentsQuery,
+  ListChatEventsQuery,
+  ListChatSessionsQuery,
   ListRuleCandidatesQuery,
   ListTaskLogsQuery,
   ListTasksQuery,
@@ -31,6 +41,7 @@ import type {
   ListWorkspaceProjectsQuery,
   ResolveTicketInput,
   RuleCandidate,
+  SendChatMessageInput,
   TaskLog,
   TaskLogListResponse,
   TicketStatus,
@@ -43,6 +54,9 @@ import type { DrizzleDatabase } from './db/client.js';
 import {
   agentTasks,
   agents,
+  chatEvents,
+  chatMessages,
+  chatSessions,
   envHeartbeats,
   ruleCandidates,
   taskLogs,
@@ -50,6 +64,9 @@ import {
   workspaceProjects,
   type AgentRow,
   type AgentTaskRow,
+  type ChatEventRow,
+  type ChatMessageRow,
+  type ChatSessionRow,
   type HeartbeatRow,
   type RuleCandidateRow,
   type TaskLogRow,
@@ -62,6 +79,7 @@ const AWAITING: TicketStatus[] = ['PENDING_META', 'PENDING_HUMAN'];
 
 /** Keep each task's live log bounded; older chunks are trimmed on append. */
 const MAX_TASK_LOG_BYTES = 256 * 1024;
+const MAX_CHAT_EVENT_BYTES = 256 * 1024;
 
 /**
  * Older bridge builds hard-coded this label before task reporting existed.
@@ -156,6 +174,45 @@ function toTaskLog(row: TaskLogRow): TaskLog {
   return {
     id: row.id,
     taskId: String(row.taskId),
+    stream: row.stream,
+    chunk: row.chunk,
+    createdAt: row.createdAt,
+  };
+}
+
+function toChatSession(row: ChatSessionRow, messageCount?: number): ChatSession {
+  return {
+    id: String(row.id),
+    env: row.env,
+    ...(row.projectName ? { projectName: row.projectName } : {}),
+    title: row.title,
+    status: row.status,
+    ...(row.externalId ? { externalId: row.externalId } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    ...(row.lastMessageAt !== null ? { lastMessageAt: row.lastMessageAt } : {}),
+    ...(messageCount !== undefined ? { messageCount } : {}),
+  };
+}
+
+function toChatMessage(row: ChatMessageRow): ChatMessage {
+  return {
+    id: String(row.id),
+    sessionId: String(row.sessionId),
+    role: row.role,
+    content: row.content,
+    status: row.status,
+    ...(row.error ? { error: row.error } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toChatEvent(row: ChatEventRow): ChatEvent {
+  return {
+    id: row.id,
+    sessionId: String(row.sessionId),
+    messageId: String(row.messageId),
     stream: row.stream,
     chunk: row.chunk,
     createdAt: row.createdAt,
@@ -304,6 +361,39 @@ export interface TicketStore {
     now?: number,
   ): TaskLog;
   listTaskLogs(taskId: number, query: ListTaskLogsQuery): TaskLogListResponse;
+
+  /* Interactive sessions */
+  createChatSession(input: CreateChatSessionInput, now?: number): ChatSession;
+  listChatSessions(query: ListChatSessionsQuery, now?: number): ChatSession[];
+  getChatSession(id: number, now?: number): ChatSession | null;
+  getChatMessage(id: number): ChatMessage | null;
+  listChatMessages(sessionId: number, limit?: number): ChatMessage[];
+  sendChatMessage(
+    sessionId: number,
+    input: SendChatMessageInput,
+    now?: number,
+  ): ChatMessage;
+  claimNextChatMessage(
+    env: string,
+    now?: number,
+  ): { session: ChatSession; message: ChatMessage } | null;
+  completeChatMessage(
+    sessionId: number,
+    messageId: number,
+    input: CompleteChatMessageInput,
+    now?: number,
+  ): ChatMessageResponse;
+  appendChatEvent(
+    sessionId: number,
+    messageId: number,
+    input: AppendChatEventInput,
+    now?: number,
+  ): ChatEvent;
+  listChatEvents(
+    sessionId: number,
+    query: ListChatEventsQuery,
+  ): ChatEventListResponse;
+  closeChatSession(sessionId: number, now?: number): ChatSession | null;
   /** Awaiting tickets plus recently terminal ones, for bridge restart recovery. */
   listResumeTickets(env: string, since: number, limit?: number): DecisionTicket[];
 
@@ -871,6 +961,342 @@ export class TicketRepository implements TicketStore {
           eq(taskLogs.taskId, taskId),
           inArray(
             taskLogs.id,
+            rows.slice(0, remove).map((row) => row.id),
+          ),
+        ),
+      )
+      .run();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Interactive sessions                                            */
+  /* ---------------------------------------------------------------- */
+
+  createChatSession(
+    input: CreateChatSessionInput,
+    now = Date.now(),
+  ): ChatSession {
+    const title =
+      input.title?.trim() ||
+      `${input.projectName ?? input.env} 会话`;
+    const row = this.db
+      .insert(chatSessions)
+      .values({
+        env: input.env,
+        projectName: input.projectName ?? null,
+        title,
+        status: 'ACTIVE',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+
+    if (input.projectName) {
+      this.bindWorkspaceProject(input.env, input.projectName, now);
+    }
+    return toChatSession(row, 0);
+  }
+
+  listChatSessions(
+    query: ListChatSessionsQuery,
+    now = Date.now(),
+  ): ChatSession[] {
+    const rows = this.db
+      .select()
+      .from(chatSessions)
+      .where(query.env ? eq(chatSessions.env, query.env) : undefined)
+      .orderBy(desc(chatSessions.updatedAt), desc(chatSessions.id))
+      .limit(query.limit)
+      .all();
+
+    const counts = new Map(
+      this.db
+        .select({ sessionId: chatMessages.sessionId, value: count() })
+        .from(chatMessages)
+        .groupBy(chatMessages.sessionId)
+        .all()
+        .map((row) => [row.sessionId, Number(row.value)]),
+    );
+
+    return rows.map((row) =>
+      toChatSession(row, counts.get(row.id) ?? 0),
+    );
+  }
+
+  getChatSession(id: number, now = Date.now()): ChatSession | null {
+    const row = this.db
+      .select()
+      .from(chatSessions)
+      .where(eq(chatSessions.id, id))
+      .get();
+    if (!row) return null;
+
+    const countRow = this.db
+      .select({ value: count() })
+      .from(chatMessages)
+      .where(eq(chatMessages.sessionId, id))
+      .get();
+    return toChatSession(row, Number(countRow?.value ?? 0));
+  }
+
+  getChatMessage(id: number): ChatMessage | null {
+    const row = this.db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.id, id))
+      .get();
+    return row ? toChatMessage(row) : null;
+  }
+
+  listChatMessages(sessionId: number, limit = 200): ChatMessage[] {
+    const rows = this.db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.sessionId, sessionId))
+      .orderBy(desc(chatMessages.id))
+      .limit(limit)
+      .all();
+    return rows.reverse().map(toChatMessage);
+  }
+
+  sendChatMessage(
+    sessionId: number,
+    input: SendChatMessageInput,
+    now = Date.now(),
+  ): ChatMessage {
+    const row = this.db
+      .insert(chatMessages)
+      .values({
+        sessionId,
+        role: 'user',
+        content: input.content,
+        status: 'PENDING',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+
+    this.db
+      .update(chatSessions)
+      .set({ updatedAt: now, lastMessageAt: now })
+      .where(eq(chatSessions.id, sessionId))
+      .run();
+
+    return toChatMessage(row);
+  }
+
+  claimNextChatMessage(
+    env: string,
+    now = Date.now(),
+  ): { session: ChatSession; message: ChatMessage } | null {
+    const row = this.db
+      .select({ session: chatSessions, message: chatMessages })
+      .from(chatMessages)
+      .innerJoin(chatSessions, eq(chatMessages.sessionId, chatSessions.id))
+      .where(
+        and(
+          eq(chatSessions.env, env),
+          eq(chatSessions.status, 'ACTIVE'),
+          eq(chatMessages.role, 'user'),
+          eq(chatMessages.status, 'PENDING'),
+        ),
+      )
+      .orderBy(asc(chatMessages.id))
+      .limit(1)
+      .get();
+
+    if (!row) return null;
+
+    const updated = this.db
+      .update(chatMessages)
+      .set({ status: 'RUNNING', updatedAt: now })
+      .where(
+        and(
+          eq(chatMessages.id, row.message.id),
+          eq(chatMessages.status, 'PENDING'),
+        ),
+      )
+      .returning()
+      .get();
+    if (!updated) return null;
+
+    this.db
+      .update(chatSessions)
+      .set({ updatedAt: now, lastMessageAt: now })
+      .where(eq(chatSessions.id, row.session.id))
+      .run();
+
+    return {
+      session: toChatSession(row.session),
+      message: toChatMessage(updated),
+    };
+  }
+
+  completeChatMessage(
+    sessionId: number,
+    messageId: number,
+    input: CompleteChatMessageInput,
+    now = Date.now(),
+  ): ChatMessageResponse {
+    const row = this.db
+      .update(chatMessages)
+      .set({
+        status: input.status,
+        error: input.error ?? null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.sessionId, sessionId),
+          eq(chatMessages.status, 'RUNNING'),
+        ),
+      )
+      .returning()
+      .get();
+
+    if (!row) {
+      throw new ConflictError(
+        `session message #${messageId} is not running`,
+        'INVALID_MESSAGE_STATUS',
+      );
+    }
+
+    let assistant: ChatMessageRow | undefined;
+    if (input.status === 'DONE') {
+      assistant = this.db
+        .insert(chatMessages)
+        .values({
+          sessionId,
+          role: 'assistant',
+          content: input.content?.trim() || '（无输出）',
+          status: 'DONE',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning()
+        .get();
+    }
+
+    const sessionRow = this.db
+      .update(chatSessions)
+      .set({
+        updatedAt: now,
+        lastMessageAt: now,
+        ...(input.externalId ? { externalId: input.externalId } : {}),
+      })
+      .where(eq(chatSessions.id, sessionId))
+      .returning()
+      .get();
+
+    if (!sessionRow) {
+      throw new ConflictError(
+        `session #${sessionId} not found`,
+        'NOT_FOUND',
+      );
+    }
+
+    return {
+      session: toChatSession(sessionRow),
+      message: toChatMessage(row),
+      ...(assistant ? { assistant: toChatMessage(assistant) } : {}),
+    };
+  }
+
+  appendChatEvent(
+    sessionId: number,
+    messageId: number,
+    input: AppendChatEventInput,
+    now = Date.now(),
+  ): ChatEvent {
+    const row = this.db
+      .insert(chatEvents)
+      .values({
+        sessionId,
+        messageId,
+        stream: input.stream,
+        chunk: input.chunk,
+        createdAt: now,
+      })
+      .returning()
+      .get();
+
+    this.trimChatEvents(sessionId);
+    return toChatEvent(row);
+  }
+
+  listChatEvents(
+    sessionId: number,
+    query: ListChatEventsQuery,
+  ): ChatEventListResponse {
+    const rows = this.db
+      .select()
+      .from(chatEvents)
+      .where(
+        and(
+          eq(chatEvents.sessionId, sessionId),
+          ...(query.messageId
+            ? [eq(chatEvents.messageId, Number(query.messageId))]
+            : []),
+          gt(chatEvents.id, query.after),
+        ),
+      )
+      .orderBy(asc(chatEvents.id))
+      .limit(query.limit)
+      .all();
+
+    const events = rows.map(toChatEvent);
+    return {
+      events,
+      nextAfter:
+        events.length > 0 ? events[events.length - 1]!.id : query.after,
+      truncated: rows.length === query.limit,
+    };
+  }
+
+  closeChatSession(sessionId: number, now = Date.now()): ChatSession | null {
+    const row = this.db
+      .update(chatSessions)
+      .set({ status: 'CLOSED', updatedAt: now })
+      .where(
+        and(
+          eq(chatSessions.id, sessionId),
+          eq(chatSessions.status, 'ACTIVE'),
+        ),
+      )
+      .returning()
+      .get();
+    return row ? toChatSession(row) : null;
+  }
+
+  private trimChatEvents(sessionId: number): void {
+    const rows = this.db
+      .select({
+        id: chatEvents.id,
+        size: sql<number>`length(${chatEvents.chunk})`,
+      })
+      .from(chatEvents)
+      .where(eq(chatEvents.sessionId, sessionId))
+      .orderBy(asc(chatEvents.id))
+      .all();
+
+    let total = rows.reduce((sum, row) => sum + Number(row.size), 0);
+    let remove = 0;
+    while (total > MAX_CHAT_EVENT_BYTES && remove < rows.length) {
+      total -= Number(rows[remove]!.size);
+      remove += 1;
+    }
+    if (remove === 0) return;
+
+    this.db
+      .delete(chatEvents)
+      .where(
+        and(
+          eq(chatEvents.sessionId, sessionId),
+          inArray(
+            chatEvents.id,
             rows.slice(0, remove).map((row) => row.id),
           ),
         ),

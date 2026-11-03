@@ -2,6 +2,7 @@ import type { AgentTask, HeartbeatInput } from '@zhunzou/shared';
 
 import type { BridgeConfig } from '../config.js';
 import type { HubApi } from '../hub-client.js';
+import type { PresenceReporter } from '../presence.js';
 import type { WakeContext } from './adapters.js';
 import {
   notifyTask,
@@ -9,6 +10,7 @@ import {
   type WakeAdapter,
 } from './adapters.js';
 import type { WakeConfig } from './config.js';
+import { createLogSink } from './log-sink.js';
 
 export interface WakeDaemonOptions {
   client: HubApi;
@@ -18,6 +20,8 @@ export interface WakeDaemonOptions {
   adapter?: WakeAdapter;
   /** Run a single poll cycle and exit (used by smoke tests). */
   once?: boolean;
+  /** Shared presence so task/chat loops do not overwrite each other. */
+  presence?: PresenceReporter;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
   sleep?: (ms: number) => Promise<void>;
@@ -33,9 +37,11 @@ function truncate(value: string, limit: number): string {
 async function beat(
   client: HubApi,
   input: Omit<HeartbeatInput, 'env'>,
+  presence?: PresenceReporter,
 ): Promise<void> {
   try {
-    await client.heartbeat(input);
+    if (presence) await presence.beat(input);
+    else await client.heartbeat(input);
   } catch {
     // Dashboard status is advisory only.
   }
@@ -93,97 +99,15 @@ interface LoopInternals extends WakeDaemonOptions {
 
 type LogStream = 'stdout' | 'stderr' | 'system';
 
-interface TaskLogSink {
-  push: (stream: LogStream, chunk: string) => void;
-  close: () => Promise<void>;
-}
-
-const LOG_FLUSH_INTERVAL_MS = 600;
-const LOG_CHUNK_BYTES = 12_000;
-const LOG_BUFFER_BYTES = 24_000;
-
-/**
- * Batch a running task's output and post it to the hub.
- *
- * The daemon must never fail a task because log shipping failed, so every
- * error is downgraded to a single warning. Chunks are split to fit the API's
- * 16 KB limit and flushed before the task is completed.
- */
 function createTaskLogSink(
   client: HubApi,
   taskId: string,
   onError: (message: string) => void,
-): TaskLogSink {
-  const buffers: Record<LogStream, string> = {
-    stdout: '',
-    stderr: '',
-    system: '',
-  };
-  let flushing = false;
-  let closed = false;
-  let warned = false;
-
-  const take = (): Array<{ stream: LogStream; chunk: string }> => {
-    const chunks: Array<{ stream: LogStream; chunk: string }> = [];
-    for (const stream of ['stdout', 'stderr', 'system'] as const) {
-      const text = buffers[stream];
-      if (!text) continue;
-      buffers[stream] = '';
-      for (let index = 0; index < text.length; index += LOG_CHUNK_BYTES) {
-        chunks.push({
-          stream,
-          chunk: text.slice(index, index + LOG_CHUNK_BYTES),
-        });
-      }
-    }
-    return chunks;
-  };
-
-  const flush = async (): Promise<void> => {
-    if (flushing) return;
-    flushing = true;
-    try {
-      for (;;) {
-        const chunks = take();
-        if (chunks.length === 0) return;
-        for (const item of chunks) {
-          try {
-            await client.appendTaskLog(taskId, item);
-          } catch (error) {
-            if (!warned) {
-              warned = true;
-              onError(
-                `任务 #${taskId} 日志上报失败：${(error as Error).message}`,
-              );
-            }
-          }
-        }
-      }
-    } finally {
-      flushing = false;
-    }
-  };
-
-  const timer = setInterval(() => {
-    void flush();
-  }, LOG_FLUSH_INTERVAL_MS);
-  timer.unref?.();
-
-  return {
-    push(stream, chunk) {
-      if (closed || !chunk) return;
-      buffers[stream] += chunk;
-      if (buffers[stream].length >= LOG_BUFFER_BYTES) {
-        void flush();
-      }
-    },
-    async close() {
-      if (closed) return;
-      closed = true;
-      clearInterval(timer);
-      await flush();
-    },
-  };
+) {
+  return createLogSink(
+    (stream, chunk) => client.appendTaskLog(taskId, { stream, chunk }),
+    (message) => onError(`任务 #${taskId} ${message}`),
+  );
 }
 
 async function runClaimLoop(
@@ -222,7 +146,7 @@ async function runClaimLoop(
       status: 'Running',
       currentTask: truncate(`任务 #${task.id}：${task.title}`, 300),
       ...(hub.projectName ? { projectName: hub.projectName } : {}),
-    });
+    }, internals.presence);
 
     const sink = createTaskLogSink(client, task.id, logError);
     sink.push('system', `[zhunzou] 任务 #${task.id} 开始执行\n`);
@@ -239,7 +163,7 @@ async function runClaimLoop(
         await sink.close();
         await client.completeTask(task.id, outcome.completion);
         log(`任务 #${task.id} → ${outcome.completion.status}`);
-        await beat(client, idlePatch);
+        await beat(client, idlePatch, internals.presence);
       } else {
         sink.push(
           'system',
@@ -268,7 +192,7 @@ async function runClaimLoop(
       }
 
       await notifyTask(task, context).catch(() => undefined);
-      await beat(client, idlePatch);
+      await beat(client, idlePatch, internals.presence);
     }
 
     if (internals.once) return 0;

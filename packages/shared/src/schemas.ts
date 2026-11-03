@@ -8,6 +8,9 @@ import {
   AGENT_KINDS,
   AGENT_STATUSES,
   RULE_CANDIDATE_STATUSES,
+  CHAT_MESSAGE_STATUSES,
+  CHAT_ROLES,
+  CHAT_SESSION_STATUSES,
   TASK_LOG_STREAMS,
   TASK_STATUSES,
   TICKET_STATUSES,
@@ -332,6 +335,114 @@ export const taskLogListResponseSchema = z.object({
 });
 
 /* ------------------------------------------------------------------ */
+/* Interactive sessions                                                */
+/* ------------------------------------------------------------------ */
+
+export const chatSessionSchema = z.object({
+  id: ticketIdSchema,
+  env: envSchema,
+  projectName: projectNameSchema.optional(),
+  title: z.string().trim().min(1).max(120),
+  status: z.enum(CHAT_SESSION_STATUSES),
+  /** CLI-native session id used to resume the conversation. */
+  externalId: z.string().max(128).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  lastMessageAt: z.number().int().nonnegative().optional(),
+  messageCount: z.number().int().nonnegative().optional(),
+});
+
+export const chatMessageSchema = z.object({
+  id: ticketIdSchema,
+  sessionId: ticketIdSchema,
+  role: z.enum(CHAT_ROLES),
+  content: z.string().max(20_000),
+  status: z.enum(CHAT_MESSAGE_STATUSES),
+  error: z.string().max(2_000).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+export const chatEventSchema = z.object({
+  id: z.number().int().positive(),
+  sessionId: ticketIdSchema,
+  messageId: ticketIdSchema,
+  stream: taskLogStreamSchema,
+  chunk: z.string().max(16_384),
+  createdAt: z.number().int().nonnegative(),
+});
+
+export const createChatSessionSchema = z.object({
+  env: envSchema,
+  projectName: projectNameSchema.optional(),
+  title: z.string().trim().min(1).max(120).optional(),
+});
+
+export const sendChatMessageSchema = z.object({
+  content: z.string().trim().min(1).max(8_000),
+});
+
+export const completeChatMessageSchema = z.object({
+  status: z.enum(['DONE', 'FAILED']),
+  content: z.string().max(20_000).optional(),
+  externalId: z.string().max(128).optional(),
+  error: z.string().max(2_000).optional(),
+});
+
+export const appendChatEventSchema = z.object({
+  stream: taskLogStreamSchema,
+  chunk: z.string().min(1).max(16_384),
+});
+
+export const listChatSessionsQuerySchema = z.object({
+  env: envSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+export const nextChatMessageQuerySchema = z.object({
+  env: envSchema,
+  timeout: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_WAIT_TIMEOUT_MS)
+    .default(DEFAULT_WAIT_TIMEOUT_MS),
+});
+
+export const listChatEventsQuerySchema = z.object({
+  after: z.coerce.number().int().nonnegative().default(0),
+  messageId: ticketIdSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+});
+
+export const chatSessionResponseSchema = z.object({
+  session: chatSessionSchema,
+  messages: z.array(chatMessageSchema).optional(),
+});
+
+export const chatSessionListResponseSchema = z.object({
+  sessions: z.array(chatSessionSchema),
+});
+
+export const chatMessageResponseSchema = z.object({
+  session: chatSessionSchema,
+  message: chatMessageSchema,
+  assistant: chatMessageSchema.optional(),
+});
+
+export const chatEventListResponseSchema = z.object({
+  events: z.array(chatEventSchema),
+  nextAfter: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+});
+
+export const nextChatMessageResponseSchema = z.object({
+  session: chatSessionSchema.nullable(),
+  message: chatMessageSchema.nullable(),
+  timedOut: z.boolean(),
+});
+
+/* ------------------------------------------------------------------ */
 /* Workspace ↔ project bindings                                       */
 /* ------------------------------------------------------------------ */
 
@@ -566,6 +677,28 @@ export type TaskLog = z.infer<typeof taskLogSchema>;
 export type AppendTaskLogInput = z.infer<typeof appendTaskLogSchema>;
 export type ListTaskLogsQuery = z.infer<typeof listTaskLogsQuerySchema>;
 export type TaskLogListResponse = z.infer<typeof taskLogListResponseSchema>;
+
+export type ChatSession = z.infer<typeof chatSessionSchema>;
+export type ChatMessage = z.infer<typeof chatMessageSchema>;
+export type ChatEvent = z.infer<typeof chatEventSchema>;
+export type CreateChatSessionInput = z.infer<typeof createChatSessionSchema>;
+export type SendChatMessageInput = z.infer<typeof sendChatMessageSchema>;
+export type CompleteChatMessageInput = z.infer<
+  typeof completeChatMessageSchema
+>;
+export type AppendChatEventInput = z.infer<typeof appendChatEventSchema>;
+export type ListChatSessionsQuery = z.infer<typeof listChatSessionsQuerySchema>;
+export type NextChatMessageQuery = z.infer<typeof nextChatMessageQuerySchema>;
+export type ListChatEventsQuery = z.infer<typeof listChatEventsQuerySchema>;
+export type ChatSessionResponse = z.infer<typeof chatSessionResponseSchema>;
+export type ChatSessionListResponse = z.infer<
+  typeof chatSessionListResponseSchema
+>;
+export type ChatMessageResponse = z.infer<typeof chatMessageResponseSchema>;
+export type ChatEventListResponse = z.infer<typeof chatEventListResponseSchema>;
+export type NextChatMessageResponse = z.infer<
+  typeof nextChatMessageResponseSchema
+>;
 export type TaskResponse = z.infer<typeof taskResponseSchema>;
 export type TaskListResponse = z.infer<typeof taskListResponseSchema>;
 export type NextTaskResponse = z.infer<typeof nextTaskResponseSchema>;

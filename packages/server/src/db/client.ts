@@ -89,6 +89,46 @@ CREATE TABLE IF NOT EXISTS task_logs (
 
 CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id, id);
 
+CREATE TABLE IF NOT EXISTS chat_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  env TEXT NOT NULL,
+  project_name TEXT,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL,
+  external_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_message_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_env ON chat_sessions(env);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_status ON chat_sessions(status);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_status ON chat_messages(status);
+
+CREATE TABLE IF NOT EXISTS chat_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  message_id INTEGER NOT NULL,
+  stream TEXT NOT NULL,
+  chunk TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_events_session ON chat_events(session_id, id);
+
 CREATE TABLE IF NOT EXISTS workspace_projects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   env TEXT NOT NULL,

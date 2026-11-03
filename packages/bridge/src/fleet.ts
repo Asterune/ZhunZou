@@ -7,6 +7,8 @@ import { z } from 'zod';
 
 import type { BridgeConfig } from './config.js';
 import { HubClient } from './hub-client.js';
+import { createPresenceReporter } from './presence.js';
+import { runSessionDaemon, supportsChat } from './session.js';
 import type { WakeAdapterName } from './wake/config.js';
 import { WAKE_ADAPTERS, loadWakeConfig } from './wake/config.js';
 import { runWakeDaemon } from './wake/daemon.js';
@@ -434,20 +436,33 @@ export async function runFleet(
     `[fleet] ${hostname()}: ${runtimes.length} project(s), hub ${config.hubUrl}`,
   );
 
-  const tasks = runtimes.map(async (runtime) => {
-    const prefix = `[${runtime.project.env}]`;
+  const presences = new Map<string, ReturnType<typeof createPresenceReporter>>();
+  for (const runtime of runtimes) {
+    const reporter = createPresenceReporter(new HubClient(runtime.hub), {
+      intervalMs: runtime.hub.heartbeatIntervalMs,
+      ...(runtime.hub.projectName
+        ? { projectName: runtime.hub.projectName }
+        : {}),
+      onError: (error) =>
+        err(
+          `[${runtime.project.env}] heartbeat failed: ${(error as Error).message}`,
+        ),
+    });
+    reporter.start();
+    void reporter.beat({ currentTask: 'Runner 已连接' }).catch(() => undefined);
+    presences.set(runtime.project.env, reporter);
+  }
+
+  const supervise = async (
+    runtime: FleetRuntime,
+    label: string,
+    run: () => Promise<number>,
+  ): Promise<void> => {
+    const prefix = `[${runtime.project.env}]${label ? ` ${label}` : ''}`;
     for (;;) {
       if (options.signal?.aborted) return;
       try {
-        await runWakeDaemon({
-          client: new HubClient(runtime.hub),
-          hub: runtime.hub,
-          wake: runtime.wake,
-          ...(options.once ? { once: true } : {}),
-          ...(options.signal ? { signal: options.signal } : {}),
-          stdout: (line) => out(`${prefix} ${line}`),
-          stderr: (line) => err(`${prefix} ${line}`),
-        });
+        await run();
         if (options.once) return;
         // A clean return only happens on abort; avoid a hot loop otherwise.
         await sleep(DEFAULT_RESTART_DELAY_MS);
@@ -457,8 +472,44 @@ export async function runFleet(
         await sleep(DEFAULT_RESTART_DELAY_MS);
       }
     }
+  };
+
+  const tasks = runtimes.flatMap((runtime) => {
+    const client = new HubClient(runtime.hub);
+    const presence = presences.get(runtime.project.env);
+    const taskLoop = supervise(runtime, '', () =>
+      runWakeDaemon({
+        client,
+        hub: runtime.hub,
+        wake: runtime.wake,
+        ...(presence ? { presence } : {}),
+        ...(options.once ? { once: true } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+        stdout: (line) => out(`[${runtime.project.env}] ${line}`),
+        stderr: (line) => err(`[${runtime.project.env}] ${line}`),
+      }),
+    );
+
+    if (!supportsChat(runtime.wake)) return [taskLoop];
+
+    return [
+      taskLoop,
+      supervise(runtime, '[chat]', () =>
+        runSessionDaemon({
+          client,
+          hub: runtime.hub,
+          wake: runtime.wake,
+          ...(presence ? { presence } : {}),
+          ...(options.once ? { once: true } : {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+          stdout: (line) => out(`[${runtime.project.env}] [chat] ${line}`),
+          stderr: (line) => err(`[${runtime.project.env}] [chat] ${line}`),
+        }),
+      ),
+    ];
   });
 
   await Promise.allSettled(tasks);
+  for (const presence of presences.values()) presence.stop();
   return 0;
 }

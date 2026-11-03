@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Gavel,
   LogOut,
+  MessageSquare,
   RefreshCw,
   ScrollText,
   Send,
@@ -14,6 +15,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import AgentPanel from './components/AgentPanel.vue';
 import BatchApproveDialog from './components/BatchApproveDialog.vue';
+import ChatPanel from './components/ChatPanel.vue';
 import HistoryList from './components/HistoryList.vue';
 import LoginGate from './components/LoginGate.vue';
 import RulesEditor from './components/RulesEditor.vue';
@@ -24,7 +26,7 @@ import ToastStack from './components/ToastStack.vue';
 import { relativeTime } from './lib/format';
 import { useHubStore } from './stores/hub';
 
-type Tab = 'pending' | 'tasks' | 'agents' | 'history' | 'rules';
+type Tab = 'pending' | 'tasks' | 'chat' | 'agents' | 'history' | 'rules';
 
 const store = useHubStore();
 
@@ -32,6 +34,7 @@ function initialTab(): Tab {
   if (typeof window === 'undefined') return 'pending';
   const value = new URLSearchParams(window.location.search).get('tab');
   return value === 'tasks' ||
+    value === 'chat' ||
     value === 'agents' ||
     value === 'history' ||
     value === 'rules'
@@ -54,6 +57,11 @@ const tabs = computed(() => [
     label: '下发任务',
     icon: Send,
     count: store.activeTasks.length,
+  },
+  {
+    key: 'chat' as const,
+    label: '会话',
+    icon: MessageSquare,
   },
   {
     key: 'agents' as const,
@@ -310,6 +318,8 @@ onBeforeUnmount(() => {
       </section>
 
       <TaskBoard v-else-if="activeTab === 'tasks'" />
+
+      <ChatPanel v-else-if="activeTab === 'chat'" />
 
       <AgentPanel v-else-if="activeTab === 'agents'" />
 

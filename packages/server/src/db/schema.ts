@@ -3,6 +3,9 @@ import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqli
 import type {
   AgentKind,
   AgentStatus,
+  ChatMessageStatus,
+  ChatRole,
+  ChatSessionStatus,
   EnvStatus,
   RuleCandidateStatus,
   TaskLogStream,
@@ -124,6 +127,59 @@ export const taskLogs = sqliteTable(
   (table) => [index('idx_task_logs_task').on(table.taskId, table.id)],
 );
 
+export const chatSessions = sqliteTable(
+  'chat_sessions',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    env: text('env').notNull(),
+    projectName: text('project_name'),
+    title: text('title').notNull(),
+    status: text('status').$type<ChatSessionStatus>().notNull(),
+    /** CLI-native session id (OpenCode --session / Cursor --resume). */
+    externalId: text('external_id'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    lastMessageAt: integer('last_message_at'),
+  },
+  (table) => [
+    index('idx_chat_sessions_env').on(table.env),
+    index('idx_chat_sessions_status').on(table.status),
+  ],
+);
+
+export const chatMessages = sqliteTable(
+  'chat_messages',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    sessionId: integer('session_id').notNull(),
+    role: text('role').$type<ChatRole>().notNull(),
+    content: text('content').notNull(),
+    status: text('status').$type<ChatMessageStatus>().notNull(),
+    error: text('error'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    index('idx_chat_messages_session').on(table.sessionId, table.id),
+    index('idx_chat_messages_status').on(table.status),
+  ],
+);
+
+export const chatEvents = sqliteTable(
+  'chat_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    sessionId: integer('session_id').notNull(),
+    messageId: integer('message_id').notNull(),
+    stream: text('stream').$type<TaskLogStream>().notNull(),
+    chunk: text('chunk').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    index('idx_chat_events_session').on(table.sessionId, table.id),
+  ],
+);
+
 export const workspaceProjects = sqliteTable(
   'workspace_projects',
   {
@@ -170,5 +226,8 @@ export type AgentTaskRow = typeof agentTasks.$inferSelect;
 export type AgentTaskInsert = typeof agentTasks.$inferInsert;
 export type TaskLogRow = typeof taskLogs.$inferSelect;
 export type TaskLogInsert = typeof taskLogs.$inferInsert;
+export type ChatSessionRow = typeof chatSessions.$inferSelect;
+export type ChatMessageRow = typeof chatMessages.$inferSelect;
+export type ChatEventRow = typeof chatEvents.$inferSelect;
 export type WorkspaceProjectRow = typeof workspaceProjects.$inferSelect;
 export type WorkspaceProjectInsert = typeof workspaceProjects.$inferInsert;

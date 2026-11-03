@@ -56,7 +56,7 @@ function appendCapture(buffer: string, chunk: Buffer | string): string {
   return next.length > MAX_CAPTURE ? next.slice(next.length - MAX_CAPTURE) : next;
 }
 
-interface RunProcessOptions {
+export interface RunProcessOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
@@ -67,7 +67,7 @@ interface RunProcessOptions {
   ) => void;
 }
 
-function runProcess(
+export function runProcess(
   command: string,
   args: string[],
   options: RunProcessOptions,

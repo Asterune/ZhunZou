@@ -5,7 +5,11 @@ import type {
   BatchResolveResponse,
   BatchResolveTicketsInput,
   BindWorkspaceProjectInput,
+  ChatEventListResponse,
+  ChatSessionListResponse,
+  ChatSessionResponse,
   CreateAgentInput,
+  CreateChatSessionInput,
   CreateTaskInput,
   DecisionTicket,
   EnvHeartbeat,
@@ -91,6 +95,31 @@ export interface HubApi {
     after?: number,
     limit?: number,
   ): Promise<TaskLogListResponse>;
+  listChatSessions(
+    token: string,
+    env?: string,
+    limit?: number,
+  ): Promise<ChatSessionListResponse>;
+  createChatSession(
+    token: string,
+    input: CreateChatSessionInput,
+  ): Promise<ChatSessionResponse>;
+  getChatSession(token: string, sessionId: string): Promise<ChatSessionResponse>;
+  sendChatMessage(
+    token: string,
+    sessionId: string,
+    content: string,
+  ): Promise<ChatSessionResponse>;
+  closeChatSession(
+    token: string,
+    sessionId: string,
+  ): Promise<ChatSessionResponse>;
+  getChatEvents(
+    token: string,
+    sessionId: string,
+    after?: number,
+    messageId?: string,
+  ): Promise<ChatEventListResponse>;
   createTask(token: string, input: CreateTaskInput): Promise<TaskResponse>;
   cancelTask(token: string, taskId: string): Promise<TaskResponse>;
   listWorkspaceProjects(
@@ -252,6 +281,45 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
         token,
         `/api/tasks/${taskId}/logs?after=${after}&limit=${limit}`,
       ),
+
+    listChatSessions: (token, env, limit = 50) => {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (env) params.set('env', env);
+      return request<ChatSessionListResponse>(
+        token,
+        `/api/sessions?${params.toString()}`,
+      );
+    },
+
+    createChatSession: (token, input) =>
+      request<ChatSessionResponse>(token, '/api/sessions', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    getChatSession: (token, sessionId) =>
+      request<ChatSessionResponse>(token, `/api/sessions/${sessionId}`),
+
+    sendChatMessage: (token, sessionId, content) =>
+      request<ChatSessionResponse>(
+        token,
+        `/api/sessions/${sessionId}/messages`,
+        { method: 'POST', body: JSON.stringify({ content }) },
+      ),
+
+    closeChatSession: (token, sessionId) =>
+      request<ChatSessionResponse>(token, `/api/sessions/${sessionId}/close`, {
+        method: 'POST',
+      }),
+
+    getChatEvents: (token, sessionId, after = 0, messageId) => {
+      const params = new URLSearchParams({ after: String(after) });
+      if (messageId) params.set('messageId', messageId);
+      return request<ChatEventListResponse>(
+        token,
+        `/api/sessions/${sessionId}/events?${params.toString()}`,
+      );
+    },
 
     createTask: (token, input) =>
       request<TaskResponse>(token, '/api/tasks', {

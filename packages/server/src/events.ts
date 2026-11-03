@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 
-import type { AgentTask, DecisionTicket } from '@zhunzou/shared';
+import type { AgentTask, ChatMessage, ChatSession, DecisionTicket } from '@zhunzou/shared';
 
 /**
  * In-process wake-up bus for long polling.
@@ -56,11 +56,66 @@ export class TicketEventBus {
 }
 
 /**
- * In-process wake-up bus for dispatched tasks.
+ * In-process wake-up bus for interactive sessions.
  *
- * Bridges long-poll `GET /api/tasks/next?env=...`; creating a task for that env
- * wakes every waiter immediately so the agent can start within milliseconds.
+ * When the dashboard sends a message, any bridge long-polling
+ * `GET /api/sessions/next?env=...` wakes immediately instead of waiting for
+ * the next poll tick.
  */
+export interface ChatClaim {
+  session: ChatSession;
+  message: ChatMessage;
+}
+
+export class SessionEventBus {
+  private readonly emitter = new EventEmitter();
+
+  constructor() {
+    this.emitter.setMaxListeners(0);
+  }
+
+  private channel(env: string): string {
+    return `chat-env:${env}`;
+  }
+
+  publish(session: ChatSession): void {
+    this.emitter.emit(this.channel(session.env), session);
+  }
+
+  wait(
+    env: string,
+    timeoutMs: number,
+    probe?: () => ChatClaim | null,
+  ): Promise<{ claim: ChatClaim | null; timedOut: boolean }> {
+    return new Promise((resolve) => {
+      let settled = false;
+
+      const finish = (claim: ChatClaim | null, timedOut: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.emitter.removeListener(this.channel(env), onPublish);
+        resolve({ claim, timedOut });
+      };
+
+      const onPublish = () => finish(null, false);
+
+      const timer = setTimeout(() => finish(null, true), timeoutMs);
+      timer.unref?.();
+
+      this.emitter.once(this.channel(env), onPublish);
+
+      if (probe) {
+        const claimed = probe();
+        if (claimed) finish(claimed, false);
+      }
+    });
+  }
+
+  listenerCount(env: string): number {
+    return this.emitter.listenerCount(this.channel(env));
+  }
+}
 export class TaskEventBus {
   private readonly emitter = new EventEmitter();
 
