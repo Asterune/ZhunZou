@@ -133,6 +133,33 @@ describe('HubClient', () => {
     });
   });
 
+  it('posts task log chunks', async () => {
+    hub = await startHub((_request, res) => {
+      json(res, 201, {
+        log: {
+          id: 1,
+          taskId: '12',
+          stream: 'stdout',
+          chunk: 'hello',
+          createdAt: 1,
+        },
+      });
+    });
+    const client = new HubClient(testConfig({ hubUrl: hub.baseUrl }));
+
+    const log = await client.appendTaskLog('12', {
+      stream: 'stdout',
+      chunk: 'hello',
+    });
+
+    expect(log.chunk).toBe('hello');
+    expect(hub.requests[0]?.url).toBe('/api/tasks/12/log');
+    expect(hub.requests[0]?.body).toEqual({
+      stream: 'stdout',
+      chunk: 'hello',
+    });
+  });
+
   it('requests resume data for the configured env', async () => {
     hub = await startHub((_request, res) => {
       json(res, 200, {

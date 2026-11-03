@@ -2,6 +2,7 @@ import { arch, hostname, platform } from 'node:os';
 
 import type {
   AgentTask,
+  AppendTaskLogInput,
   CompleteTaskInput,
   CreateTicketInput,
   DecisionTicket,
@@ -12,9 +13,11 @@ import type {
   ReleaseTaskInput,
   ResumeResponse,
   TaskListResponse,
+  TaskLog,
   WaitResponse,
 } from '@zhunzou/shared';
 import {
+  appendTaskLogSchema,
   completeTaskSchema,
   createTicketSchema,
   heartbeatSchema,
@@ -49,6 +52,7 @@ export interface HubApi {
   nextTask(timeoutMs?: number): Promise<NextTaskResponse>;
   listTasks(query?: Omit<ListTasksQuery, 'env'>): Promise<TaskListResponse>;
   completeTask(taskId: string, input: CompleteTaskInput): Promise<AgentTask>;
+  appendTaskLog(taskId: string, input: AppendTaskLogInput): Promise<TaskLog>;
   releaseTask(taskId: string, input: ReleaseTaskInput): Promise<AgentTask>;
   resume(sinceMs?: number): Promise<ResumeResponse>;
 }
@@ -210,6 +214,20 @@ export class HubClient implements HubApi {
     );
 
     return body.task;
+  }
+
+  async appendTaskLog(
+    taskId: string,
+    input: AppendTaskLogInput,
+  ): Promise<TaskLog> {
+    const id = ticketIdSchema.parse(String(taskId));
+    const payload = appendTaskLogSchema.parse(input);
+    const body = await this.request<{ log: TaskLog }>(
+      `/api/tasks/${id}/log`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
+    return body.log;
   }
 
   async releaseTask(taskId: string, input: ReleaseTaskInput): Promise<AgentTask> {

@@ -6,6 +6,7 @@ import {
   Inbox,
   Loader2,
   Send,
+  Terminal,
   XCircle,
 } from 'lucide-vue-next';
 import { computed, reactive, ref, watch } from 'vue';
@@ -19,6 +20,7 @@ import {
 } from '../lib/format';
 import { useHubStore } from '../stores/hub';
 import ProjectBindings from './ProjectBindings.vue';
+import TaskLogViewer from './TaskLogViewer.vue';
 
 const store = useHubStore();
 
@@ -30,6 +32,11 @@ const form = reactive({
 });
 const submitting = ref(false);
 const cancelling = ref('');
+const openLogs = ref('');
+
+function toggleLogs(taskId: string): void {
+  openLogs.value = openLogs.value === taskId ? '' : taskId;
+}
 
 const envOptions = computed(() =>
   [...store.envs].sort((left, right) => left.env.localeCompare(right.env)),
@@ -301,16 +308,26 @@ async function cancel(taskId: string): Promise<void> {
             </div>
           </div>
 
-          <button
-            type="button"
-            :disabled="cancelling === task.id"
-            class="inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-on-surface-variant transition hover:bg-error-container hover:text-on-error-container disabled:opacity-50"
-            @click="cancel(task.id)"
-          >
-            <Loader2 v-if="cancelling === task.id" :size="13" class="animate-spin" />
-            <XCircle v-else :size="13" />
-            取消
-          </button>
+          <div class="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface"
+              @click="toggleLogs(task.id)"
+            >
+              <Terminal :size="13" />
+              {{ openLogs === task.id ? '收起输出' : '查看输出' }}
+            </button>
+            <button
+              type="button"
+              :disabled="cancelling === task.id"
+              class="inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-on-surface-variant transition hover:bg-error-container hover:text-on-error-container disabled:opacity-50"
+              @click="cancel(task.id)"
+            >
+              <Loader2 v-if="cancelling === task.id" :size="13" class="animate-spin" />
+              <XCircle v-else :size="13" />
+              取消
+            </button>
+          </div>
         </div>
 
         <p class="mt-2.5 whitespace-pre-wrap break-words rounded-lg bg-surface-container-low px-3 py-2 text-sm leading-6 text-on-surface">
@@ -324,6 +341,12 @@ async function cancel(taskId: string): Promise<void> {
           <CheckCircle2 :size="13" />
           Agent 已领取，执行中{{ task.claimedAt ? ` · ${relativeTime(task.claimedAt)}` : '' }}
         </p>
+
+        <TaskLogViewer
+          v-if="openLogs === task.id"
+          :task-id="task.id"
+          :active="task.status === 'CLAIMED'"
+        />
       </article>
     </div>
 
@@ -356,11 +379,24 @@ async function cancel(taskId: string): Promise<void> {
             <span class="font-mono">{{ task.env }}</span>
             <span class="text-outline-variant">·</span>
             <span>{{ relativeTime(task.updatedAt) }}</span>
+            <button
+              type="button"
+              class="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface"
+              @click="toggleLogs(task.id)"
+            >
+              <Terminal :size="12" />
+              {{ openLogs === task.id ? '收起输出' : '输出' }}
+            </button>
           </div>
           <p class="mt-1.5 text-sm font-medium text-on-surface">{{ task.title }}</p>
           <p v-if="task.result" class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-on-surface-variant">
             {{ task.result }}
           </p>
+          <TaskLogViewer
+            v-if="openLogs === task.id"
+            :task-id="task.id"
+            :active="false"
+          />
         </article>
       </div>
     </div>

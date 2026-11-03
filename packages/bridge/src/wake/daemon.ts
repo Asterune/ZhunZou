@@ -91,6 +91,101 @@ interface LoopInternals extends WakeDaemonOptions {
   sleep: (ms: number) => Promise<void>;
 }
 
+type LogStream = 'stdout' | 'stderr' | 'system';
+
+interface TaskLogSink {
+  push: (stream: LogStream, chunk: string) => void;
+  close: () => Promise<void>;
+}
+
+const LOG_FLUSH_INTERVAL_MS = 600;
+const LOG_CHUNK_BYTES = 12_000;
+const LOG_BUFFER_BYTES = 24_000;
+
+/**
+ * Batch a running task's output and post it to the hub.
+ *
+ * The daemon must never fail a task because log shipping failed, so every
+ * error is downgraded to a single warning. Chunks are split to fit the API's
+ * 16 KB limit and flushed before the task is completed.
+ */
+function createTaskLogSink(
+  client: HubApi,
+  taskId: string,
+  onError: (message: string) => void,
+): TaskLogSink {
+  const buffers: Record<LogStream, string> = {
+    stdout: '',
+    stderr: '',
+    system: '',
+  };
+  let flushing = false;
+  let closed = false;
+  let warned = false;
+
+  const take = (): Array<{ stream: LogStream; chunk: string }> => {
+    const chunks: Array<{ stream: LogStream; chunk: string }> = [];
+    for (const stream of ['stdout', 'stderr', 'system'] as const) {
+      const text = buffers[stream];
+      if (!text) continue;
+      buffers[stream] = '';
+      for (let index = 0; index < text.length; index += LOG_CHUNK_BYTES) {
+        chunks.push({
+          stream,
+          chunk: text.slice(index, index + LOG_CHUNK_BYTES),
+        });
+      }
+    }
+    return chunks;
+  };
+
+  const flush = async (): Promise<void> => {
+    if (flushing) return;
+    flushing = true;
+    try {
+      for (;;) {
+        const chunks = take();
+        if (chunks.length === 0) return;
+        for (const item of chunks) {
+          try {
+            await client.appendTaskLog(taskId, item);
+          } catch (error) {
+            if (!warned) {
+              warned = true;
+              onError(
+                `任务 #${taskId} 日志上报失败：${(error as Error).message}`,
+              );
+            }
+          }
+        }
+      }
+    } finally {
+      flushing = false;
+    }
+  };
+
+  const timer = setInterval(() => {
+    void flush();
+  }, LOG_FLUSH_INTERVAL_MS);
+  timer.unref?.();
+
+  return {
+    push(stream, chunk) {
+      if (closed || !chunk) return;
+      buffers[stream] += chunk;
+      if (buffers[stream].length >= LOG_BUFFER_BYTES) {
+        void flush();
+      }
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
+      clearInterval(timer);
+      await flush();
+    },
+  };
+}
+
 async function runClaimLoop(
   adapter: WakeAdapter,
   internals: LoopInternals,
@@ -129,14 +224,28 @@ async function runClaimLoop(
       ...(hub.projectName ? { projectName: hub.projectName } : {}),
     });
 
+    const sink = createTaskLogSink(client, task.id, logError);
+    sink.push('system', `[zhunzou] 任务 #${task.id} 开始执行\n`);
+    const taskContext: WakeContext = { ...context, reportLog: sink.push };
+
     try {
-      const outcome = await adapter.wake(task, context);
+      const outcome = await adapter.wake(task, taskContext);
 
       if (outcome.completion) {
+        sink.push(
+          'system',
+          `\n[zhunzou] 任务 #${task.id} → ${outcome.completion.status}\n`,
+        );
+        await sink.close();
         await client.completeTask(task.id, outcome.completion);
         log(`任务 #${task.id} → ${outcome.completion.status}`);
         await beat(client, idlePatch);
       } else {
+        sink.push(
+          'system',
+          `[zhunzou] 任务 #${task.id} 已交接给端侧 Agent，等待其回报\n`,
+        );
+        await sink.close();
         // The agent owns the task from here and reports through MCP.
         log(`任务 #${task.id} 已交接给端侧 Agent，等待其回报`);
       }
@@ -145,6 +254,8 @@ async function runClaimLoop(
         (error as Error).message || '端侧未能唤醒',
         500,
       );
+      sink.push('system', `\n[zhunzou] 执行失败：${reason}\n`);
+      await sink.close();
       logError(`任务 #${task.id} 唤醒失败：${reason}`);
 
       try {

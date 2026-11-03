@@ -130,6 +130,26 @@ describe('createHubApi', () => {
     expect((fetchImpl.mock.calls[2]?.[1] as RequestInit).method).toBe('DELETE');
   });
 
+  it('loads task logs after a cursor', async () => {
+    const fetchImpl = mockFetch(
+      jsonResponse({
+        logs: [
+          { id: 2, taskId: '12', stream: 'stdout', chunk: 'hi', createdAt: 1 },
+        ],
+        nextAfter: 2,
+        truncated: false,
+      }),
+    );
+    const api = createHubApi(fetchImpl);
+
+    const result = await api.getTaskLogs(token, '12', 1);
+
+    expect(result.nextAfter).toBe(2);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      '/api/tasks/12/logs?after=1&limit=200',
+    );
+  });
+
   it('loads tickets with the requested limit', async () => {
     const fetchImpl = mockFetch(jsonResponse({ tickets: [ticket], total: 1 }));
     const api = createHubApi(fetchImpl);

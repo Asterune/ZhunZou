@@ -25,6 +25,11 @@ export interface WakeContext {
   config: WakeConfig;
   projectName?: string;
   log: (message: string) => void;
+  /** Stream execution output to the hub (best effort; never throws). */
+  reportLog?: (
+    stream: 'stdout' | 'stderr' | 'system',
+    chunk: string,
+  ) => void;
 }
 
 export interface WakeAdapter {
@@ -56,6 +61,10 @@ interface RunProcessOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
   shell?: boolean;
+  onOutput?: (
+    stream: 'stdout' | 'stderr',
+    chunk: string,
+  ) => void;
 }
 
 function runProcess(
@@ -92,12 +101,15 @@ function runProcess(
 
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout = appendCapture(stdout, chunk);
+      options.onOutput?.('stdout', chunk.toString());
     });
     child.stderr?.on('data', (chunk: Buffer) => {
       stderr = appendCapture(stderr, chunk);
+      options.onOutput?.('stderr', chunk.toString());
     });
     child.on('error', (error: Error) => {
       stderr = appendCapture(stderr, `${error.message}\n`);
+      options.onOutput?.('stderr', `${error.message}\n`);
       finish(null);
     });
     child.on('close', (code: number | null) => finish(code));
@@ -250,6 +262,7 @@ function createPresetAdapter(preset: Preset): WakeAdapter {
         {
           cwd: context.config.cwd,
           timeoutMs: context.config.runTimeoutMs,
+          ...(context.reportLog ? { onOutput: context.reportLog } : {}),
         },
       );
 
@@ -311,6 +324,7 @@ function createCommandAdapter(config: WakeConfig): WakeAdapter {
             ZHUNZOU_WORKDIR: config.cwd,
           },
           timeoutMs: config.runTimeoutMs,
+          ...(context.reportLog ? { onOutput: context.reportLog } : {}),
         },
       );
 

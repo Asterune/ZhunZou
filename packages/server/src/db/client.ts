@@ -79,6 +79,16 @@ CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_env ON agent_tasks(env);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_created ON agent_tasks(created_at);
 
+CREATE TABLE IF NOT EXISTS task_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  stream TEXT NOT NULL,
+  chunk TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id, id);
+
 CREATE TABLE IF NOT EXISTS workspace_projects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   env TEXT NOT NULL,

@@ -62,6 +62,10 @@ export const TASK_STATUSES = [
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
+/** Output streams a claimed task can report while it runs. */
+export const TASK_LOG_STREAMS = ['stdout', 'stderr', 'system'] as const;
+export type TaskLogStream = (typeof TASK_LOG_STREAMS)[number];
+
 /** Statuses after which a dispatched task never changes again. */
 export const TERMINAL_TASK_STATUSES = [
   'DONE',

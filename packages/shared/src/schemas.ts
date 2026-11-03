@@ -8,6 +8,7 @@ import {
   AGENT_KINDS,
   AGENT_STATUSES,
   RULE_CANDIDATE_STATUSES,
+  TASK_LOG_STREAMS,
   TASK_STATUSES,
   TICKET_STATUSES,
 } from './constants.js';
@@ -300,6 +301,37 @@ export const releaseTaskSchema = z.object({
 });
 
 /* ------------------------------------------------------------------ */
+/* Task execution logs                                                 */
+/* ------------------------------------------------------------------ */
+
+export const taskLogStreamSchema = z.enum(TASK_LOG_STREAMS);
+
+export const taskLogSchema = z.object({
+  id: z.number().int().positive(),
+  taskId: ticketIdSchema,
+  stream: taskLogStreamSchema,
+  chunk: z.string().max(16_384),
+  createdAt: z.number().int().nonnegative(),
+});
+
+/** Payload accepted by POST /api/tasks/:id/log. */
+export const appendTaskLogSchema = z.object({
+  stream: taskLogStreamSchema,
+  chunk: z.string().min(1).max(16_384),
+});
+
+export const listTaskLogsQuerySchema = z.object({
+  after: z.coerce.number().int().nonnegative().default(0),
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+});
+
+export const taskLogListResponseSchema = z.object({
+  logs: z.array(taskLogSchema),
+  nextAfter: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+});
+
+/* ------------------------------------------------------------------ */
 /* Workspace ↔ project bindings                                       */
 /* ------------------------------------------------------------------ */
 
@@ -530,6 +562,10 @@ export type ListTasksQuery = z.infer<typeof listTasksQuerySchema>;
 export type NextTaskQuery = z.infer<typeof nextTaskQuerySchema>;
 export type CompleteTaskInput = z.infer<typeof completeTaskSchema>;
 export type ReleaseTaskInput = z.infer<typeof releaseTaskSchema>;
+export type TaskLog = z.infer<typeof taskLogSchema>;
+export type AppendTaskLogInput = z.infer<typeof appendTaskLogSchema>;
+export type ListTaskLogsQuery = z.infer<typeof listTaskLogsQuerySchema>;
+export type TaskLogListResponse = z.infer<typeof taskLogListResponseSchema>;
 export type TaskResponse = z.infer<typeof taskResponseSchema>;
 export type TaskListResponse = z.infer<typeof taskListResponseSchema>;
 export type NextTaskResponse = z.infer<typeof nextTaskResponseSchema>;

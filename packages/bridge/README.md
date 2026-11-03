@@ -199,6 +199,8 @@ zhunzou-bridge wake --once
 - **一次性（run）**：守护进程领取后启动一个 CLI Agent，等待进程退出；
   退出码 `0` → `DONE`，否则 `FAILED`，并把输出尾部写进任务结果。
   `ZHUNZOU_WAKE_ARGS` / `--args` 可追加客户端参数。
+  运行期间 stdout/stderr 会按 600ms 批量上报到 `/api/tasks/:id/log`，看板任务卡
+  可实时展开查看。
 
 两种方式失败时都会调用 `POST /api/tasks/:id/release` 把任务**重新排队**并弹通知，
 不会把任务卡死在 `CLAIMED`。

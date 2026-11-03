@@ -16,6 +16,7 @@ import type {
   RuleCandidateStatus,
   RulesResponse,
   TaskListResponse,
+  TaskLogListResponse,
   TaskResponse,
   TicketListResponse,
   TicketResponse,
@@ -84,6 +85,12 @@ export interface HubApi {
     candidateId: string,
   ): Promise<RuleCandidateActionResponse>;
   listTasks(token: string, limit?: number): Promise<TaskListResponse>;
+  getTaskLogs(
+    token: string,
+    taskId: string,
+    after?: number,
+    limit?: number,
+  ): Promise<TaskLogListResponse>;
   createTask(token: string, input: CreateTaskInput): Promise<TaskResponse>;
   cancelTask(token: string, taskId: string): Promise<TaskResponse>;
   listWorkspaceProjects(
@@ -239,6 +246,12 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
 
     listTasks: (token, limit = 100) =>
       request<TaskListResponse>(token, `/api/tasks?limit=${limit}`),
+
+    getTaskLogs: (token, taskId, after = 0, limit = 200) =>
+      request<TaskLogListResponse>(
+        token,
+        `/api/tasks/${taskId}/logs?after=${after}&limit=${limit}`,
+      ),
 
     createTask: (token, input) =>
       request<TaskResponse>(token, '/api/tasks', {

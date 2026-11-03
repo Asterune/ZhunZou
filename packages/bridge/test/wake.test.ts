@@ -34,6 +34,7 @@ interface Calls {
   completed: Array<{ taskId: string; input: CompleteTaskInput }>;
   released: Array<{ taskId: string; input: ReleaseTaskInput }>;
   heartbeats: Array<Omit<HeartbeatInput, 'env'>>;
+  logs: Array<{ taskId: string; input: { stream: string; chunk: string } }>;
 }
 
 function makeClient(
@@ -69,6 +70,16 @@ function makeClient(
       calls.completed.push({ taskId, input });
       return { ...(task as AgentTask), status: input.status };
     },
+    async appendTaskLog(taskId, input) {
+      calls.logs.push({ taskId, input });
+      return {
+        id: 1,
+        taskId,
+        stream: input.stream,
+        chunk: input.chunk,
+        createdAt: 1,
+      };
+    },
     async releaseTask(taskId, input) {
       calls.released.push({ taskId, input });
       return { ...(task as AgentTask), status: 'PENDING' };
@@ -90,7 +101,12 @@ async function runOnce(
   adapter: WakeAdapter,
   task: AgentTask | null,
 ): Promise<{ calls: Calls; lines: string[] }> {
-  const calls: Calls = { completed: [], released: [], heartbeats: [] };
+  const calls: Calls = {
+    completed: [],
+    released: [],
+    heartbeats: [],
+    logs: [],
+  };
   const lines: string[] = [];
 
   await runWakeDaemon({
@@ -204,6 +220,10 @@ describe('runWakeDaemon', () => {
     });
     expect(calls.released).toHaveLength(0);
     expect(calls.heartbeats.at(-1)?.status).toBe('Idle');
+    expect(calls.logs.map((entry) => entry.input.stream)).toContain('system');
+    expect(
+      calls.logs.map((entry) => entry.input.chunk).join(''),
+    ).toContain('开始执行');
   });
 
   it('releases the task when the adapter cannot wake a client', async () => {

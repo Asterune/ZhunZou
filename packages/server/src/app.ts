@@ -11,6 +11,7 @@ import { z, ZodError } from 'zod';
 
 import type { DecisionTicket } from '@zhunzou/shared';
 import {
+  appendTaskLogSchema,
   batchResolveTicketsSchema,
   bindWorkspaceProjectSchema,
   bridgeReleaseManifestSchema,
@@ -25,6 +26,7 @@ import {
   isTerminalStatus,
   listAgentsQuerySchema,
   listRuleCandidatesQuerySchema,
+  listTaskLogsQuerySchema,
   listTasksQuerySchema,
   listTicketsQuerySchema,
   listWorkspaceProjectsQuerySchema,
@@ -1023,6 +1025,36 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         const input = completeTaskSchema.parse(request.body);
         const task = repo.completeTask(taskId, input);
         return { task };
+      });
+
+      // Live output from a running task. The bridge batches stdout/stderr and
+      // posts chunks here; the dashboard tails them while the task is active.
+      api.post('/tasks/:id/log', async (request, reply) => {
+        const { id } = paramsSchema.parse(request.params);
+        const taskId = parseTicketId(id);
+        const task = repo.getTask(taskId);
+        if (!task) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, task.env);
+        if (task.status !== 'CLAIMED') {
+          throw new ConflictError(
+            `task ${formatTicketId(id)} is ${task.status}, expected CLAIMED`,
+            'INVALID_TASK_STATUS',
+          );
+        }
+
+        const input = appendTaskLogSchema.parse(request.body);
+        const log = repo.appendTaskLog(taskId, input);
+        return reply.code(201).send({ log });
+      });
+
+      api.get('/tasks/:id/logs', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const taskId = parseTicketId(id);
+        const task = repo.getTask(taskId);
+        if (!task) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, task.env);
+        const query = listTaskLogsQuerySchema.parse(request.query);
+        return repo.listTaskLogs(taskId, query);
       });
 
       // Bridge hands a claimed task back when no local agent could be woken.

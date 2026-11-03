@@ -4,6 +4,7 @@ import {
   count,
   desc,
   eq,
+  gt,
   inArray,
   isNotNull,
   lte,
@@ -14,6 +15,7 @@ import type {
   Agent,
   AgentMeta,
   AgentTask,
+  AppendTaskLogInput,
   CompleteTaskInput,
   CreateAgentInput,
   CreateTaskInput,
@@ -23,11 +25,14 @@ import type {
   HeartbeatInput,
   ListAgentsQuery,
   ListRuleCandidatesQuery,
+  ListTaskLogsQuery,
   ListTasksQuery,
   ListTicketsQuery,
   ListWorkspaceProjectsQuery,
   ResolveTicketInput,
   RuleCandidate,
+  TaskLog,
+  TaskLogListResponse,
   TicketStatus,
   UpdateAgentInput,
   WorkspaceProject,
@@ -40,18 +45,23 @@ import {
   agents,
   envHeartbeats,
   ruleCandidates,
+  taskLogs,
   tickets,
   workspaceProjects,
   type AgentRow,
   type AgentTaskRow,
   type HeartbeatRow,
   type RuleCandidateRow,
+  type TaskLogRow,
   type TicketRow,
   type WorkspaceProjectRow,
 } from './db/schema.js';
 import { BadRequestError, ConflictError } from './errors.js';
 
 const AWAITING: TicketStatus[] = ['PENDING_META', 'PENDING_HUMAN'];
+
+/** Keep each task's live log bounded; older chunks are trimmed on append. */
+const MAX_TASK_LOG_BYTES = 256 * 1024;
 
 /**
  * Older bridge builds hard-coded this label before task reporting existed.
@@ -139,6 +149,16 @@ function toTask(row: AgentTaskRow): AgentTask {
     ...(row.leaseAt !== null ? { leaseAt: row.leaseAt } : {}),
     ...(row.completedAt !== null ? { completedAt: row.completedAt } : {}),
     ...(row.result ? { result: row.result } : {}),
+  };
+}
+
+function toTaskLog(row: TaskLogRow): TaskLog {
+  return {
+    id: row.id,
+    taskId: String(row.taskId),
+    stream: row.stream,
+    chunk: row.chunk,
+    createdAt: row.createdAt,
   };
 }
 
@@ -278,6 +298,12 @@ export interface TicketStore {
   ): AgentTask | null;
   /** Pending/CLAIMED tasks for an env, for bridge restart recovery. */
   listActiveTasks(env: string, limit?: number): AgentTask[];
+  appendTaskLog(
+    taskId: number,
+    input: AppendTaskLogInput,
+    now?: number,
+  ): TaskLog;
+  listTaskLogs(taskId: number, query: ListTaskLogsQuery): TaskLogListResponse;
   /** Awaiting tickets plus recently terminal ones, for bridge restart recovery. */
   listResumeTickets(env: string, since: number, limit?: number): DecisionTicket[];
 
@@ -773,6 +799,83 @@ export class TicketRepository implements TicketStore {
       .set({ leaseAt: now, updatedAt: now })
       .where(and(eq(agentTasks.env, env), eq(agentTasks.status, 'CLAIMED')))
       .run().changes;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Task execution logs                                              */
+  /* ---------------------------------------------------------------- */
+
+  appendTaskLog(
+    taskId: number,
+    input: AppendTaskLogInput,
+    now = Date.now(),
+  ): TaskLog {
+    const row = this.db
+      .insert(taskLogs)
+      .values({
+        taskId,
+        stream: input.stream,
+        chunk: input.chunk,
+        createdAt: now,
+      })
+      .returning()
+      .get();
+
+    this.trimTaskLogs(taskId);
+    return toTaskLog(row);
+  }
+
+  listTaskLogs(
+    taskId: number,
+    query: ListTaskLogsQuery,
+  ): TaskLogListResponse {
+    const rows = this.db
+      .select()
+      .from(taskLogs)
+      .where(and(eq(taskLogs.taskId, taskId), gt(taskLogs.id, query.after)))
+      .orderBy(asc(taskLogs.id))
+      .limit(query.limit)
+      .all();
+
+    const logs = rows.map(toTaskLog);
+    return {
+      logs,
+      nextAfter: logs.length > 0 ? logs[logs.length - 1]!.id : query.after,
+      truncated: rows.length === query.limit,
+    };
+  }
+
+  private trimTaskLogs(taskId: number): void {
+    const rows = this.db
+      .select({
+        id: taskLogs.id,
+        size: sql<number>`length(${taskLogs.chunk})`,
+      })
+      .from(taskLogs)
+      .where(eq(taskLogs.taskId, taskId))
+      .orderBy(asc(taskLogs.id))
+      .all();
+
+    let total = rows.reduce((sum, row) => sum + Number(row.size), 0);
+    let remove = 0;
+    while (total > MAX_TASK_LOG_BYTES && remove < rows.length) {
+      total -= Number(rows[remove]!.size);
+      remove += 1;
+    }
+    if (remove === 0) return;
+
+    this.db
+      .delete(taskLogs)
+      .where(
+        and(
+          eq(taskLogs.taskId, taskId),
+          inArray(
+            taskLogs.id,
+            rows.slice(0, remove).map((row) => row.id),
+          ),
+        ),
+      )
+      .run();
   }
 
   /* ---------------------------------------------------------------- */

@@ -5,6 +5,7 @@ import type {
   AgentStatus,
   EnvStatus,
   RuleCandidateStatus,
+  TaskLogStream,
   TaskStatus,
   TicketOption,
   TicketStatus,
@@ -110,6 +111,19 @@ export const agentTasks = sqliteTable(  'agent_tasks',
   ],
 );
 
+/** Append-only execution output for a claimed task (bounded by the server). */
+export const taskLogs = sqliteTable(
+  'task_logs',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    taskId: integer('task_id').notNull(),
+    stream: text('stream').$type<TaskLogStream>().notNull(),
+    chunk: text('chunk').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [index('idx_task_logs_task').on(table.taskId, table.id)],
+);
+
 export const workspaceProjects = sqliteTable(
   'workspace_projects',
   {
@@ -154,5 +168,7 @@ export type AgentRow = typeof agents.$inferSelect;
 export type AgentInsert = typeof agents.$inferInsert;
 export type AgentTaskRow = typeof agentTasks.$inferSelect;
 export type AgentTaskInsert = typeof agentTasks.$inferInsert;
+export type TaskLogRow = typeof taskLogs.$inferSelect;
+export type TaskLogInsert = typeof taskLogs.$inferInsert;
 export type WorkspaceProjectRow = typeof workspaceProjects.$inferSelect;
 export type WorkspaceProjectInsert = typeof workspaceProjects.$inferInsert;
