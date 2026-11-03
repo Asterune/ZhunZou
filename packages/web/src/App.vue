@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  Bot,
   CheckCircle2,
   Gavel,
   LogOut,
@@ -11,6 +12,7 @@ import {
 } from 'lucide-vue-next';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
+import AgentPanel from './components/AgentPanel.vue';
 import BatchApproveDialog from './components/BatchApproveDialog.vue';
 import HistoryList from './components/HistoryList.vue';
 import LoginGate from './components/LoginGate.vue';
@@ -22,14 +24,17 @@ import ToastStack from './components/ToastStack.vue';
 import { relativeTime } from './lib/format';
 import { useHubStore } from './stores/hub';
 
-type Tab = 'pending' | 'tasks' | 'history' | 'rules';
+type Tab = 'pending' | 'tasks' | 'agents' | 'history' | 'rules';
 
 const store = useHubStore();
 
 function initialTab(): Tab {
   if (typeof window === 'undefined') return 'pending';
   const value = new URLSearchParams(window.location.search).get('tab');
-  return value === 'tasks' || value === 'history' || value === 'rules'
+  return value === 'tasks' ||
+    value === 'agents' ||
+    value === 'history' ||
+    value === 'rules'
     ? value
     : 'pending';
 }
@@ -49,6 +54,12 @@ const tabs = computed(() => [
     label: '下发任务',
     icon: Send,
     count: store.activeTasks.length,
+  },
+  {
+    key: 'agents' as const,
+    label: '接入端',
+    icon: Bot,
+    count: store.agents.length,
   },
   { key: 'history' as const, label: '历史决策', icon: CheckCircle2 },
   { key: 'rules' as const, label: '规则配置', icon: SlidersHorizontal },
@@ -76,6 +87,9 @@ watch(activeTab, (tab) => {
   if (tab === 'rules') {
     void store.loadRules();
     void store.loadRuleCandidates();
+  }
+  if (tab === 'agents') {
+    void store.loadAgents();
   }
 
   // Keep the new page at the top: switching while scrolled would otherwise
@@ -296,6 +310,8 @@ onBeforeUnmount(() => {
       </section>
 
       <TaskBoard v-else-if="activeTab === 'tasks'" />
+
+      <AgentPanel v-else-if="activeTab === 'agents'" />
 
       <HistoryList v-else-if="activeTab === 'history'" />
 

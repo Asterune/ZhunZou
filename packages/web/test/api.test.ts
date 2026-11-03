@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AgentTask, DecisionTicket, EnvHeartbeat } from '@zhunzou/shared';
+import type {
+  Agent,
+  AgentTask,
+  DecisionTicket,
+  EnvHeartbeat,
+} from '@zhunzou/shared';
 
 import { ApiError, createHubApi } from '../src/lib/api';
 
@@ -43,6 +48,19 @@ const env: EnvHeartbeat = {
   online: true,
 };
 
+const agent: Agent = {
+  env: 'company-cursor',
+  name: '公司的 Cursor',
+  kind: 'cursor',
+  status: 'active',
+  hasToken: true,
+  tokenPrefix: 'zz_abc123',
+  online: true,
+  lastSeenAt: 1,
+  createdAt: 1,
+  updatedAt: 1,
+};
+
 const task: AgentTask = {
   id: '12',
   env: 'company-windows',
@@ -69,6 +87,47 @@ describe('createHubApi', () => {
         headers: expect.objectContaining({ authorization: `Bearer ${token}` }),
       }),
     );
+  });
+
+  it('lists registered agents', async () => {
+    const fetchImpl = mockFetch(jsonResponse({ agents: [agent] }));
+    const api = createHubApi(fetchImpl);
+
+    const result = await api.listAgents(token);
+
+    expect(result.agents[0]).toMatchObject({ env: 'company-cursor', kind: 'cursor' });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('/api/agents');
+  });
+
+  it('registers, edits, issues and revokes agent tokens', async () => {
+    const fetchImpl = mockFetch(jsonResponse({ agent }));
+    const api = createHubApi(fetchImpl);
+
+    await api.createAgent(token, { env: 'company-cursor', kind: 'cursor' });
+    expect((fetchImpl.mock.calls[0]?.[1] as RequestInit).method).toBe('POST');
+    expect(
+      JSON.parse(String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body)),
+    ).toEqual({ env: 'company-cursor', kind: 'cursor' });
+
+    await api.updateAgent(token, 'company-cursor', { name: 'Cursor 1' });
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe('/api/agents/company-cursor');
+    expect((fetchImpl.mock.calls[1]?.[1] as RequestInit).method).toBe('PATCH');
+
+    const issued = mockFetch(
+      jsonResponse({ agent, token: 'zz_plaintext' }),
+    );
+    const issuingApi = createHubApi(issued);
+    const result = await issuingApi.issueAgentToken(token, 'company-cursor');
+    expect(result.token).toBe('zz_plaintext');
+    expect(issued.mock.calls[0]?.[0]).toBe(
+      '/api/agents/company-cursor/token',
+    );
+
+    await api.revokeAgentToken(token, 'company-cursor');
+    expect(fetchImpl.mock.calls[2]?.[0]).toBe(
+      '/api/agents/company-cursor/token',
+    );
+    expect((fetchImpl.mock.calls[2]?.[1] as RequestInit).method).toBe('DELETE');
   });
 
   it('loads tickets with the requested limit', async () => {

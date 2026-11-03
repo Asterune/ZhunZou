@@ -1,13 +1,16 @@
 import { computed, reactive, ref } from 'vue';
 
 import type {
+  Agent,
   AgentTask,
+  CreateAgentInput,
   CreateTaskInput,
   DecisionTicket,
   EnvHeartbeat,
   ResolveTicketInput,
   RuleCandidate,
   RulesResponse,
+  UpdateAgentInput,
   WorkspaceProject,
 } from '@zhunzou/shared';
 
@@ -65,6 +68,7 @@ function describeError(error: unknown): string {
 export function createHubStore(api: HubApi = hubApi) {
   const token = ref(loadStoredToken());
   const envs = ref<EnvHeartbeat[]>([]);
+  const agents = ref<Agent[]>([]);
   const tickets = ref<DecisionTicket[]>([]);
   const tasks = ref<AgentTask[]>([]);
   const rules = ref<RulesResponse | null>(null);
@@ -80,6 +84,8 @@ export function createHubStore(api: HubApi = hubApi) {
   const batchResolving = ref(false);
   const bindingProject = ref(false);
   const unbindingProjectId = ref('');
+  const agentActionEnv = ref('');
+  const agentsLoading = ref(false);
   const connection = ref<'idle' | 'online' | 'offline'>('idle');
   const lastSyncAt = ref(0);
   const lastError = ref('');
@@ -113,6 +119,14 @@ export function createHubStore(api: HubApi = hubApi) {
 
   const onlineCount = computed(
     () => envs.value.filter((env) => env.online).length,
+  );
+
+  /** Registered agents, online first and then by env name. */
+  const sortedAgents = computed(() =>
+    [...agents.value].sort((left, right) => {
+      if (left.online !== right.online) return left.online ? -1 : 1;
+      return left.env.localeCompare(right.env);
+    }),
   );
 
   const pendingRuleCandidates = computed(() =>
@@ -157,14 +171,16 @@ export function createHubStore(api: HubApi = hubApi) {
 
     refreshing.value = true;
     try {
-      const [status, list, taskList, bindings] = await Promise.all([
+      const [status, list, taskList, bindings, agentList] = await Promise.all([
         api.status(token.value),
         api.listTickets(token.value, TICKET_LIMIT),
         api.listTasks(token.value, TICKET_LIMIT),
         api.listWorkspaceProjects(token.value),
+        api.listAgents(token.value),
       ]);
 
       envs.value = status.envs;
+      agents.value = agentList.agents;
       tickets.value = list.tickets;
       tasks.value = taskList.tasks;
       workspaceProjects.value = bindings.projects;
@@ -220,6 +236,7 @@ export function createHubStore(api: HubApi = hubApi) {
     token.value = '';
     clearStoredToken();
     envs.value = [];
+    agents.value = [];
     tickets.value = [];
     tasks.value = [];
     rules.value = null;
@@ -452,6 +469,121 @@ export function createHubStore(api: HubApi = hubApi) {
     }
   }
 
+  async function registerAgent(input: CreateAgentInput): Promise<boolean> {
+    if (agentActionEnv.value) return false;
+
+    agentActionEnv.value = input.env;
+    try {
+      const response = await api.createAgent(token.value, input);
+      agents.value = [
+        ...agents.value.filter((agent) => agent.env !== response.agent.env),
+        response.agent,
+      ];
+      pushToast(`已登记接入端 ${response.agent.env}`, 'success');
+      void refresh();
+      return true;
+    } catch (error) {
+      fail(error, '登记接入端失败');
+      return false;
+    } finally {
+      agentActionEnv.value = '';
+    }
+  }
+
+  async function updateAgent(
+    env: string,
+    patch: UpdateAgentInput,
+  ): Promise<boolean> {
+    if (agentActionEnv.value) return false;
+
+    agentActionEnv.value = env;
+    try {
+      const response = await api.updateAgent(token.value, env, patch);
+      agents.value = agents.value.map((agent) =>
+        agent.env === env ? response.agent : agent,
+      );
+      pushToast('接入端配置已更新', 'success');
+      return true;
+    } catch (error) {
+      fail(error, '更新接入端失败');
+      return false;
+    } finally {
+      agentActionEnv.value = '';
+    }
+  }
+
+  async function deleteAgent(env: string): Promise<boolean> {
+    if (agentActionEnv.value) return false;
+
+    agentActionEnv.value = env;
+    try {
+      await api.deleteAgent(token.value, env);
+      agents.value = agents.value.filter((agent) => agent.env !== env);
+      envs.value = envs.value.filter((item) => item.env !== env);
+      pushToast(`已删除接入端 ${env}`, 'success');
+      return true;
+    } catch (error) {
+      fail(error, '删除接入端失败');
+      return false;
+    } finally {
+      agentActionEnv.value = '';
+    }
+  }
+
+  /** Returns the plaintext token once; the caller must show it immediately. */
+  async function issueAgentToken(env: string): Promise<string | null> {
+    if (agentActionEnv.value) return null;
+
+    agentActionEnv.value = env;
+    try {
+      const response = await api.issueAgentToken(token.value, env);
+      agents.value = [
+        ...agents.value.filter((agent) => agent.env !== env),
+        response.agent,
+      ];
+      pushToast('已签发新的 Agent Token（仅显示一次）', 'success');
+      return response.token;
+    } catch (error) {
+      fail(error, '签发 Token 失败');
+      return null;
+    } finally {
+      agentActionEnv.value = '';
+    }
+  }
+
+  async function revokeAgentToken(env: string): Promise<boolean> {
+    if (agentActionEnv.value) return false;
+
+    agentActionEnv.value = env;
+    try {
+      const response = await api.revokeAgentToken(token.value, env);
+      agents.value = agents.value.map((agent) =>
+        agent.env === env ? response.agent : agent,
+      );
+      pushToast('已吊销 Agent Token', 'success');
+      return true;
+    } catch (error) {
+      fail(error, '吊销 Token 失败');
+      return false;
+    } finally {
+      agentActionEnv.value = '';
+    }
+  }
+
+  async function loadAgents(): Promise<void> {
+    if (!token.value || agentsLoading.value) return;
+
+    agentsLoading.value = true;
+    try {
+      const response = await api.listAgents(token.value);
+      agents.value = response.agents;
+    } catch (error) {
+      fail(error, '接入端加载失败');
+    } finally {
+      agentsLoading.value = false;
+    }
+  }
+
   async function loadRules(force = false): Promise<void> {
     if (!token.value) return;
     if (rules.value && !force) return;
@@ -536,6 +668,7 @@ export function createHubStore(api: HubApi = hubApi) {
   return reactive({
     token,
     envs,
+    agents: sortedAgents,
     rules,
     tasks,
     ruleCandidates,
@@ -556,6 +689,8 @@ export function createHubStore(api: HubApi = hubApi) {
     batchResolving,
     bindingProject,
     unbindingProjectId,
+    agentActionEnv,
+    agentsLoading,
     connection,
     lastSyncAt,
     lastError,
@@ -573,6 +708,12 @@ export function createHubStore(api: HubApi = hubApi) {
     cancelTask,
     bindProject,
     unbindProject,
+    registerAgent,
+    updateAgent,
+    deleteAgent,
+    issueAgentToken,
+    revokeAgentToken,
+    loadAgents,
     projectsForEnv,
     loadRules,
     saveRules,

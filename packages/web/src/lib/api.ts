@@ -1,7 +1,11 @@
 import type {
+  AgentListResponse,
+  AgentResponse,
+  AgentTokenResponse,
   BatchResolveResponse,
   BatchResolveTicketsInput,
   BindWorkspaceProjectInput,
+  CreateAgentInput,
   CreateTaskInput,
   DecisionTicket,
   EnvHeartbeat,
@@ -15,6 +19,7 @@ import type {
   TaskResponse,
   TicketListResponse,
   TicketResponse,
+  UpdateAgentInput,
   WorkspaceProjectListResponse,
   WorkspaceProjectResponse,
 } from '@zhunzou/shared';
@@ -37,6 +42,16 @@ interface ApiErrorBody {
 
 export interface HubApi {
   status(token: string): Promise<{ envs: EnvHeartbeat[] }>;
+  listAgents(token: string): Promise<AgentListResponse>;
+  createAgent(token: string, input: CreateAgentInput): Promise<AgentResponse>;
+  updateAgent(
+    token: string,
+    env: string,
+    input: UpdateAgentInput,
+  ): Promise<AgentResponse>;
+  deleteAgent(token: string, env: string): Promise<{ deleted: boolean; env: string }>;
+  issueAgentToken(token: string, env: string): Promise<AgentTokenResponse>;
+  revokeAgentToken(token: string, env: string): Promise<AgentResponse>;
   listTickets(token: string, limit?: number): Promise<TicketListResponse>;
   resolve(
     token: string,
@@ -129,6 +144,41 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
 
   return {
     status: (token) => request<{ envs: EnvHeartbeat[] }>(token, '/api/status'),
+
+    listAgents: (token) => request<AgentListResponse>(token, '/api/agents'),
+
+    createAgent: (token, input) =>
+      request<AgentResponse>(token, '/api/agents', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    updateAgent: (token, env, input) =>
+      request<AgentResponse>(token, `/api/agents/${encodeURIComponent(env)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+
+    deleteAgent: (token, env) =>
+      request<{ deleted: boolean; env: string }>(
+        token,
+        `/api/agents/${encodeURIComponent(env)}`,
+        { method: 'DELETE' },
+      ),
+
+    issueAgentToken: (token, env) =>
+      request<AgentTokenResponse>(
+        token,
+        `/api/agents/${encodeURIComponent(env)}/token`,
+        { method: 'POST' },
+      ),
+
+    revokeAgentToken: (token, env) =>
+      request<AgentResponse>(
+        token,
+        `/api/agents/${encodeURIComponent(env)}/token`,
+        { method: 'DELETE' },
+      ),
 
     listTickets: (token, limit = 200) =>
       request<TicketListResponse>(token, `/api/tickets?limit=${limit}`),
