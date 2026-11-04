@@ -20,7 +20,7 @@ const iconClasses: Record<ToastKind, string> = {
 
 <template>
   <div
-    class="pointer-events-none fixed inset-x-0 bottom-20 z-50 flex flex-col items-center gap-2 px-4 sm:bottom-6 sm:items-end sm:pr-6"
+    class="pointer-events-none fixed inset-x-0 bottom-[calc(5rem_+_env(safe-area-inset-bottom))] z-50 flex flex-col items-center gap-2 px-4 sm:bottom-[calc(1.5rem_+_env(safe-area-inset-bottom))] sm:items-end sm:pr-6"
   >
     <TransitionGroup
       enter-active-class="transition duration-200 ease-out"

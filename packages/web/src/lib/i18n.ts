@@ -39,6 +39,13 @@ const zh: Record<string, string> = {
   'app.language': '切换语言',
   'app.languageNext': 'English',
 
+  'update.aria': '发现新版本',
+  'update.title': '发现新版本',
+  'update.desc': '新版本已下载完成，更新后即可使用最新功能。',
+  'update.later': '之后更新',
+  'update.now': '立即更新',
+  'update.applying': '正在更新…',
+
   'login.eyebrow': '御前接入 · 安全控制台',
   'login.title': '准奏',
   'login.subtitle': 'Agent 决策中枢',
@@ -432,6 +439,13 @@ const en: Record<string, string> = {
   'app.footer': 'Zhunzou · Single instance · SQLite-backed',
   'app.language': 'Switch language',
   'app.languageNext': '中文',
+
+  'update.aria': 'New version available',
+  'update.title': 'New version available',
+  'update.desc': 'The update is ready. Reload to start using the latest version.',
+  'update.later': 'Later',
+  'update.now': 'Update now',
+  'update.applying': 'Updating…',
 
   'login.eyebrow': 'Imperial Gateway · Secure Console',
   'login.title': 'Zhunzou',

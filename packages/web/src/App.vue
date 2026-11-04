@@ -24,6 +24,7 @@ import StatusBar from './components/StatusBar.vue';
 import TaskBoard from './components/TaskBoard.vue';
 import TicketCard from './components/TicketCard.vue';
 import ToastStack from './components/ToastStack.vue';
+import UpdatePrompt from './components/UpdatePrompt.vue';
 import { relativeTime } from './lib/format';
 import { useI18n } from './lib/i18n';
 import { useHubStore } from './stores/hub';
@@ -127,9 +128,12 @@ onBeforeUnmount(() => {
 <template>
   <LoginGate v-if="!store.token" />
 
-  <div v-else class="paper-grain min-h-screen bg-surface pb-24 md:pb-0">
+  <div
+    v-else
+    class="paper-grain min-h-screen bg-surface pb-[calc(6rem_+_env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] md:pb-0"
+  >
     <header
-      class="sticky top-0 z-40 border-b border-outline-variant/35 bg-surface shadow-[0_1px_8px_rgba(30,27,25,0.04)]"
+      class="sticky top-0 z-40 border-b border-outline-variant/35 bg-surface pt-[env(safe-area-inset-top)] shadow-[0_1px_8px_rgba(30,27,25,0.04)]"
     >
       <div class="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4 sm:px-6">
         <div class="flex min-w-0 items-center gap-2.5">
@@ -345,7 +349,7 @@ onBeforeUnmount(() => {
     </footer>
 
     <nav
-      class="fixed inset-x-0 bottom-0 z-40 border-t border-outline-variant/35 bg-surface/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-2px_12px_rgba(30,27,25,0.05)] backdrop-blur-xl md:hidden"
+      class="fixed inset-x-0 bottom-0 z-40 border-t border-outline-variant/35 bg-surface/95 pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] shadow-[0_-2px_12px_rgba(30,27,25,0.05)] backdrop-blur-xl md:hidden"
     >
       <div class="flex h-16 items-stretch">
         <button
@@ -376,5 +380,6 @@ onBeforeUnmount(() => {
     </nav>
   </div>
 
+  <UpdatePrompt />
   <ToastStack />
 </template>

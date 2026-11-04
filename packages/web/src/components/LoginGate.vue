@@ -23,7 +23,9 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <div class="paper-grain relative flex min-h-screen flex-col bg-surface">
+  <div
+    class="paper-grain relative flex min-h-screen flex-col bg-surface pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
+  >
     <div class="absolute right-4 top-4 z-10">
       <LocaleToggle />
     </div>

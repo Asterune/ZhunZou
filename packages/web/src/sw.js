@@ -4,6 +4,10 @@
  * Hand-written on purpose (no Workbox): the app is a single-bundle SPA, so a
  * small runtime cache is enough and keeps the dependency tree flat.
  *
+ * This file lives in `src/` so the Vite config can emit it with a per-build id
+ * (`__BUILD_ID__`). That id changes the script bytes on every deploy, which is
+ * what lets an already-open app discover updates via `registration.update()`.
+ *
  * Strategy
  * - navigation: network-first, fall back to the cached page / shell / offline page
  * - hashed build output (/assets/): stale-while-revalidate
@@ -12,9 +16,11 @@
  *
  * Bump CACHE_VERSION whenever the caching behaviour below changes; the old
  * caches are dropped on activate.
+ *
+ * Build: __BUILD_ID__
  */
 
-const CACHE_VERSION = 'zhunzou-v1';
+const CACHE_VERSION = 'zhunzou-v2';
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const ASSET_CACHE = `${CACHE_VERSION}-assets`;
 const OFFLINE_URL = '/offline.html';
@@ -45,9 +51,16 @@ self.addEventListener('install', (event) => {
           }
         }),
       );
-      await self.skipWaiting();
+      // New versions wait here until the page asks for them, so the user can
+      // keep working and apply the update from the in-app prompt.
     })(),
   );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    event.waitUntil(self.skipWaiting());
+  }
 });
 
 self.addEventListener('activate', (event) => {
