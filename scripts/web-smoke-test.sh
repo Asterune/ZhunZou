@@ -45,7 +45,7 @@ fi
   META_AGENT_ENABLED=false \
   SERVE_WEB=true \
   LOG_LEVEL=warn \
-  node dist/main.js >"$LOG_FILE" 2>&1
+  exec node dist/main.js >"$LOG_FILE" 2>&1
 ) &
 SERVER_PID=$!
 
