@@ -98,3 +98,20 @@
     background-size: 4px 4px;
   }
 }
+
+/*
+ * iOS Safari zoomes the whole page when a focused form control renders below
+ * 16px, which makes the dashboard jump on every tap into an input. Keep the
+ * controls at 16px on touch devices; intentionally larger text keeps its size
+ * because no control currently uses a larger font.
+ *
+ * This rule is unlayered on purpose so it also wins over Tailwind's
+ * `text-xs` / `text-[13px]` utilities (which live in the `utilities` layer).
+ */
+@media (hover: none) and (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
