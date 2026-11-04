@@ -7,7 +7,15 @@ import {
   X,
   XCircle,
 } from 'lucide-vue-next';
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from 'vue';
 
 import type {
   ChatMessage,
@@ -95,6 +103,34 @@ const runningMessage = computed(() =>
 
 const activeSession = computed(() => session.value);
 
+/**
+ * The transcript is a fixed-height scroll box, so new turns have to be pulled
+ * into view. Follow the bottom only while the reader is already there; someone
+ * scrolled up to read history should not get yanked down by a background poll.
+ */
+const messagesEl = ref<HTMLElement | null>(null);
+let stickToBottom = true;
+
+function updateStick(): void {
+  const element = messagesEl.value;
+  if (!element) return;
+  stickToBottom =
+    element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+}
+
+function scrollToBottom(force = false): void {
+  const element = messagesEl.value;
+  if (!element || (!force && !stickToBottom)) return;
+  element.scrollTop = element.scrollHeight;
+}
+
+watch(
+  () => messages.value.map((message) => `${message.id}:${message.status}`).join('|'),
+  () => {
+    void nextTick(() => scrollToBottom());
+  },
+);
+
 /** A turn is in flight, so short-interval polls are worth their cost. */
 const busy = computed(
   () => Boolean(runningMessage.value) || sending.value || Boolean(retrying.value),
@@ -168,6 +204,8 @@ async function openSession(id: string): Promise<void> {
   session.value = null;
   messages.value = [];
   await refreshSession();
+  stickToBottom = true;
+  void nextTick(() => scrollToBottom(true));
   if (typeof window !== 'undefined') {
     window.scrollTo({ top: 0, behavior: 'auto' });
   }
@@ -254,6 +292,8 @@ async function send(): Promise<void> {
     draft.value = '';
     await refreshSession();
     await loadSessions();
+    stickToBottom = true;
+    void nextTick(() => scrollToBottom(true));
     // The runner long-polls and picks this up immediately.
     setTimeout(() => void refreshSession(), 800);
   } catch (cause) {
@@ -522,9 +562,10 @@ onBeforeUnmount(stopPolling);
       <!-- Chat -->
       <div
         v-if="activeSession"
-        class="flex min-h-[480px] flex-col rounded-xl border border-outline-variant/35 bg-surface-container-lowest shadow-sm"
+        class="flex flex-col overflow-hidden rounded-xl border border-outline-variant/35 bg-surface-container-lowest shadow-sm"
+        style="height: clamp(420px, calc(100dvh - 14rem), 760px)"
       >
-        <header class="flex items-center justify-between gap-2 border-b border-outline-variant/30 px-4 py-3">
+        <header class="flex shrink-0 items-center justify-between gap-2 border-b border-outline-variant/30 px-4 py-3">
           <div class="min-w-0">
             <h3 class="truncate text-sm font-semibold text-on-surface">
               {{ activeSession.title }}
@@ -561,7 +602,11 @@ onBeforeUnmount(stopPolling);
           </button>
         </header>
 
-        <div class="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+        <div
+          ref="messagesEl"
+          class="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-4"
+          @scroll.passive="updateStick"
+        >
           <div
             v-for="message in messages"
             :key="message.id"
@@ -617,7 +662,7 @@ onBeforeUnmount(stopPolling);
           />
         </div>
 
-        <div class="border-t border-outline-variant/30 p-3">
+        <div class="shrink-0 border-t border-outline-variant/30 p-3">
           <div class="flex items-end gap-2">
             <textarea
               v-model="draft"
