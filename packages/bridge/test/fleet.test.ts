@@ -175,6 +175,15 @@ describe('resolveFleetTokens', () => {
         'POST /api/agents/demo/token',
       ]);
 
+      // Registration carries machine metadata so the node card is correct
+      // even if the project never wakes up.
+      expect(hub.requests[0]?.body).toMatchObject({
+        env: 'demo',
+        host: expect.any(String),
+        os: expect.any(String),
+        kind: expect.any(String),
+      });
+
       const cached = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<
         string,
         string

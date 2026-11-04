@@ -68,6 +68,32 @@ describe('agent registry', () => {
     }
   });
 
+  it('keeps a specific kind when an older client reports "other"', async () => {
+    const ctx = await createTestContext();
+    try {
+      await ctx.app.inject({
+        method: 'POST',
+        url: '/api/agents',
+        headers: ctx.auth,
+        payload: { env: ENV, kind: 'opencode' },
+      });
+
+      await heartbeat(ctx, ENV, ctx.auth, { kind: 'other', host: 'macbook' });
+
+      const response = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/agents?status=active`,
+        headers: ctx.auth,
+      });
+      const agent = (response.json().agents as Agent[]).find(
+        (item) => item.env === ENV,
+      );
+      expect(agent?.kind).toBe('opencode');
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('registers, renames and deletes an agent from the console', async () => {
     const ctx = await createTestContext();
     try {
@@ -75,13 +101,21 @@ describe('agent registry', () => {
         method: 'POST',
         url: '/api/agents',
         headers: ctx.auth,
-        payload: { env: ENV, name: '家里的 OpenCode', kind: 'opencode' },
+        payload: {
+          env: ENV,
+          name: '家里的 OpenCode',
+          kind: 'opencode',
+          host: 'macbook',
+          os: 'darwin-x64',
+        },
       });
       expect(created.statusCode).toBe(201);
       expect(created.json().agent).toMatchObject({
         env: ENV,
         name: '家里的 OpenCode',
         kind: 'opencode',
+        host: 'macbook',
+        os: 'darwin-x64',
       });
 
       const patched = await ctx.app.inject({

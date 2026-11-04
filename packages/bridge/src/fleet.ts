@@ -1,17 +1,19 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir, hostname } from 'node:os';
+import { arch, homedir, hostname, platform } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
-import type { AgentKind } from '@zhunzou/shared';
 import { z } from 'zod';
 
 import type { BridgeConfig } from './config.js';
 import { HubClient } from './hub-client.js';
 import { createPresenceReporter } from './presence.js';
 import { runSessionDaemon, supportsChat } from './session.js';
+import { agentKindForAdapter } from './wake/adapters.js';
 import type { WakeAdapterName } from './wake/config.js';
 import { WAKE_ADAPTERS, loadWakeConfig } from './wake/config.js';
 import { runWakeDaemon } from './wake/daemon.js';
+
+export { agentKindForAdapter } from './wake/adapters.js';
 
 /**
  * A machine-level supervisor for many projects.
@@ -210,24 +212,6 @@ export function loadFleetConfig(path = DEFAULT_CONFIG_PATH): FleetConfig {
   };
 }
 
-export function agentKindForAdapter(adapter: WakeAdapterName): AgentKind {
-  switch (adapter) {
-    case 'opencode':
-    case 'opencode-run':
-      return 'opencode';
-    case 'cursor-agent':
-      return 'cursor';
-    case 'claude':
-      return 'claude-code';
-    case 'codex':
-      return 'codex';
-    case 'gemini':
-      return 'gemini';
-    default:
-      return 'other';
-  }
-}
-
 /* ------------------------------------------------------------------ */
 /* Token provisioning                                                  */
 /* ------------------------------------------------------------------ */
@@ -308,6 +292,10 @@ async function issueToken(
     env: project.env,
     name: project.project ?? basename(project.absolutePath),
     kind: agentKindForAdapter(project.adapter ?? config.adapter),
+    // The fleet runs on this machine, so register the node up-front. Otherwise
+    // projects that never wake would sit under "未上报主机" forever.
+    host: hostname(),
+    os: `${platform()}-${arch()}`,
   });
 
   const body = (await postJson(

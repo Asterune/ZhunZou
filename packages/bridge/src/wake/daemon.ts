@@ -5,6 +5,7 @@ import type { HubApi } from '../hub-client.js';
 import type { PresenceReporter } from '../presence.js';
 import type { WakeContext } from './adapters.js';
 import {
+  agentKindForAdapter,
   notifyTask,
   resolveWakeAdapter,
   type WakeAdapter,
@@ -73,6 +74,9 @@ export async function runWakeDaemon(options: WakeDaemonOptions): Promise<number>
   };
 
   const adapter = options.adapter ?? (await resolveWakeAdapter(wake));
+  // Report the client we actually resolved, not the `auto` placeholder, so an
+  // OpenCode wake loop does not label its agent "other" on the dashboard.
+  hub.agentKind = agentKindForAdapter(adapter.name);
   log(
     `wake adapter=${adapter.name} mode=${adapter.delivery} env=${hub.agentEnv} cwd=${wake.cwd}`,
   );

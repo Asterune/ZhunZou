@@ -766,6 +766,8 @@ export class TicketRepository implements TicketStore {
         name: input.name ?? input.env,
         kind: input.kind ?? 'other',
         status: 'active',
+        ...(input.host ? { host: input.host } : {}),
+        ...(input.os ? { os: input.os } : {}),
         lastSeenAt: now,
         createdAt: now,
         updatedAt: now,
@@ -775,6 +777,8 @@ export class TicketRepository implements TicketStore {
         set: {
           ...(input.name ? { name: input.name } : {}),
           ...(input.kind ? { kind: input.kind } : {}),
+          ...(input.host ? { host: input.host } : {}),
+          ...(input.os ? { os: input.os } : {}),
           updatedAt: now,
         },
       })
@@ -907,7 +911,10 @@ export class TicketRepository implements TicketStore {
       .onConflictDoUpdate({
         target: agents.env,
         set: {
-          ...(meta?.kind ? { kind: meta.kind } : {}),
+          // "other" means "client did not say" — keep a more specific kind that
+          // the console or a newer bridge already reported, otherwise an old
+          // client would relabel an OpenCode agent as "other" on every beat.
+          ...(meta?.kind && meta.kind !== 'other' ? { kind: meta.kind } : {}),
           ...(meta?.version ? { version: meta.version } : {}),
           ...(meta?.host ? { host: meta.host } : {}),
           ...(meta?.os ? { os: meta.os } : {}),

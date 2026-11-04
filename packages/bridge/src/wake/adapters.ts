@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, join } from 'node:path';
 
-import type { AgentTask } from '@zhunzou/shared';
+import type { AgentKind, AgentTask } from '@zhunzou/shared';
 
 import type { WakeAdapterName, WakeConfig } from './config.js';
 import { NOTIFY_ADAPTERS } from './config.js';
@@ -476,6 +476,37 @@ function createNotifyAdapter(): WakeAdapter {
 
 export function isNotifyAdapter(name: WakeAdapterName): boolean {
   return NOTIFY_ADAPTERS.includes(name);
+}
+
+/**
+ * Guess which local client `auto` will hand tasks to, using the same order as
+ * {@link resolveWakeAdapter}. Registration runs before that resolution, so it
+ * must not report every auto project as "other".
+ */
+export function detectAgentKind(): AgentKind {
+  if (whichSync('opencode')) return 'opencode';
+  for (const name of AUTO_ORDER) {
+    const candidate = PRESETS[name];
+    if (candidate && whichSync(candidate.binary)) {
+      return agentKindForAdapter(name);
+    }
+  }
+  return 'other';
+}
+
+const ADAPTER_KINDS: Partial<Record<WakeAdapterName, AgentKind>> = {
+  opencode: 'opencode',
+  'opencode-run': 'opencode',
+  claude: 'claude-code',
+  codex: 'codex',
+  gemini: 'gemini',
+  'cursor-agent': 'cursor',
+};
+
+/** Map a wake adapter to the client kind shown on the dashboard. */
+export function agentKindForAdapter(adapter: WakeAdapterName): AgentKind {
+  if (adapter === 'auto') return detectAgentKind();
+  return ADAPTER_KINDS[adapter] ?? 'other';
 }
 
 export async function resolveWakeAdapter(config: WakeConfig): Promise<WakeAdapter> {

@@ -217,6 +217,9 @@ export const createAgentSchema = z.object({
   env: envSchema,
   name: z.string().trim().min(1).max(64).optional(),
   kind: z.enum(AGENT_KINDS).optional(),
+  /** Optional machine metadata so auto-provisioned agents show on the right node. */
+  host: z.string().trim().max(120).optional(),
+  os: z.string().trim().max(60).optional(),
 });
 
 export const updateAgentSchema = z
