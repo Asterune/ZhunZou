@@ -79,6 +79,7 @@ No polling loops, no lost context, and no need to keep the editor in front of yo
 | Interactive sessions | Chat with any project's agent from the hub; each turn resumes the CLI session (`--session` / `--resume`) |
 | Resume | `agent_hub_resume` restores pending decisions and active tasks after a restart |
 | Plugins | Lifecycle hooks for audit logs, IM bots, metrics, custom integrations |
+| PWA | Installable dashboard (manifest + icons + service worker): network-first shell, cached assets, offline fallback page |
 
 ## Architecture
 

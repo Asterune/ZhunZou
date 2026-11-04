@@ -19,6 +19,14 @@ beforeAll(async () => {
     '<!doctype html><html><head><title>ZHUNZOU_MARKER</title></head><body><div id="app"></div></body></html>',
   );
   writeFileSync(join(dir, 'assets', 'app-abc123.js'), 'console.log("hub");');
+  writeFileSync(join(dir, 'sw.js'), 'self.addEventListener("fetch", () => {});');
+  writeFileSync(join(dir, 'offline.html'), '<!doctype html><title>OFFLINE_MARKER</title>');
+  writeFileSync(
+    join(dir, 'manifest.webmanifest'),
+    JSON.stringify({ name: 'Zhunzou', start_url: '/' }),
+  );
+  mkdirSync(join(dir, 'icons'), { recursive: true });
+  writeFileSync(join(dir, 'icons', 'icon-192.png'), 'png');
 
   const config = loadConfig({
     NODE_ENV: 'test',
@@ -57,6 +65,36 @@ describe('web dashboard static hosting', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain('console.log');
     expect(response.headers['cache-control']).toContain('immutable');
+  });
+
+  it('serves the PWA manifest and service worker without long caching', async () => {
+    const manifest = await app.inject({
+      method: 'GET',
+      url: '/manifest.webmanifest',
+    });
+    expect(manifest.statusCode).toBe(200);
+    expect(manifest.headers['cache-control']).toBe('no-cache');
+    expect(manifest.headers['content-type']).toContain('application/manifest+json');
+    expect(manifest.json().start_url).toBe('/');
+
+    const worker = await app.inject({ method: 'GET', url: '/sw.js' });
+    expect(worker.statusCode).toBe(200);
+    expect(worker.headers['cache-control']).toBe('no-cache');
+
+    const offline = await app.inject({ method: 'GET', url: '/offline.html' });
+    expect(offline.statusCode).toBe(200);
+    expect(offline.headers['cache-control']).toBe('no-cache');
+    expect(offline.body).toContain('OFFLINE_MARKER');
+  });
+
+  it('caches unhashed PWA icons briefly instead of immutably', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/icons/icon-192.png',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('public, max-age=86400');
   });
 
   it('falls back to index.html for unknown non-API routes', async () => {

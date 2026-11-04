@@ -171,6 +171,7 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 - **规则配置**：在线编辑 `GLOBAL_RULES.md`，保存后 Meta-Agent 立即使用新规则，无需重启。
 - **批复沉淀**：每次人工审批后自动提炼一条候选规则；在规则页一键采纳后并入 `GLOBAL_RULES.md`，也可忽略。没有配置 LLM 时使用确定性模板，功能仍可用。
 - **决策记忆**：Meta-Agent 预审时会参考同项目最近的历史判例，优先保持决策一致性，并在理由中注明「沿用 #编号」。
+- **可安装 PWA**：带 `manifest.webmanifest` 与 Service Worker，可在桌面 / 手机浏览器「添加到主屏幕」后以独立窗口运行；页面导航走 network-first，构建产物走 stale-while-revalidate，断网时展示离线提示页（`/offline.html`）。Service Worker 仅在构建产物中注册，开发模式不受影响。
 - **自动同步**：每 5 秒轮询一次；页面隐藏时暂停，切回前台立即刷新；断网时展示可重试的错误条。
 
 前端源码位于 `packages/web`，使用 `createHubStore` 组合式状态管理（未引入 Pinia），TailwindCSS 4 + Vite 8 构建。

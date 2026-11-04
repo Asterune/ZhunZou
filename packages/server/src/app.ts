@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import fastifyStatic from '@fastify/static';
 import Fastify, {
@@ -338,12 +338,27 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       prefix: '/',
       index: ['index.html'],
       setHeaders(response, filePath) {
-        response.header(
-          'cache-control',
-          filePath.endsWith('index.html')
-            ? 'no-cache'
-            : 'public, max-age=31536000, immutable',
-        );
+        const name = basename(filePath);
+        // Shell + service worker files must revalidate, otherwise a deploy
+        // leaves clients pinned to an old build (or an old SW).
+        if (
+          name === 'index.html' ||
+          name === 'sw.js' ||
+          name === 'offline.html' ||
+          name === 'manifest.webmanifest'
+        ) {
+          response.header('cache-control', 'no-cache');
+          return;
+        }
+        if (basename(dirname(filePath)) === 'assets') {
+          response.header(
+            'cache-control',
+            'public, max-age=31536000, immutable',
+          );
+          return;
+        }
+        // Unhashed public files (PWA icons): cache for a day.
+        response.header('cache-control', 'public, max-age=86400');
       },
     });
     app.log.info({ root: config.webDistPath }, 'serving web dashboard');
