@@ -20,9 +20,11 @@ import { computed, reactive, ref } from 'vue';
 import type { Agent, AgentKind, UpdateAgentInput } from '@zhunzou/shared';
 
 import { relativeTime } from '../lib/format';
+import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 
 const store = useHubStore();
+const { t } = useI18n();
 
 const KIND_LABELS: Record<AgentKind, string> = {
   cursor: 'Cursor',
@@ -31,12 +33,10 @@ const KIND_LABELS: Record<AgentKind, string> = {
   codex: 'Codex',
   gemini: 'Gemini',
   windsurf: 'Windsurf',
-  other: '其他客户端',
+  other: 'Other',
 };
 
-const KIND_OPTIONS = Object.entries(KIND_LABELS) as Array<
-  [AgentKind, string]
->;
+const KIND_OPTIONS = Object.keys(KIND_LABELS) as AgentKind[];
 
 const formOpen = ref(false);
 const editingEnv = ref('');
@@ -70,7 +70,7 @@ const nodes = computed<NodeCard[]>(() => {
   const groups = new Map<string, NodeCard>();
 
   for (const agent of store.agents) {
-    const host = agent.host?.trim() || '未上报主机';
+    const host = agent.host?.trim() || t('agents.unknownHost');
     const node = groups.get(host) ?? {
       host,
       total: 0,
@@ -102,7 +102,9 @@ const nodes = computed<NodeCard[]>(() => {
 });
 
 function kindLabel(agent: Agent): string {
-  return KIND_LABELS[agent.kind] ?? agent.kind;
+  return agent.kind === 'other'
+    ? t('agents.kind.other')
+    : KIND_LABELS[agent.kind] ?? agent.kind;
 }
 
 function openRegister(): void {
@@ -162,7 +164,7 @@ async function issueToken(agent: Agent): Promise<void> {
 }
 
 async function revokeToken(agent: Agent): Promise<void> {
-  if (!globalThis.confirm(`吊销 ${agent.env} 的 Token？该端会立即失去访问权限。`)) {
+  if (!globalThis.confirm(t('agents.confirmRevoke', { env: agent.env }))) {
     return;
   }
   await store.revokeAgentToken(agent.env);
@@ -171,7 +173,7 @@ async function revokeToken(agent: Agent): Promise<void> {
 async function removeAgent(agent: Agent): Promise<void> {
   if (
     !globalThis.confirm(
-      `删除接入端 ${agent.env}？历史工单会保留，但该端需要重新登记并签发 Token。`,
+      t('agents.confirmDelete', { env: agent.env }),
     )
   ) {
     return;
@@ -199,13 +201,13 @@ async function copyToken(): Promise<void> {
           class="text-xl font-semibold text-on-surface"
           style="font-family: var(--font-serif)"
         >
-          接入端管理
+          {{ t('agents.title') }}
         </h2>
         <span
           v-if="agentCount"
           class="rounded bg-surface-container px-2 py-0.5 text-[11px] font-medium text-on-surface-variant"
         >
-          {{ agentCount }} 个 · {{ offlineCount }} 个离线
+          {{ t('agents.count', { count: agentCount, offline: offlineCount }) }}
         </span>
       </div>
       <div class="flex items-center gap-2">
@@ -216,7 +218,7 @@ async function copyToken(): Promise<void> {
           @click="store.loadAgents()"
         >
           <RefreshCw :size="14" :class="{ 'animate-spin': store.agentsLoading }" />
-          刷新
+          {{ t('agents.refresh') }}
         </button>
         <button
           type="button"
@@ -224,7 +226,7 @@ async function copyToken(): Promise<void> {
           @click="openRegister"
         >
           <Plus :size="14" />
-          登记接入端
+          {{ t('agents.register') }}
         </button>
       </div>
     </div>
@@ -232,7 +234,7 @@ async function copyToken(): Promise<void> {
     <div v-if="nodes.length" class="mb-5">
       <div class="mb-2 flex items-center gap-1.5 px-0.5 text-[11px] font-medium text-on-surface-variant">
         <Server :size="13" />
-        运行节点
+        {{ t('agents.nodes') }}
         <span class="text-on-surface-variant/50">· {{ nodes.length }}</span>
       </div>
       <div class="grid gap-2 sm:grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
@@ -256,17 +258,17 @@ async function copyToken(): Promise<void> {
                   : 'bg-surface-container-high text-on-surface-variant'
               "
             >
-              {{ node.online }} / {{ node.total }} 在线
+              {{ t('agents.onlineOf', { online: node.online, total: node.total }) }}
             </span>
           </div>
           <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-on-surface-variant">
-            <span>托管 {{ node.total }} 个项目</span>
-            <span v-if="node.disabled">· {{ node.disabled }} 个停用</span>
+            <span>{{ t('agents.hosts', { count: node.total }) }}</span>
+            <span v-if="node.disabled">· {{ t('agents.disabledCount', { count: node.disabled }) }}</span>
             <span v-if="node.os" class="font-mono">· {{ node.os }}</span>
             <span v-if="node.version" class="font-mono">· bridge {{ node.version }}</span>
           </div>
           <p class="mt-1 text-[11px] text-on-surface-variant/60">
-            最近心跳 {{ node.lastSeenAt ? relativeTime(node.lastSeenAt) : '—' }}
+            {{ t('agents.lastHeartbeat', { time: node.lastSeenAt ? relativeTime(node.lastSeenAt) : '—' }) }}
           </p>
         </article>
       </div>
@@ -285,14 +287,14 @@ async function copyToken(): Promise<void> {
         class="mt-3 text-lg font-semibold text-on-surface"
         style="font-family: var(--font-serif)"
       >
-        尚无接入端
+        {{ t('agents.emptyTitle') }}
       </h3>
       <p class="mx-auto mt-1 max-w-md text-sm leading-6 text-on-surface-variant">
-        在项目里运行
+        {{ t('agents.emptyDescBefore') }}
         <code class="rounded bg-surface-container px-1.5 py-0.5 font-mono text-xs">
           npx zhunzou-bridge init
         </code>
-        ，桥接第一次心跳后会自动出现在这里；也可以手动登记。
+        {{ t('agents.emptyDescAfter') }}
       </p>
     </div>
 
@@ -336,10 +338,10 @@ async function copyToken(): Promise<void> {
               >
                 {{
                   agent.status === 'disabled'
-                    ? '已停用'
+                    ? t('agents.disabled')
                     : agent.online
-                      ? '在线'
-                      : '离线'
+                      ? t('agents.online')
+                      : t('agents.offline')
                 }}
               </span>
             </div>
@@ -350,7 +352,7 @@ async function copyToken(): Promise<void> {
           <button
             type="button"
             class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface"
-            title="编辑名称 / 类型"
+            :title="t('agents.editTitle')"
             @click="openEdit(agent)"
           >
             <Pencil :size="14" />
@@ -359,23 +361,23 @@ async function copyToken(): Promise<void> {
 
         <dl class="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
           <div class="min-w-0">
-            <dt class="text-on-surface-variant/60">当前项目</dt>
+            <dt class="text-on-surface-variant/60">{{ t('agents.currentProject') }}</dt>
             <dd class="truncate text-on-surface">{{ agent.projectName || '—' }}</dd>
           </div>
           <div class="min-w-0">
-            <dt class="text-on-surface-variant/60">最近心跳</dt>
+            <dt class="text-on-surface-variant/60">{{ t('agents.lastHeartbeatLabel') }}</dt>
             <dd class="truncate text-on-surface">
               {{ agent.lastSeenAt ? relativeTime(agent.lastSeenAt) : '—' }}
             </dd>
           </div>
           <div class="min-w-0">
-            <dt class="text-on-surface-variant/60">版本 / 主机</dt>
+            <dt class="text-on-surface-variant/60">{{ t('agents.versionHost') }}</dt>
             <dd class="truncate text-on-surface">
               {{ agent.version || '—' }} · {{ agent.host || '—' }}
             </dd>
           </div>
           <div class="min-w-0">
-            <dt class="text-on-surface-variant/60">系统</dt>
+            <dt class="text-on-surface-variant/60">{{ t('agents.os') }}</dt>
             <dd class="truncate text-on-surface">{{ agent.os || '—' }}</dd>
           </div>
         </dl>
@@ -396,10 +398,10 @@ async function copyToken(): Promise<void> {
             :key="exchange.id"
           >
             <p v-if="exchange.question" class="text-on-surface-variant">
-              <span class="text-on-surface-variant/60">追问 · </span>{{ exchange.question }}
+              <span class="text-on-surface-variant/60">{{ t('agents.exchangeQuestion') }} · </span>{{ exchange.question }}
             </p>
             <p v-if="exchange.conclusion" class="mt-1 text-on-surface">
-              <span class="text-on-surface-variant/60">结论 · </span>{{ exchange.conclusion }}
+              <span class="text-on-surface-variant/60">{{ t('agents.exchangeConclusion') }} · </span>{{ exchange.conclusion }}
             </p>
             <p class="mt-1 text-[10px] text-on-surface-variant/50">
               {{ relativeTime(exchange.createdAt) }}
@@ -413,7 +415,7 @@ async function copyToken(): Promise<void> {
           <div class="flex min-w-0 items-center gap-1.5 text-[11px]">
             <KeyRound :size="13" class="shrink-0 text-on-surface-variant" />
             <span class="truncate font-mono text-on-surface-variant">
-              {{ agent.hasToken ? `${agent.tokenPrefix || 'zz_'}••••` : '未签发 Token' }}
+              {{ agent.hasToken ? `${agent.tokenPrefix || 'zz_'}••••` : t('agents.noToken') }}
             </span>
           </div>
           <div class="flex shrink-0 items-center gap-1">
@@ -423,7 +425,7 @@ async function copyToken(): Promise<void> {
               :disabled="store.agentActionEnv === agent.env || agent.status === 'disabled'"
               @click="issueToken(agent)"
             >
-              {{ agent.hasToken ? '轮换' : '签发' }}
+              {{ agent.hasToken ? t('agents.rotate') : t('agents.issue') }}
             </button>
             <button
               v-if="agent.hasToken"
@@ -432,7 +434,7 @@ async function copyToken(): Promise<void> {
               :disabled="store.agentActionEnv === agent.env"
               @click="revokeToken(agent)"
             >
-              吊销
+              {{ t('agents.revoke') }}
             </button>
           </div>
         </div>
@@ -453,7 +455,7 @@ async function copyToken(): Promise<void> {
               :is="agent.status === 'active' ? UserRoundX : UserRoundCheck"
               :size="13"
             />
-            {{ agent.status === 'active' ? '停用' : '启用' }}
+            {{ agent.status === 'active' ? t('agents.disable') : t('agents.enable') }}
           </button>
           <button
             type="button"
@@ -462,7 +464,7 @@ async function copyToken(): Promise<void> {
             @click="removeAgent(agent)"
           >
             <Trash2 :size="13" />
-            删除
+            {{ t('agents.delete') }}
           </button>
         </div>
       </article>
@@ -486,12 +488,12 @@ async function copyToken(): Promise<void> {
               class="text-lg font-semibold text-on-surface"
               style="font-family: var(--font-serif)"
             >
-              {{ editingEnv ? '编辑接入端' : '登记接入端' }}
+              {{ editingEnv ? t('agents.dialog.edit') : t('agents.dialog.register') }}
             </h3>
             <button
               type="button"
               class="grid h-8 w-8 place-items-center rounded-lg text-on-surface-variant hover:bg-surface-container"
-              aria-label="关闭"
+              :aria-label="t('agents.close')"
               @click="formOpen = false"
             >
               <X :size="16" />
@@ -499,7 +501,7 @@ async function copyToken(): Promise<void> {
           </div>
 
           <label class="mb-3 block text-[12px] text-on-surface-variant">
-            环境标识 AGENT_ENV
+            {{ t('agents.envLabel') }}
             <input
               v-model="form.env"
               :disabled="Boolean(editingEnv)"
@@ -511,23 +513,23 @@ async function copyToken(): Promise<void> {
           </label>
 
           <label class="mb-3 block text-[12px] text-on-surface-variant">
-            显示名称
+            {{ t('agents.nameLabel') }}
             <input
               v-model="form.name"
               maxlength="64"
-              placeholder="公司的 Cursor"
+              :placeholder="t('agents.namePlaceholder')"
               class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2.5 text-[13px] text-on-surface outline-none focus:border-primary"
             />
           </label>
 
           <label class="mb-4 block text-[12px] text-on-surface-variant">
-            客户端类型
+            {{ t('agents.kindLabel') }}
             <select
               v-model="form.kind"
               class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2 text-[13px] text-on-surface outline-none focus:border-primary"
             >
-              <option v-for="[value, label] in KIND_OPTIONS" :key="value" :value="value">
-                {{ label }}
+              <option v-for="value in KIND_OPTIONS" :key="value" :value="value">
+                {{ value === 'other' ? t('agents.kind.other') : KIND_LABELS[value] }}
               </option>
             </select>
           </label>
@@ -538,14 +540,14 @@ async function copyToken(): Promise<void> {
               class="h-9 rounded-lg px-3 text-[12px] font-medium text-on-surface-variant hover:bg-surface-container"
               @click="formOpen = false"
             >
-              取消
+              {{ t('agents.cancel') }}
             </button>
             <button
               type="submit"
               class="h-9 rounded-lg bg-primary px-4 text-[12px] font-medium text-on-primary transition hover:bg-primary-container disabled:opacity-50"
               :disabled="saving || !form.env.trim()"
             >
-              {{ saving ? '保存中…' : '保存' }}
+              {{ saving ? t('agents.saving') : t('agents.save') }}
             </button>
           </div>
         </form>
@@ -569,12 +571,12 @@ async function copyToken(): Promise<void> {
               class="text-lg font-semibold text-on-surface"
               style="font-family: var(--font-serif)"
             >
-              专属 Agent Token
+              {{ t('agents.tokenTitle') }}
             </h3>
             <button
               type="button"
               class="grid h-8 w-8 place-items-center rounded-lg text-on-surface-variant hover:bg-surface-container"
-              aria-label="关闭"
+              :aria-label="t('agents.close')"
               @click="tokenDialog = null"
             >
               <X :size="16" />
@@ -582,12 +584,12 @@ async function copyToken(): Promise<void> {
           </div>
 
           <p class="mb-3 text-[12px] leading-5 text-on-surface-variant">
-            这是
+            {{ t('agents.tokenDescBefore') }}
             <span class="font-mono text-on-surface">{{ tokenDialog.env }}</span>
-            的专属 Token，只会显示这一次。把它写入该端的
+            {{ t('agents.tokenDescMiddle') }}
             <code class="rounded bg-surface-container px-1 font-mono text-[11px]">HUB_TOKEN</code>
-            ，不要再共用管理员的
-            <code class="rounded bg-surface-container px-1 font-mono text-[11px]">HUB_SECRET_TOKEN</code>。
+            {{ t('agents.tokenDescAfter') }}
+            <code class="rounded bg-surface-container px-1 font-mono text-[11px]">HUB_SECRET_TOKEN</code>{{ t('agents.tokenDescEnd') }}
           </p>
 
           <div
@@ -602,7 +604,7 @@ async function copyToken(): Promise<void> {
               @click="copyToken"
             >
               <component :is="copied ? Check : Copy" :size="13" />
-              {{ copied ? '已复制' : '复制' }}
+              {{ copied ? t('agents.copied') : t('agents.copy') }}
             </button>
           </div>
 
@@ -610,7 +612,7 @@ async function copyToken(): Promise<void> {
             class="mt-3 flex items-start gap-2 rounded-lg bg-tertiary-fixed px-3 py-2 text-[11px] leading-5 text-on-tertiary-fixed"
           >
             <ShieldOff :size="14" class="mt-0.5 shrink-0" />
-            关闭后无法再次查看；如果丢失，只能轮换生成新 Token（旧 Token 立即失效）。
+            {{ t('agents.tokenWarning') }}
           </div>
         </div>
       </div>

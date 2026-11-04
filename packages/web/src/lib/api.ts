@@ -31,6 +31,8 @@ import type {
   WorkspaceProjectResponse,
 } from '@zhunzou/shared';
 
+import { t } from './i18n';
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -184,7 +186,7 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
       throw new ApiError(
         response.status,
         body?.error?.code ?? `HTTP_${response.status}`,
-        body?.error?.message ?? `请求失败（${response.status}）`,
+        body?.error?.message ?? t('api.requestFailed', { status: response.status }),
       );
     }
 

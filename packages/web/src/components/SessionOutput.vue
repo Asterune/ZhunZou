@@ -2,6 +2,7 @@
 import type { LogEntry } from '../lib/log';
 
 import { hubApi } from '../lib/api';
+import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 import LogViewer from './LogViewer.vue';
 
@@ -12,6 +13,7 @@ const props = defineProps<{
 }>();
 
 const store = useHubStore();
+const { t } = useI18n();
 
 async function fetchPage(after: number): Promise<{
   entries: LogEntry[];
@@ -40,6 +42,6 @@ async function fetchPage(after: number): Promise<{
   <LogViewer
     :active="active"
     :fetch-page="fetchPage"
-    empty-text="该消息没有输出。"
+    :empty-text="t('log.noMessageOutput')"
   />
 </template>

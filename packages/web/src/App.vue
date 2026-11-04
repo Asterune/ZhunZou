@@ -18,17 +18,20 @@ import BatchApproveDialog from './components/BatchApproveDialog.vue';
 import ChatPanel from './components/ChatPanel.vue';
 import HistoryList from './components/HistoryList.vue';
 import LoginGate from './components/LoginGate.vue';
+import LocaleToggle from './components/LocaleToggle.vue';
 import RulesEditor from './components/RulesEditor.vue';
 import StatusBar from './components/StatusBar.vue';
 import TaskBoard from './components/TaskBoard.vue';
 import TicketCard from './components/TicketCard.vue';
 import ToastStack from './components/ToastStack.vue';
 import { relativeTime } from './lib/format';
+import { useI18n } from './lib/i18n';
 import { useHubStore } from './stores/hub';
 
 type Tab = 'pending' | 'tasks' | 'chat' | 'agents' | 'history' | 'rules';
 
 const store = useHubStore();
+const { t } = useI18n();
 
 function initialTab(): Tab {
   if (typeof window === 'undefined') return 'pending';
@@ -48,35 +51,35 @@ const batchOpen = ref(false);
 const tabs = computed(() => [
   {
     key: 'pending' as const,
-    label: '待批奏折',
+    label: t('app.tabs.pending'),
     icon: ScrollText,
     count: store.pendingTickets.length,
   },
   {
     key: 'tasks' as const,
-    label: '下发任务',
+    label: t('app.tabs.tasks'),
     icon: Send,
     count: store.activeTasks.length,
   },
   {
     key: 'chat' as const,
-    label: '会话',
+    label: t('app.tabs.chat'),
     icon: MessageSquare,
   },
   {
     key: 'agents' as const,
-    label: '接入端',
+    label: t('app.tabs.agents'),
     icon: Bot,
     count: store.agents.length,
   },
-  { key: 'history' as const, label: '历史决策', icon: CheckCircle2 },
-  { key: 'rules' as const, label: '规则配置', icon: SlidersHorizontal },
+  { key: 'history' as const, label: t('app.tabs.history'), icon: CheckCircle2 },
+  { key: 'rules' as const, label: t('app.tabs.rules'), icon: SlidersHorizontal },
 ]);
 
 const connectionLabel = computed(() => {
-  if (store.connection === 'online') return '已连接';
-  if (store.connection === 'offline') return '连接中断';
-  return '连接中';
+  if (store.connection === 'online') return t('app.connection.online');
+  if (store.connection === 'offline') return t('app.connection.offline');
+  return t('app.connection.connecting');
 });
 
 const connectionDotClass = computed(() => {
@@ -134,7 +137,7 @@ onBeforeUnmount(() => {
             class="grid h-9 w-9 shrink-0 rotate-[-1deg] place-items-center rounded bg-primary text-[18px] font-bold text-on-primary shadow-[0_2px_8px_-2px_rgba(147,0,11,0.5)]"
             style="font-family: var(--font-serif)"
           >
-            准
+            {{ t('app.mark') }}
           </span>
           <div class="min-w-0 leading-tight">
             <div class="flex items-center gap-1.5">
@@ -142,10 +145,10 @@ onBeforeUnmount(() => {
                 class="truncate text-lg font-semibold tracking-tight text-on-surface"
                 style="font-family: var(--font-serif)"
               >
-                准奏
+                {{ t('app.brand') }}
               </h1>
               <span class="hidden text-[10px] uppercase tracking-[0.16em] text-on-surface-variant/60 sm:inline">
-                Zhunzou
+                {{ t('app.wordmark') }}
               </span>
             </div>
             <div class="flex items-center gap-1.5 text-[11px]">
@@ -164,7 +167,7 @@ onBeforeUnmount(() => {
               </span>
               <span class="text-on-surface-variant/35">•</span>
               <span class="text-on-surface-variant">
-                {{ store.lastSyncAt ? relativeTime(store.lastSyncAt) : '同步中' }}
+                {{ store.lastSyncAt ? relativeTime(store.lastSyncAt) : t('app.syncing') }}
               </span>
             </div>
           </div>
@@ -172,7 +175,7 @@ onBeforeUnmount(() => {
 
         <nav
           class="ml-4 hidden items-center gap-1 rounded-xl bg-surface-container/80 p-1 ring-1 ring-inset ring-outline-variant/40 md:flex"
-          aria-label="主导航"
+          :aria-label="t('app.mainNav')"
         >
           <button
             v-for="tab in tabs"
@@ -206,10 +209,11 @@ onBeforeUnmount(() => {
         </nav>
 
         <div class="ml-auto flex shrink-0 items-center gap-1">
+          <LocaleToggle />
           <button
             type="button"
-            aria-label="立即刷新"
-            title="立即刷新"
+            :aria-label="t('app.refresh')"
+            :title="t('app.refresh')"
             class="grid h-9 w-9 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface disabled:opacity-50"
             :disabled="store.manualRefreshing"
             @click="store.refresh({ manual: true })"
@@ -218,8 +222,8 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
-            aria-label="退出登录"
-            title="退出登录"
+            :aria-label="t('app.logout')"
+            :title="t('app.logout')"
             class="grid h-9 w-9 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-error"
             @click="store.logout()"
           >
@@ -236,14 +240,14 @@ onBeforeUnmount(() => {
       >
         <WifiOff :size="16" class="shrink-0" />
         <span class="min-w-0 flex-1 truncate">
-          同步中断：{{ store.lastError || '无法连接服务端' }}
+          {{ t('app.syncInterrupted') }}{{ store.lastError || t('app.serverUnreachable') }}
         </span>
         <button
           type="button"
           class="shrink-0 rounded-md bg-tertiary px-2.5 py-1 text-[11px] font-medium text-on-tertiary-fixed transition hover:opacity-90"
           @click="store.refresh({ manual: true })"
         >
-          重试
+          {{ t('app.retry') }}
         </button>
       </div>
 
@@ -257,18 +261,18 @@ onBeforeUnmount(() => {
               class="text-xl font-semibold text-on-surface"
               style="font-family: var(--font-serif)"
             >
-              御览奏折
+              {{ t('app.pendingTitle') }}
             </h2>
             <span
               v-if="store.pendingTickets.length"
               class="rounded bg-primary px-2 py-0.5 text-[11px] font-bold text-on-primary"
             >
-              {{ store.pendingTickets.length }} 封急奏
+              {{ t('app.pendingCount', { count: store.pendingTickets.length }) }}
             </span>
           </div>
           <div class="flex items-center gap-2">
             <span class="hidden text-[11px] text-on-surface-variant sm:inline">
-              三思而后决 · 即批即行
+              {{ t('app.pendingHint') }}
             </span>
             <button
               v-if="store.pendingTickets.length > 1"
@@ -277,7 +281,7 @@ onBeforeUnmount(() => {
               @click="batchOpen = true"
             >
               <Gavel :size="14" />
-              批量准奏
+              {{ t('app.batchApprove') }}
             </button>
           </div>
         </div>
@@ -295,16 +299,16 @@ onBeforeUnmount(() => {
             class="mt-3 text-lg font-semibold text-on-surface"
             style="font-family: var(--font-serif)"
           >
-            天下太平 · 暂无待批奏折
+            {{ t('app.emptyTitle') }}
           </h3>
           <p class="mx-auto mt-1 max-w-sm text-sm leading-6 text-on-surface-variant">
-            各方 Agent 皆顺畅运行中。若有新疑难阻塞，自当飞鸽传书，立呈御前。
+            {{ t('app.emptyDesc') }}
           </p>
           <span
             class="mt-4 inline-flex items-center gap-1.5 rounded-full bg-surface-container px-3 py-1 text-[11px] text-on-surface-variant"
           >
             <span class="h-1.5 w-1.5 rounded-full bg-secondary" />
-            调度守护进程处于待命监听状态
+            {{ t('app.emptyDaemon') }}
           </span>
         </div>
 
@@ -337,7 +341,7 @@ onBeforeUnmount(() => {
     <footer
       class="mx-auto hidden max-w-6xl px-6 pb-6 text-center text-[11px] text-on-surface-variant/60 md:block"
     >
-      准奏 · 单实例部署 · 数据持久化于 SQLite
+      {{ t('app.footer') }}
     </footer>
 
     <nav

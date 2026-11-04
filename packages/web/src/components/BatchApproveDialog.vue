@@ -11,6 +11,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 import type { DecisionTicket } from '@zhunzou/shared';
 
+import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 
 const props = defineProps<{
@@ -20,6 +21,7 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>();
 
 const store = useHubStore();
+const { t } = useI18n();
 const confirmDestructive = ref(false);
 const countdown = ref(0);
 
@@ -99,7 +101,7 @@ onBeforeUnmount(clearTimer);
     class="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm sm:items-center sm:p-4"
     role="dialog"
     aria-modal="true"
-    aria-label="批量准奏"
+    :aria-label="t('batch.aria')"
     @click.self="close"
   >
     <div
@@ -117,16 +119,16 @@ onBeforeUnmount(clearTimer);
               class="text-lg font-semibold text-on-surface"
               style="font-family: var(--font-serif)"
             >
-              批量准奏
+              {{ t('batch.title') }}
             </h2>
             <p class="text-[11px] text-on-surface-variant">
-              将按每封奏折的推荐方案分别批复。
+              {{ t('batch.subtitle') }}
             </p>
           </div>
         </div>
         <button
           type="button"
-          aria-label="关闭"
+          :aria-label="t('agents.close')"
           class="grid h-8 w-8 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface"
           @click="close"
         >
@@ -157,7 +159,7 @@ onBeforeUnmount(clearTimer);
             "
             class="shrink-0 rounded bg-error px-1.5 py-0.5 text-[9px] font-bold text-white"
           >
-            高风险
+            {{ t('batch.highRisk') }}
           </span>
         </div>
       </div>
@@ -172,9 +174,9 @@ onBeforeUnmount(clearTimer);
           class="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-error)]"
         />
         <span class="text-xs leading-5 text-on-error-container">
-          同时批准 {{ destructiveTickets.length }} 封高风险方案。
+          {{ t('batch.confirmDestructive', { count: destructiveTickets.length }) }}
           <span class="block text-[11px] opacity-80">
-            不勾选时这些奏折会被跳过，保留人工确认。
+            {{ t('batch.confirmHint') }}
           </span>
         </span>
       </label>
@@ -184,7 +186,7 @@ onBeforeUnmount(clearTimer);
         class="mt-3 flex items-start gap-2 rounded-lg bg-secondary-container/40 px-3 py-2.5 text-xs leading-5 text-on-secondary-container"
       >
         <AlertTriangle :size="15" class="mt-0.5 shrink-0" />
-        本批次没有高风险方案，可直接准奏。
+        {{ t('batch.noDestructive') }}
       </div>
 
       <div class="mt-4 flex items-center justify-end gap-2">
@@ -194,7 +196,7 @@ onBeforeUnmount(clearTimer);
           class="h-10 rounded-lg px-4 text-sm font-medium text-on-surface-variant transition hover:bg-surface-container disabled:opacity-50"
           @click="close"
         >
-          取消
+          {{ t('batch.cancel') }}
         </button>
         <button
           type="button"
@@ -204,15 +206,15 @@ onBeforeUnmount(clearTimer);
         >
           <template v-if="store.batchResolving">
             <Loader2 :size="16" class="animate-spin" />
-            提交中…
+            {{ t('batch.submitting') }}
           </template>
           <template v-else-if="countdown > 0">
             <Clock3 :size="16" />
-            {{ countdown }} 秒后提交 · 撤销
+            {{ t('batch.countdown', { count: countdown }) }}
           </template>
           <template v-else>
             <Check :size="16" />
-            准奏 {{ tickets.length }} 封
+            {{ t('batch.approve', { count: tickets.length }) }}
           </template>
         </button>
       </div>

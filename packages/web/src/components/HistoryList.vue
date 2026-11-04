@@ -24,11 +24,13 @@ import {
   optionLabel,
   relativeTime,
   TICKET_STATUS_CLASSES,
-  TICKET_STATUS_LABELS,
+  ticketStatusLabel,
 } from '../lib/format';
+import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 
 const store = useHubStore();
+const { t } = useI18n();
 const query = ref('');
 const activeFilter = ref<HistoryFilter>('all');
 
@@ -47,10 +49,10 @@ function reset(): void {
 }
 
 function watermark(ticket: DecisionTicket): string {
-  if (ticket.status === 'CANCELLED') return '已取消';
-  if (ticket.resolvedBy === 'TIMEOUT') return '超时 · 默认';
-  if (ticket.resolvedBy === 'META_AGENT') return '机断 · 例行';
-  return '准奏 · 裁定';
+  if (ticket.status === 'CANCELLED') return t('history.watermark.cancelled');
+  if (ticket.resolvedBy === 'TIMEOUT') return t('history.watermark.timeout');
+  if (ticket.resolvedBy === 'META_AGENT') return t('history.watermark.meta');
+  return t('history.watermark.human');
 }
 </script>
 
@@ -59,24 +61,24 @@ function watermark(ticket: DecisionTicket): string {
     <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
       <div>
         <div class="flex items-center gap-2 text-[11px] uppercase tracking-wider text-on-surface-variant">
-          <span>Archive Dossier</span>
+          <span>{{ t('history.eyebrow') }}</span>
           <span class="text-outline-variant">·</span>
-          <span>文书御批宗卷</span>
+          <span>{{ t('history.eyebrowLocal') }}</span>
         </div>
         <h2
           class="mt-0.5 flex items-center gap-2 text-xl font-semibold text-on-surface"
           style="font-family: var(--font-serif)"
         >
-          历史决策
+          {{ t('history.title') }}
           <span
             class="rounded bg-surface-container px-1.5 py-0.5 text-[11px] font-medium tracking-normal text-on-surface-variant"
           >
-            共 {{ all.length }} 条
+            {{ t('history.count', { count: all.length }) }}
           </span>
         </h2>
       </div>
       <span class="text-[11px] text-on-surface-variant">
-        最近更新的排在前面
+        {{ t('history.sortHint') }}
       </span>
     </div>
 
@@ -85,13 +87,13 @@ function watermark(ticket: DecisionTicket): string {
       <input
         v-model="query"
         type="search"
-        placeholder="检索编号、项目、卡点或批复意见…"
+        :placeholder="t('history.searchPlaceholder')"
         class="h-10 w-full bg-transparent text-sm text-on-surface outline-none placeholder:text-on-surface-variant/50"
       />
       <button
         v-if="query"
         type="button"
-        aria-label="清空搜索"
+        :aria-label="t('history.clearSearch')"
         class="grid h-7 w-7 shrink-0 place-items-center rounded text-outline transition hover:bg-surface-container hover:text-on-surface"
         @click="query = ''"
       >
@@ -112,7 +114,7 @@ function watermark(ticket: DecisionTicket): string {
         "
         @click="activeFilter = filter.key"
       >
-        {{ filter.label }} ({{ countFor(filter.key) }})
+        {{ t(`history.filter.${filter.key}`) }} ({{ countFor(filter.key) }})
       </button>
     </div>
 
@@ -129,10 +131,10 @@ function watermark(ticket: DecisionTicket): string {
         class="mt-3 text-base font-semibold text-on-surface"
         style="font-family: var(--font-serif)"
       >
-        宗卷空寂 · 暂无记录
+        {{ t('history.emptyTitle') }}
       </p>
       <p class="mt-1 text-sm text-on-surface-variant">
-        审批或取消工单后，记录会出现在这里。
+        {{ t('history.emptyDesc') }}
       </p>
     </div>
 
@@ -145,15 +147,15 @@ function watermark(ticket: DecisionTicket): string {
       >
         <Search :size="22" />
       </div>
-      <p class="mt-3 text-sm font-medium text-on-surface">没有匹配的宗卷</p>
-      <p class="mt-1 text-xs text-on-surface-variant">换个关键词或筛选条件试试。</p>
+      <p class="mt-3 text-sm font-medium text-on-surface">{{ t('history.noMatchTitle') }}</p>
+      <p class="mt-1 text-xs text-on-surface-variant">{{ t('history.noMatchDesc') }}</p>
       <button
         type="button"
         class="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-2 text-xs font-medium text-on-surface transition hover:bg-surface-container-high"
         @click="reset"
       >
         <RotateCcw :size="14" />
-        重置筛选
+        {{ t('history.reset') }}
       </button>
     </div>
 
@@ -195,7 +197,7 @@ function watermark(ticket: DecisionTicket): string {
             class="rounded px-2 py-0.5 text-[11px] font-semibold"
             :class="TICKET_STATUS_CLASSES[ticket.status]"
           >
-            {{ TICKET_STATUS_LABELS[ticket.status] }}
+            {{ ticketStatusLabel(ticket.status) }}
           </span>
           <span
             v-if="ticket.resolvedBy"
@@ -206,10 +208,10 @@ function watermark(ticket: DecisionTicket): string {
             <User v-else :size="12" class="text-primary" />
             {{
               ticket.resolvedBy === 'META_AGENT'
-                ? '总管自动'
+                ? t('history.resolvedBy.META_AGENT')
                 : ticket.resolvedBy === 'TIMEOUT'
-                  ? '超时默认'
-                  : '人工审批'
+                  ? t('history.resolvedBy.TIMEOUT')
+                  : t('history.resolvedBy.HUMAN')
             }}
           </span>
           <span
@@ -217,12 +219,12 @@ function watermark(ticket: DecisionTicket): string {
             class="flex items-center gap-1 text-[11px] text-on-surface-variant"
           >
             <Ban :size="12" />
-            端侧取消
+            {{ t('history.cancelledByAgent') }}
           </span>
         </div>
 
         <div class="mt-2.5 rounded-lg bg-surface-container-low px-3 py-2">
-          <p class="text-[11px] text-on-surface-variant">奏请决议点</p>
+          <p class="text-[11px] text-on-surface-variant">{{ t('history.blockerLabel') }}</p>
           <p class="mt-0.5 break-words text-sm leading-6 text-on-surface">
             {{ ticket.blockerQuestion }}
           </p>
@@ -231,7 +233,7 @@ function watermark(ticket: DecisionTicket): string {
         <div v-if="ticket.selectedOption" class="mt-2.5 flex items-start gap-2">
           <CheckCircle2 :size="17" class="mt-0.5 shrink-0 text-secondary" />
           <p class="text-sm font-medium text-on-surface">
-            方案 {{ ticket.selectedOption }} · {{ optionLabel(ticket, ticket.selectedOption) }}
+            {{ t('history.option', { key: ticket.selectedOption, label: optionLabel(ticket, ticket.selectedOption) }) }}
           </p>
         </div>
 
@@ -243,7 +245,7 @@ function watermark(ticket: DecisionTicket): string {
             class="shrink-0 text-sm font-bold text-primary"
             style="font-family: var(--font-serif)"
           >
-            批
+            {{ t('history.noteMark') }}
           </span>
           <p class="text-xs leading-5 text-on-surface-variant">
             {{ ticket.customInstruction || ticket.resolutionReason }}

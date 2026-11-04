@@ -1,714 +1,308 @@
-# 准奏（Zhunzou）
+# Zhunzou (准奏)
 
-[English](./README.en.md) · 中文
+**English** · [中文说明](./README.zh-CN.md)
 
-> Agent 上奏，总管拟票，你一句「准奏」。
+> Agents submit a brief. The Meta-Agent drafts a ruling. You say “approved”.
+
+**A cross-device, editor-agnostic decision hub for AI coding agents.**
 
 <p align="center">
-  <img src="./docs/assets/dashboard.png" alt="准奏看板：环境状态、待批奏折、总管转人工理由与高风险选项二次确认" width="920" />
+  <img src="./docs/assets/dashboard.png" alt="Zhunzou dashboard: environment status, pending decision tickets, meta-agent escalation reasons, and destructive-option confirmation" width="920" />
 </p>
 
-跨设备多 Agent 异步决策中枢。端侧（Cursor / OpenCode / 任意 Agent）遇到需要人类拍板的卡点时，把问题压缩成「三行简报 + 结构化选项」提交到云端；总管 Agent 按《全局工程规范》自动处理大部分常规决策，剩余部分进入 Web 看板集中审批，端侧通过长轮询 / CLI 无感阻塞等待结果。
+When Cursor, OpenCode, Claude Code, or any MCP-capable agent gets blocked on a decision that needs a human, it submits a compact “three-line brief + closed-form options” ticket to Zhunzou. A Meta-Agent resolves routine decisions automatically against your engineering rules. Everything else waits in a single dashboard, and the agent resumes the moment you click.
 
-设计上刻意保持**通用、可插拔**：预审模型、通知渠道、端侧接入和自定义逻辑都可以替换，不绑定某一家模型或某一个 IDE。扩展方式见 [docs/PLUGINS.md](./docs/PLUGINS.md)。
-
-> 当前状态：**M1–M8 全部完成**，具备共享协议、云端服务、长轮询、Meta-Agent、MCP/CLI 桥接、Web 看板、单端口部署、「历史判例 + 批复沉淀」的决策记忆闭环、超时裁决、批量审批、高风险保护、陈旧任务治理，以及通知内签名一键批复与接入向导。
+Self-hosted, single process, SQLite-backed, MIT licensed. No message queue, no native build step on the client.
 
 ---
 
-## 目录结构
+## The problem
+
+AI agents are fast until they need a human judgment call. In practice, that is where most of the promised speed disappears:
+
+- **The agent stalls where you cannot see it.** It stops in a terminal or editor tab you are not watching, and the task waits for hours.
+- **Or it guesses, and you review the damage later.** You discover the wrong assumption during code review, or in production.
+- **The same question comes back.** A decision lives in one chat transcript, so the next agent (or the next week) asks it again.
+- **Every tool has its own approval silo.** A Cursor window, a Claude Code session, and a CI job each handle “waiting for a human” differently. Multi-repo and multi-agent teams have no single queue.
+- **Automation is all-or-nothing.** Either the agent blocks on every question, or “YOLO mode” rubber-stamps changes that should never be automatic.
+
+Existing options do not solve this well: a chat message has no structure, no timeout, no audit trail, and no way to resume the exact agent that asked. Vendor-specific approval UIs only cover one editor or one cloud.
+
+## What Zhunzou does
+
+Zhunzou turns every human decision into a small, structured, asynchronous ticket:
 
 ```text
-zhunzou/
-├── package.json
-├── pnpm-workspace.yaml
-├── tsconfig.base.json
-├── GLOBAL_RULES.md              # Meta-Agent 预审依据（可在线编辑）
-├── .env.example
-├── Dockerfile / docker-compose.yml
-├── ecosystem.config.cjs         # pm2 单实例配置
-├── docs/PLUGINS.md              # 可插拔扩展说明
-├── examples/plugins/            # 外部插件示例（审计日志 / 自定义通知）
-├── scripts/
-│   ├── smoke-test.sh            # 启动真实服务 + HTTP 冒烟测试
-│   ├── bridge-smoke-test.sh     # 真实服务 + MCP stdio + CLI 端到端
-│   ├── web-smoke-test.sh        # 构建产物 + 单端口看板托管验收
-│   └── deploy-pm2.sh            # 一键构建并 (重) 启动 pm2
-├── deploy/                      # 生产部署（systemd + nginx）
-│   ├── deploy.sh                # 本地打包 → 上传 → 远程构建
-│   ├── setup.sh                 # 服务器端安装 / systemd / nginx
-│   ├── enable-https.sh          # Let's Encrypt 证书 + HTTPS
-│   └── zhunzou.service / nginx.conf
-└── packages/
-    ├── shared/                  # Zod Schema、TypeScript 类型、状态机常量
-    ├── server/                  # Fastify API、SQLite/Drizzle、Meta-Agent、通知、插件、长轮询
-    ├── bridge/                  # 端侧 MCP Server + CLI（Cursor / OpenCode / 任意 Agent）
-    └── web/                     # Vue 3 + Vite + TailwindCSS 批奏折看板
+Agent hits a blocker
+  → submits a 3-line brief + 2–6 closed-form options (+ risk metadata)
+  → Meta-Agent applies GLOBAL_RULES.md and similar past decisions
+      → routine decision: auto-ruling in seconds
+      → everything else: one queue on your phone or desktop
+  → your click wakes the waiting agent over a long poll
+  → the ruling becomes a candidate rule for next time
 ```
 
----
+No polling loops, no lost context, and no need to keep the editor in front of you.
 
-## 快速开始
+## Why Zhunzou
 
-要求：Node.js >= 20、pnpm 9（可用 `corepack enable pnpm`）。
+- **Decisions, not chat.** Every ticket is constrained to a three-line brief and closed-form options, so “what exactly are you asking?” never becomes another round trip.
+- **Rules first, humans where it matters.** The Meta-Agent applies your `GLOBAL_RULES.md` and recalls similar resolved tickets. Routine choices clear in seconds; judgment calls always reach you.
+- **One inbox for every agent.** Cursor, OpenCode, Claude Code, Codex, Gemini, Windsurf, or any MCP client — desktop, phone, or a signed notification link. One queue, one audit trail.
+- **Works when you are away.** Long-polling resumes the exact agent immediately after approval. If you close the editor, a headless `wake` or `fleet` daemon keeps the work moving.
+- **Safe by construction.** Destructive options are never auto-approved, timeout rulings are opt-in, and human decisions always beat a late Meta-Agent or timeout verdict.
+- **Recall instead of repetition.** Resolved decisions are stored and recalled as precedents; each human approval can be distilled into a reusable rule.
+- **Tiny operational footprint.** One Node.js process, one SQLite file, one port. No Redis, no message queue, no native build step on the client.
+- **Open and self-hosted.** MIT licensed, plain HTTP API, pluggable models, notification channels, and agent adapters. Your decisions stay on your server.
+
+**When it is a good fit:** you run AI coding agents across more than one repo or editor, you are tired of being the bottleneck, and you want automation without giving up control.
+
+**When it is not:** you only need a single-user, single-session “yes/no” prompt inside one editor, or you are looking for a fully autonomous coding agent.
+
+## Features
+
+| Area | What it does |
+| --- | --- |
+| Decision tickets | Three-line brief, 2–6 closed-form options, recommended option, optional `risk` metadata |
+| Meta-Agent | OpenAI-compatible / custom HTTP / disabled; strict JSON verdict; historical precedents |
+| Decision memory | Recalls similar resolved tickets in the same project and injects them into the prompt |
+| Rule distillation | Turns each human approval into a candidate rule; one-click accept into `GLOBAL_RULES.md` |
+| Timeout rulings | Optional SLA (`AUTO_RESOLVE_TIMEOUT_MS`) with a countdown and “snooze 10 minutes” |
+| Batch approval | Approve many tickets with a 3-second undo window; destructive options are skipped by default |
+| Notifications | Bark, Feishu, Slack, Discord, ntfy, Telegram, generic webhook, console |
+| One-click approval | HMAC-signed, expiring mobile page that works from any notification channel |
+| Human → Agent tasks | Dispatch work from the dashboard; bridges claim it with `agent_hub_next_task` |
+| Stale task recovery | Offline `CLAIMED` tasks are requeued; hard timeouts fail them instead of blocking the queue |
+| Agent registry | Every `env` is manageable: client type, version, host, current project, enable/disable/delete |
+| Scoped tokens | Per-agent Bearer tokens can only touch their own env; rotate or revoke without restarting the hub |
+| Live task output | Expand a task card to tail `stdout` / `stderr` / system events while it runs; retained after completion |
+| Interactive sessions | Chat with any project's agent from the hub; each turn resumes the CLI session (`--session` / `--resume`) |
+| Resume | `agent_hub_resume` restores pending decisions and active tasks after a restart |
+| Plugins | Lifecycle hooks for audit logs, IM bots, metrics, custom integrations |
+
+## Architecture
+
+```text
+Cursor / OpenCode / Claude Code / any MCP client
+        │  agent_hub_escalate / wait / next_task / resume
+        ▼
+zhunzou-bridge (stdio MCP + CLI, zero native deps)
+        │  HTTP long-poll
+        ▼
+Zhunzou server (Fastify + SQLite + in-process EventEmitter)
+        │
+        ├── Meta-Agent ── rules + similar past decisions
+        ├── Web dashboard (Vue 3, same port)
+        └── Notifications (signed approval links)
+```
+
+## Quick start
+
+Requirements: Node.js >= 20, pnpm 9 (`corepack enable pnpm`).
 
 ```bash
 pnpm install
-cp .env.example .env          # 填入 HUB_SECRET_TOKEN / OPENAI_API_KEY
-
-pnpm build                    # 构建 shared / server / bridge / web
-pnpm server                   # 默认 http://127.0.0.1:8787
+cp .env.example .env          # set HUB_SECRET_TOKEN and (optionally) OPENAI_API_KEY
+pnpm build
+pnpm server                   # http://127.0.0.1:8787
 ```
 
-浏览器打开 `http://127.0.0.1:8787`，输入 `HUB_SECRET_TOKEN` 即可进入批奏折看板。生产构建由 Fastify 同端口托管，无需额外 Web 服务器。
+Open the dashboard and paste `HUB_SECRET_TOKEN`.
 
-开发模式（服务端热重载 + Vite 前端代理）：
+Without an LLM key the Meta-Agent is skipped and every ticket goes to a human. Set `META_AGENT_PROVIDER=none` to make that explicit.
+
+### Docker
 
 ```bash
-pnpm dev          # 服务端 :8787
-pnpm dev:web      # 看板 :5173，/api 自动代理到 :8787
+cp .env.example .env
+docker compose up -d --build
 ```
 
-> 未配置 `OPENAI_API_KEY` 时，Meta-Agent 会自动跳过预审，所有工单直接转 `PENDING_HUMAN`，方便本地联调。
+The image serves the dashboard and API from one port and persists SQLite + rules in a volume.
 
-### 用 curl 走一遍完整流程
+## Connect an agent
 
 ```bash
-TOKEN=dev-token   # 与 .env 中的 HUB_SECRET_TOKEN 保持一致
-
-# 1. 提交卡点工单
-curl -s -X POST http://127.0.0.1:8787/api/tickets \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "env": "company-cursor",
-    "projectName": "yikuaomed-erp",
-    "doneSummary": "完成登录页表单校验",
-    "blockerQuestion": "错误提示用 Toast 还是行内文案？",
-    "nextStepPlan": "确定后接入统一错误处理并补测试",
-    "options": [
-      { "key": "A", "label": "Toast 提示", "prosCons": "统一、实现快" },
-      { "key": "B", "label": "行内文案", "prosCons": "更贴近字段" }
-    ],
-    "recommendedOption": "A"
-  }'
-
-# 2. 端侧长轮询（会挂起最多 40s）
-curl -s "http://127.0.0.1:8787/api/tickets/1/wait?timeout=40000" \
-  -H "Authorization: Bearer $TOKEN"
-
-# 3. 另一个终端：人类审批，长轮询立即被唤醒
-curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"selectedOption":"B","customInstruction":"先只改登录页"}'
+npx -y zhunzou-bridge init
 ```
 
----
+The wizard asks for the hub URL and token, detects Cursor / OpenCode / Claude Code, writes the MCP config, copies a rules template, and verifies connectivity. It never overwrites unrelated MCP servers.
 
-## Web 批奏折看板（M4）
+Run `init` once **per workspace**. The wizard derives `AGENT_ENV` from the project name (`cursor-yikuaomed-erp`) and provisions a scoped token, so multiple Cursor windows show up as separate agents instead of overwriting each other's heartbeat. Cursor can only read the workspace it has open; to work across repositories, use a multi-root workspace or run one agent per repository.
 
-单页 Vue 3 应用，默认由 Fastify 在同一个端口托管（`SERVE_WEB=true`），无需 CORS。
+### Headless: keep working when the editor is closed
 
-- **登录门**：粘贴 `HUB_SECRET_TOKEN`，仅存于本机 `localStorage`（`zhunzou.token`，自动兼容旧的 `agent-hub.token`）。
-- **接入端状态栏**：展示每个 `env` 的在线心跳、Running / Blocked / Idle 状态与当前任务，90 秒无心跳自动置灰。
-- **接入端管理**：把每个 `env` 当作可管理的 Agent——客户端类型、版本、主机、系统、当前项目、专属 Token 的签发/轮换/吊销，以及改名、停用、删除；顶部按 host 汇总运行节点（托管项目数、在线数、bridge 版本）。
-- **任务实时输出**：任务卡展开即可看 `stdout` / `stderr` / 系统事件，执行中每 1.2 秒增量拉取；每个任务最多保留 256 KB，结束后仍可回看。
-- **交互式会话**：在「会话」页直接和任意项目的 Agent 多轮对话；每条消息由端侧 runner 用可恢复 CLI（`--session` / `--resume`）执行，输出实时回传并保留上下文。
-- **待批奏折**：`PENDING_META` / `PENDING_HUMAN` 工单按创建时间排队；卡片即三行简报（已完成 / 卡点 / 下一步），点击任一方案即提交审批，可附带补充指令。推荐方案会高亮，但不影响选择。
-- **超时默认裁决**：开启 `AUTO_RESOLVE_TIMEOUT_MS` 后，待批卡片显示倒计时，到期按推荐方案自动准奏；可「暂缓 10 分钟」。推荐方案标记为 `destructive` 时永不自动执行。
-- **批量准奏**：积压多封时一键按各自推荐方案批复，提交前有 3 秒撤销窗口；高风险方案默认跳过，需勾选后才会一并批准。
-- **高风险保护**：选项支持 `risk: safe | caution | destructive`；破坏性选项必须人类二次确认，Meta-Agent 与超时策略都不能自动通过。
-- **通知内一键批复**：设置 `PUBLIC_BASE_URL` 后，Bark / 飞书 / Slack / Discord / ntfy / Telegram / Webhook 的通知都会带签名审批链接；手机点开即可选方案提交，无需登录看板。链接绑定单张工单、默认 30 分钟过期，重复提交会被状态机拒绝。
-- **下发任务**：人 → Agent 的反向调度。在看板指定环境、项目、标题与详细指令，端侧 Agent 通过 `agent_hub_next_task` 领取并执行，完成后回报结果；看板状态栏同步显示真实任务。
-- **工作区项目绑定**：每个环境（工作区）可绑定多个项目，下发任务时「项目名」下拉框只列出该环境已绑定的项目，不用再手输。Agent 心跳会自动上报 OpenCode / Cursor 当前打开的工作区（git 根目录名），服务端据此自动绑定；也可在看板用下拉框绑定其他已上报项目 / 解除（当前活跃项目不可解除，心跳会自动恢复）。
-- **历史决策**：自动放行与人工审批的完整记录，含决定、理由与补充指令。
-- **规则配置**：在线编辑 `GLOBAL_RULES.md`，保存后 Meta-Agent 立即使用新规则，无需重启。
-- **批复沉淀**：每次人工审批后自动提炼一条候选规则；在规则页一键采纳后并入 `GLOBAL_RULES.md`，也可忽略。没有配置 LLM 时使用确定性模板，功能仍可用。
-- **决策记忆**：Meta-Agent 预审时会参考同项目最近的历史判例，优先保持决策一致性，并在理由中注明「沿用 #编号」。
-- **自动同步**：每 5 秒轮询一次；页面隐藏时暂停，切回前台立即刷新；断网时展示可重试的错误条。
-
-前端源码位于 `packages/web`，使用 `createHubStore` 组合式状态管理（未引入 Pinia），TailwindCSS 4 + Vite 8 构建。
-
----
-
-## API
-
-除 `GET /healthz` 与签名审批页 `/a/:token` 外，所有接口都需要 `Authorization: Bearer <token>`。
-Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看板「接入端」页签发的专属 Agent Token
-（只能操作自己的 `env`）。服务端未配置专属 Token 时，继续用管理员 Token 也完全兼容。
-错误统一返回 `{ "error": { "code": "...", "message": "...", "details"?: ... } }`。
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/healthz` | 健康检查（免鉴权） |
-| `GET` | `/a/:token` | 签名审批页（免 Bearer，链接自带能力与有效期） |
-| `POST` | `/a/:token/resolve` | 从签名审批页提交决定 |
-| `POST` | `/api/tickets` | 创建工单，返回 `201`，随后异步触发 Meta-Agent 预审 |
-| `GET` | `/api/tickets/:id` | 查询单个工单 |
-| `GET` | `/api/tickets` | 列表，支持 `?status=&projectName=&env=&limit=` |
-| `GET` | `/api/tickets/:id/wait?timeout=40000` | 长轮询；返回 `{ resolved, timedOut, ticket }` |
-| `POST` | `/api/tickets/:id/resolve` | 人工审批 `{ selectedOption, customInstruction?, confirmDestructive? }` |
-| `POST` | `/api/tickets/batch-resolve` | 批量审批 `{ ticketIds, selectedOption?, confirmDestructive? }` |
-| `POST` | `/api/tickets/:id/extend` | 暂缓自动裁决 `{ minutes? }`，默认 10 分钟 |
-| `POST` | `/api/tickets/:id/cancel` | 取消仍在等待的工单 |
-| `POST` | `/api/tasks` | 人 → Agent 下发任务 `{ env, title, instruction, projectName? }` |
-| `GET` | `/api/tasks` | 任务列表，支持 `?env=&status=&limit=` |
-| `GET` | `/api/tasks/next?env=...&timeout=40000` | 端侧长轮询领取任务；无任务时超时返回 |
-| `POST` | `/api/tasks/:id/complete` | Agent 回报完成 / 失败 `{ status, result? }` |
-| `POST` | `/api/tasks/:id/log` | Agent 追加执行输出 `{ stream: stdout\|stderr\|system, chunk }` |
-| `GET` | `/api/tasks/:id/logs` | 增量读取执行输出 `?after=<id>&limit=` |
-| `POST` | `/api/sessions` | 新建会话 `{ env, projectName?, title? }` |
-| `GET` | `/api/sessions` | 会话列表，支持 `?env=&limit=` |
-| `GET` | `/api/sessions/:id` | 会话详情与消息 |
-| `POST` | `/api/sessions/:id/messages` | 发送用户消息 `{ content }` |
-| `POST` | `/api/sessions/:id/close` | 关闭会话 |
-| `GET` | `/api/sessions/next?env=...&timeout=40000` | 端侧长轮询领取待处理消息 |
-| `POST` | `/api/sessions/:id/messages/:messageId/events` | Agent 追加输出 `{ stream, chunk }` |
-| `GET` | `/api/sessions/:id/events` | 增量读取会话输出 `?after=&messageId=` |
-| `POST` | `/api/sessions/:id/messages/:messageId/complete` | 回报结果 `{ status, content?, externalId?, error? }` |
-| `POST` | `/api/sessions/:id/messages/:messageId/retry` | 重试失败的轮次（重置为待领取） |
-| `POST` | `/api/tasks/:id/cancel` | 人取消尚未结束的任务 |
-| `GET` | `/api/workspace-projects` | 工作区项目绑定列表，支持 `?env=` |
-| `POST` | `/api/workspace-projects` | 绑定项目 `{ env, projectName }`，幂等 |
-| `DELETE` | `/api/workspace-projects/:id` | 解除一条工作区项目绑定 |
-| `POST` | `/api/status/heartbeat` | 端侧上报 `{ env, status, projectName?, currentTask?, agent? }`，同时续租该端执行中的任务 |
-| `GET` | `/api/status` | 各接入端在线状态（90s 内有心跳视为在线） |
-| `GET` | `/api/agents` | 接入端列表，支持 `?status=active\|disabled` |
-| `POST` | `/api/agents` | 手动登记接入端 `{ env, name?, kind? }` |
-| `PATCH` | `/api/agents/:env` | 改名 / 改类型 / 停用 `{ name?, kind?, status? }` |
-| `DELETE` | `/api/agents/:env` | 删除接入端（历史工单保留） |
-| `POST` | `/api/agents/:env/token` | 签发或轮换专属 Token，明文只返回一次 |
-| `DELETE` | `/api/agents/:env/token` | 吊销专属 Token |
-| `GET` | `/api/resume?env=...&since=...` | 端侧重启恢复：未决/近期工单 + 活跃任务 |
-| `GET` | `/api/rules` | 读取 `GLOBAL_RULES.md` |
-| `PUT` | `/api/rules` | 在线更新规则 `{ content }` |
-| `GET` | `/api/rules/candidates` | 候选规则列表，支持 `?status=PENDING\|ACCEPTED\|DISMISSED&limit=` |
-| `POST` | `/api/rules/candidates/:id/accept` | 采纳候选规则并追加到 `GLOBAL_RULES.md` |
-| `POST` | `/api/rules/candidates/:id/dismiss` | 忽略候选规则 |
-
-### 长轮询约定
-
-- 单次请求最长 55s（`MAX_WAIT_TIMEOUT_MS`），默认 40s，可用 `WAIT_TIMEOUT_MS` 调整。
-- 已 resolved / cancelled 的工单会**立即**返回，不占用等待时间。
-- 唤醒完全走内存 `EventEmitter`，等待期间**不会轮询数据库**；SQLite 只负责持久化。
-- 超时返回 `{ resolved: false, timedOut: true, ticket }`，客户端可据此重试。
-
-### 工单状态机
-
-```text
-POST /tickets
-      │
-      ▼
-PENDING_META ──(规范覆盖，自动拍板)──▶ AUTO_RESOLVED
-      │
-      └──(需人工 / 预审失败 / 未配置 LLM)──▶ PENDING_HUMAN ──(看板审批)──▶ HUMAN_RESOLVED
-      │
-      └──(端侧取消)──▶ CANCELLED
-```
-
-人工决定永远优先：即使 Meta-Agent 的回复迟到，也不会覆盖已完成的 `HUMAN_RESOLVED`（数据库条件更新保证）。
-
-### 任务状态机（人 → Agent）
-
-```text
-POST /api/tasks
-      │
-      ▼
-PENDING ──(agent_hub_next_task 领取)──▶ CLAIMED ──(agent_hub_complete_task)──▶ DONE / FAILED
-   │                                        │
-   └──────────────(看板取消)────────────────┴──▶ CANCELLED
-```
-
-- 任务按 `env` 隔离：只有同一 `AGENT_ENV` 的桥接能领取。
-- 领取是条件更新，两个 Agent 同时轮询也只有一个能拿到同一条任务。
-- 每次领取会累加 `attempts`。如果端侧离线超过 `TASK_CLAIM_TIMEOUT_MS`，任务自动放回 `PENDING`；
-  超过 `TASK_MAX_ATTEMPTS` 或 `TASK_HARD_TIMEOUT_MS` 后标记 `FAILED`，不会永久卡在 `CLAIMED`。
-- `GET /api/tasks/next` 使用与审批相同的进程内 `EventEmitter` 唤醒，单实例部署约束不变。
-
----
-
-## Meta-Agent 预审（可插拔）
-
-预审策略由 `META_AGENT_PROVIDER` 选择，核心只依赖一个 `MetaAgent` 接口：
-
-| Provider | 行为 |
-| --- | --- |
-| `openai`（默认） | 调用任意 OpenAI 兼容的 `/chat/completions`（DeepSeek / OpenAI / Moonshot / Ollama / vLLM…） |
-| `http` | 把 `{ ticket, rules }` POST 到 `META_AGENT_ENDPOINT`，由你自己的服务返回裁决 |
-| `none` | 关闭预审，所有工单直接转人工 |
-
-OpenAI 兼容模式的流程：
-
-1. 读取 `GLOBAL_RULES.md`；
-2. 将「规则 + 工单三点简报 + 选项」发送给模型；
-3. 强制返回严格 JSON：`{ "canResolve": boolean, "selectedOption": "A", "reason": "..." }`；
-4. 模型给出的选项必须真实存在于工单中，否则自动降级为人工审批；
-5. `canResolve === false` 时按 `NOTIFY_CHANNELS` 并行通知（Bark / 飞书 / Slack / Discord / ntfy / Telegram / Webhook）。
-
-预审前会从同一项目召回最近的历史已决工单（字符 bigram 相似度，零外部依赖），作为
-「历史判例」注入 prompt，帮助 Meta-Agent 对同类问题保持一致判断。历史判例只是参考，
-不会覆盖规范，也不会让高风险变更自动通过。
-
-人工审批完成后，服务端会在后台把这次批复提炼成一条候选规则（有 LLM 时用 LLM 抽象，
-没有 LLM 时用确定性模板），进入规则页的「御前待议」列表；采纳后追加到
-`GLOBAL_RULES.md` 的 `## 历史批复沉淀` 小节，忽略则只保留审计记录。
-
-`META_AGENT_HEADERS` 可以追加任意请求头，适配带网关鉴权的部署。
-
-规则文件可通过 `PUT /api/rules` 在线维护，无需重启服务。建议把团队真实偏好写具体，例如：
-
-- 非破坏性重构一律采纳推荐方案；
-- 数据库 schema / API 契约变更必须人工确认；
-- 前端状态管理统一 Pinia。
-
-### 通知渠道
-
-`NOTIFY_CHANNELS` 逗号分隔、并行 fan-out；不配置时保持旧行为（有 `WEBHOOK_URL` 就用通用 Webhook）：
+Cursor CLI runs the same agent without the editor (`agent`, with `cursor-agent` as an alias):
 
 ```bash
-NOTIFY_CHANNELS=bark,feishu,console
-```
-
-所有渠道单次超时 5 秒，失败只记日志，不影响工单与长轮询。
-
-设置 `PUBLIC_BASE_URL=https://hub.example.com` 后，通知正文会列出全部选项并附带签名审批链接
-（`/a/:token`）。手机点开即可直接选择方案提交，不需要登录看板；链接默认 30 分钟过期，
-只对一张工单有效，高风险选项仍需勾选确认。Bark 会把链接作为点击跳转，ntfy 使用 `Click` 头。
-
-### 外部插件
-
-`HUB_PLUGINS` 可加载任意 ES Module，挂载工单生命周期钩子：
-
-```bash
-HUB_PLUGINS=./examples/plugins/audit-log.mjs
-```
-
-支持 `onTicketCreated` / `onTicketPendingHuman` / `onTicketResolved` /
-`onTicketCancelled` / `onReady` / `onClose`。完整接口、通知渠道变量和示例见
-[docs/PLUGINS.md](./docs/PLUGINS.md)。
-
----
-
-## 配置
-
-复制 `.env.example` 为 `.env`。常用变量：
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `PORT` / `HOST` | `8787` / `0.0.0.0` | 监听地址 |
-| `HUB_SECRET_TOKEN` | 开发环境 `dev-token` | 生产环境必须显式设置 |
-| `DATABASE_PATH` | `./data/zhunzou.db` | SQLite 文件路径 |
-| `GLOBAL_RULES_PATH` | `./GLOBAL_RULES.md` | 规则文件路径 |
-| `META_AGENT_PROVIDER` | `openai` | `openai` / `http` / `none` |
-| `OPENAI_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI 兼容接口 |
-| `OPENAI_API_KEY` | 空 | 为空时跳过自动预审 |
-| `META_AGENT_MODEL` | `deepseek-chat` | 预审模型 |
-| `META_AGENT_ENDPOINT` | 空 | `provider=http` 时的决策服务地址 |
-| `META_AGENT_HEADERS` | 空 | 额外请求头（JSON） |
-| `META_AGENT_TIMEOUT_MS` | `15000` | LLM 请求超时 |
-| `NOTIFY_CHANNELS` | 空 | `webhook,bark,feishu,slack,discord,ntfy,telegram,console` |
-| `WEBHOOK_URL` / `WEBHOOK_SECRET` | 空 | 通用通知 Webhook（兼容旧配置） |
-| `HUB_PLUGINS` | 空 | 逗号分隔的插件模块路径 |
-| `WAIT_TIMEOUT_MS` | `40000` | 默认长轮询窗口 |
-| `AUTO_RESOLVE_TIMEOUT_MS` | `0` | 超时默认裁决时限；`0` 关闭。到期按推荐方案自动准奏 |
-| `AUTO_RESOLVE_PROJECTS` | 空 | 允许自动裁决的项目，逗号分隔；空表示全部 |
-| `SWEEP_INTERVAL_MS` | `5000` | 超时与陈旧任务清理的扫描间隔 |
-| `TASK_CLAIM_TIMEOUT_MS` | `1800000` | 端侧离线超过该时长后，`CLAIMED` 任务自动重新排队 |
-| `TASK_HARD_TIMEOUT_MS` | `21600000` | `CLAIMED` 任务硬超时，即使端侧在线也标记失败 |
-| `TASK_MAX_ATTEMPTS` | `3` | 任务最多被领取次数，超过后标记 `FAILED` |
-| `PUBLIC_BASE_URL` | 空 | 通知里签名审批链接的公开地址，如 `https://hub.example.com` |
-| `APPROVAL_LINK_SECRET` | `HUB_SECRET_TOKEN` | 审批链接 HMAC 密钥 |
-| `APPROVAL_LINK_TTL_MS` | `1800000` | 审批链接有效期 |
-| `SERVE_WEB` | `true` | 是否由 Fastify 托管 `packages/web/dist` |
-| `WEB_DIST_PATH` | `./packages/web/dist` | 前端构建产物目录 |
-
-相对路径统一以仓库根目录为基准解析，因此从任意目录启动都不会写错位置。
-
----
-
-## 端侧接入
-
-`packages/bridge` 提供两个入口，均为纯 JS/TS + `fetch`，无原生编译依赖。
-npm 包内置 esbuild 单文件 bundle（`dependencies` 为空），`npx zhunzou-bridge` 不会额外拉取 MCP SDK / zod / `@zhunzou/shared`。
-
-推荐先跑一次向导，它会写入 MCP 配置、安装决策规则（Cursor 写 `.cursorrules`，OpenCode 写 `AGENTS.md`）并校验连通性：
-
-```bash
-npx zhunzou-bridge init
-# 非交互：--hub-url ... --token ... --env ... --target cursor|opencode|claude|all --yes
-# 只预览不落盘：--dry-run
-# 仓库内未发布 npm 时：pnpm build && node packages/bridge/bin/cli.js init
-```
-
-手动配置：
-
-```bash
-# MCP Server（stdio），挂到 Cursor / OpenCode / 任意 MCP 客户端
-node packages/bridge/bin/mcp.js
-
-# CLI：阻塞等待审批结果，把决策打印到 stdout
-npx zhunzou-bridge wait --ticket 104
-
-# 守护进程：空闲时也能自动领取看板下发的任务并唤醒本机 AI
-npx zhunzou-bridge wake
-```
-
-桥接会从启动目录（编辑器打开的 OpenCode / Cursor 工作区）自动推断项目名：优先使用 `ZHUNZOU_PROJECT`，未设置时取 git 仓库根目录（非 git 项目取当前目录）的目录名。每次心跳都会上报它，服务端据此自动完成「工作区 ↔ 项目」绑定，看板的项目下拉框无需手动输入即可选择。
-
-### 多个工作区（Cursor 只看到当前工作区）
-
-Cursor / VS Code 的一个窗口只对应一个工作区，MCP Server 的 cwd 就是该工作区。因此「让一个 Cursor 会话同时读写多个仓库」是客户端本身的限制；准奏能做的是**让每个工作区成为独立的接入端**，在看板上同时看到并分别调度：
-
-```bash
-# 在每个仓库根目录各跑一次
-npx zhunzou-bridge init
-```
-
-`init` 默认把 `AGENT_ENV` 设为 `<客户端>-<项目名>`（例如 `cursor-yikuaomed-erp`），并为每个环境签发独立 Token。这样多个 Cursor 窗口会分别出现在看板的「接入端」页，各自保留自己的项目、状态和待办。
-
-注意：
-
-- **不要让多个工作区共用同一个 `AGENT_ENV`**。心跳会互相覆盖，看板只会显示最后一个活跃的项目——旧版默认 `unknown-<hostname>` 就有这个问题，在仓库里重新跑一次 `init` 即可修正。
-- 想让一个会话同时访问多个目录：在 Cursor 里用 **Add Folder to Workspace** 打开多根工作区。
-- 想让**没打开的**仓库也能接任务：为每个项目常驻一个 wake 守护进程，并让 `AGENT_ENV` 与该项目 MCP 配置保持一致：
-  ```bash
-  cd /path/to/project
-  AGENT_ENV=cursor-my-project zhunzou-bridge wake
-  ```
-
-### 接入端管理
-
-看板「接入端」页把每个 `env` 当成一个可管理的 Agent：
-
-- 在线 / 离线 / 已停用，客户端类型、版本、主机、系统、当前项目与当前任务；
-- 签发 / 轮换 / 吊销专属 Token（明文只显示一次）；
-- 改名、改类型、停用、删除；
-- `init` 会自动签发专属 Token；服务端较旧时会回退为继续使用管理员 Token。
-
-专属 Token 只能操作自己的 `env`：可以上报心跳、提交/等待自己的工单、领取/回报自己的任务；不能审批工单、读取别的环境、修改规则或下发任务。管理员 Token 仍然拥有全部权限，因此老配置无需迁移。
-
-<p align="center">
-  <img src="./docs/assets/agents.png" alt="接入端管理：在线状态、客户端类型、专属 Token 与启停" width="920" />
-</p>
-
-### MCP Tools
-
-| Tool | 作用 |
-| --- | --- |
-| `agent_hub_resume` | 重启/重连后恢复上下文：未决/近期工单 + 活跃任务 |
-| `agent_hub_next_task` | 长轮询领取看板下发的任务，返回后标记 `Running` 并显示真实任务 |
-| `agent_hub_complete_task` | 回报下发任务 `DONE` / `FAILED`，状态回到 `Idle` |
-| `agent_hub_report_task` | 上报当前正在做的普通任务，避免看板一直显示「MCP 已连接」 |
-| `agent_hub_escalate` | 创建工单 → 长轮询 40s → 返回最终决策或超时引导 |
-| `agent_hub_wait` | 继续等待已有工单（策略 2 接力轮询） |
-| `agent_hub_notify_done` | 上报 `Idle`，更新看板状态灯 |
-
-超时后的两种保底策略（`ZHUNZOU_FALLBACK`，兼容旧名 `AGENT_HUB_FALLBACK`）：
-
-- `cli`（默认，推荐）：返回 `npx zhunzou-bridge wait --ticket 104 ...`，让模型在终端阻塞等待 stdout；
-- `mcp`：返回 `[STATUS: STILL_WAITING] ... agent_hub_wait(ticketId: 104)`，让模型接力调用工具。
-
-### 自动唤醒（wake）
-
-MCP 工具只能在对话回合内调用：没人操作编辑器时，端侧不会主动领任务，看板就会一直停在
-「待领取」。`zhunzou-bridge wake` 常驻长轮询补上这一段，任务一到就唤醒本机任意 AI 客户端：
-
-```bash
-zhunzou-bridge wake                      # 自动探测：OpenCode → 常见 CLI Agent → 桌面通知
-zhunzou-bridge wake --adapter opencode   # 注入当前项目最近的 OpenCode 会话
-zhunzou-bridge wake --adapter claude     # claude -p
-zhunzou-bridge wake --adapter command --command 'my-agent --task {taskId} {prompt}'
-```
-
-支持 `opencode` / `opencode-run` / `claude` / `codex` / `gemini` / `cursor-agent` / `aider` /
-`goose` / `amp` / `command` / `notify` 等适配器。注入模式由 Agent 自己调用
-`agent_hub_complete_task` 回报；一次性模式由守护进程按退出码写回 `DONE` / `FAILED`。
-唤醒失败会自动调用 `POST /api/tasks/:id/release` 重新排队，不会把任务卡在 `CLAIMED`。
-
-详见 [packages/bridge/README.md](./packages/bridge/README.md#自动唤醒wake)。
-
-### Cursor 没启动也能用（headless）
-
-Cursor 的图形界面只是其中一个客户端；真正执行任务的是 Cursor CLI（二进制名 `agent`，兼容别名
-`cursor-agent`），它不需要打开编辑器：
-
-```bash
-# 1. 安装（官方脚本，装到 ~/.local/bin）
 curl https://cursor.com/install -fsS | bash
-# 若 zsh 找不到命令：
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
-
-# 2. 登录（服务器无浏览器时用 CURSOR_API_KEY）
-agent login
-agent status
-
-# 3. 验证 print 模式（--force 才会真正改文件）
-cd /path/to/project
-agent -p --force "列出这个项目里未处理的 TODO"
+agent login                     # or export CURSOR_API_KEY=...
+agent -p --force "list TODOs"   # print mode; --force applies edits
 ```
 
-然后让准奏的 wake 守护进程在该项目目录常驻。Cursor 是否打开都不影响：
+Then keep one wake daemon per repository; it dispatches tasks even when Cursor is not running:
 
 ```bash
 cd /path/to/project
-AGENT_ENV=cursor-my-project \
-HUB_URL=https://hub.example.com \
-HUB_TOKEN=zz_xxx \
-zhunzou-bridge wake --adapter cursor-agent --cwd /path/to/project
+AGENT_ENV=cursor-my-project HUB_URL=... HUB_TOKEN=zz_... \
+  zhunzou-bridge wake --adapter cursor-agent --cwd /path/to/project
 ```
 
-看板下发任务后，守护进程会执行 `cursor-agent -p --force "<任务简报>"`，按退出码回报
-`DONE` / `FAILED`。多个仓库就为每个仓库各跑一个守护进程（`pm2` / `launchd` / systemd 均可托管）。
+The daemon runs `cursor-agent -p --force "<task brief>"` and reports `DONE` / `FAILED` from the exit code. If the CLI sandbox blocks the hub, adjust `--sandbox` or allow the hub domain. Without Cursor CLI, `--adapter opencode-run` and `--adapter claude` work the same way.
 
-注意：
+### One process for every project (fleet)
 
-- `cursor-agent` 适配器默认带 `--force`，否则 print 模式只给建议、不改文件。
-- Cursor CLI 自带沙箱，默认可能限制网络；如果 headless Agent 无法调用 `agent_hub_escalate`
-  连上准奏，按 Cursor 文档调整 `--sandbox` 或放行 hub 域名。先在项目里跑一次
-  `zhunzou-bridge init --target cursor`，让 headless 会话也拿到 `.cursor/mcp.json` 与规则。
-- 不方便装 Cursor CLI 时，`--adapter opencode-run`（本机已装 OpenCode）或
-  `--adapter claude` 同样可以无人值守运行，准奏不绑定某一个客户端。
-
-### 一条命令托管所有项目（fleet）
-
-为每个仓库单独开终端很快会变成负担。`fleet` 用**一个进程**托管本机所有项目，每个项目一条
-wake 循环，Hub 仍然是唯一控制面：
+`fleet` runs one wake loop per repository in a single process, so the hub can dispatch to any project without an editor or a terminal per repo:
 
 ```bash
-mkdir -p ~/.zhunzou
 cp packages/bridge/templates/fleet.example.json ~/.zhunzou/fleet.json
-# 编辑 hubUrl / adminToken / projects
 zhunzou-bridge fleet
 ```
 
-```json
-{
-  "hubUrl": "https://hub.example.com",
-  "adminToken": "REPLACE_WITH_HUB_SECRET_TOKEN",
-  "adapter": "cursor-agent",
-  "projects": [
-    { "env": "cursor-yikuaomed-erp", "path": "~/code/yikuaomed-erp" },
-    { "env": "opencode-zhunzou", "path": "~/code/zhunzou", "adapter": "opencode-run" }
-  ]
-}
-```
+The config lists `hubUrl`, an optional `adminToken` (used once to register agents and issue scoped tokens, cached at `~/.zhunzou/fleet-tokens.json` with `0600`), and `projects: [{ env, path, project?, adapter?, token?, args? }]`. Each project appears as its own agent in the dashboard; `--refresh-tokens` rotates tokens and `--once` handles a single cycle.
 
-- `adminToken` 只用于首次登记接入端和签发 Token；签发结果缓存在
-  `~/.zhunzou/fleet-tokens.json`（权限 `0600`），之后不再需要管理员 Token。
-- 每个项目在 Hub 里就是一个独立 Agent（`env`），在「下发任务」页选择它即可；
-  编辑器开没开都不影响。
-- 某个项目的循环崩溃会自动重启；`--refresh-tokens` 强制轮换所有 Token，
-  `--once` 只处理一轮（适合 cron / 定时任务）。
-- 看板「接入端」页会按运行节点（host）汇总：这台机器托管了多少项目、多少在线。
-
-开机自启：
+Start it at login:
 
 ```bash
-# macOS（launchd）
+# macOS
 zhunzou-bridge fleet --print-launchd > ~/Library/LaunchAgents/com.zhunzou.fleet.plist
 launchctl load ~/Library/LaunchAgents/com.zhunzou.fleet.plist
 
-# 通用（pm2）
-pm2 start "zhunzou-bridge fleet" --name zhunzou-fleet
-pm2 save
+# pm2
+pm2 start "zhunzou-bridge fleet" --name zhunzou-fleet && pm2 save
 ```
 
-> `--print-launchd` 会写入当前 `node` 和 CLI 的绝对路径。请使用全局安装
-> （`npm i -g zhunzou-bridge`）或独立包，避免指向 npx 临时缓存。
+The "接入端" page groups agents by host, so one card shows how many projects that machine hosts and how many are online.
 
-### 任务执行输出
+Or configure manually:
 
-任务卡点「查看输出」即可实时看 Agent 的 `stdout` / `stderr` 和系统事件。桥接会按 600ms
-批量上报，看板每 1.2 秒增量拉取；任务结束后输出仍保留（每个任务最多 256 KB，超出后丢弃最旧的部分）。
+```bash
+# MCP server (stdio)
+npx -y zhunzou-mcp
 
-<p align="center">
-  <img src="./docs/assets/task-logs.png" alt="任务执行输出：实时 stdout、stderr 与系统事件" width="920" />
-</p>
+# CLI: block until a decision, print it to stdout
+npx -y zhunzou-bridge wait --ticket 104
 
-### 交互式会话
+# From a local checkout (before npm publish):
+node packages/bridge/bin/mcp.js
+node packages/bridge/bin/cli.js init
+```
 
-看板「会话」页选择一个在线 Agent，新建会话后即可多轮对话。端侧 `fleet` 会在每个项目上同时跑
-任务循环和会话循环；每条用户消息 spawn 一次可恢复 CLI：
+### MCP tools
 
-| 适配器 | 行为 |
+| Tool | Purpose |
 | --- | --- |
-| `opencode` / `opencode-run` | `opencode run --auto --session <id>`，首次自动生成并保存 session id |
-| `cursor-agent` | `agent -p --force --output-format json [--resume <id>]`，从 JSON 输出捕获 session id |
-| `claude` | `claude -p --output-format json [--resume <id>]` |
-| `command` | `ZHUNZOU_WAKE_COMMAND` 模板，支持 `{message}` / `{session}` / `{env}` / `{project}` |
+| `agent_hub_escalate` | Create a ticket, long-poll, return the decision or a waiting instruction |
+| `agent_hub_wait` | Continue waiting for an existing ticket |
+| `agent_hub_resume` | Recover pending decisions and active tasks after a restart |
+| `agent_hub_next_task` | Claim a task dispatched from the dashboard |
+| `agent_hub_complete_task` | Report `DONE` / `FAILED` |
+| `agent_hub_report_task` | Show the current real task on the dashboard |
+| `agent_hub_notify_done` | Mark the environment `Idle` |
 
-输出会像任务日志一样实时回传；完成后写入一条 assistant 消息，`externalId` 持久化用于下一轮续聊。
+Environment variables:
 
-<p align="center">
-  <img src="./docs/assets/chat.png" alt="Hub 内与项目 Agent 多轮对话" width="920" />
-</p>
-
-> 当前是「每条消息一个进程」的会话，不是 token 级流式；命令是否需要确认由各 CLI 的
-> `--force` / `--auto` 决定。runner 掉线超过 `CHAT_MESSAGE_TIMEOUT_MS`（默认 5 分钟）后，
-> `RUNNING` 的消息会自动标记失败，可在气泡里点「重试」重新排队。需要真正的交互式
-> 权限事件时再升级到 ACP。
-
-### 环境变量
-
-| 变量 | 必填 | 默认值 | 说明 |
+| Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `HUB_TOKEN` | 是 | - | 与服务端 `HUB_SECRET_TOKEN` 一致 |
-| `HUB_URL` | 否 | `http://127.0.0.1:8787` | 云端地址 |
-| `AGENT_ENV` | 否 | `unknown-<hostname>` | 看板环境标识，如 `company-cursor`；`init` 会按项目写入 `<客户端>-<项目名>`，多个工作区请勿共用 |
-| `ZHUNZOU_AGENT_KIND` | 否 | `other` | 客户端类型：`cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `windsurf` / `other`；`init` 自动写入 |
-| `ZHUNZOU_PROJECT` | 否 | 自动推断 | 当前工作区项目名；默认取启动目录（git 根目录）名，心跳时自动绑定到该环境，下发任务可直接选择 |
-| `ZHUNZOU_FALLBACK`（旧名 `AGENT_HUB_FALLBACK`） | 否 | `cli` | `cli` 或 `mcp` |
-| `ZHUNZOU_WAIT_TIMEOUT_MS`（旧名 `AGENT_HUB_WAIT_TIMEOUT_MS`） | 否 | `40000` | 单次长轮询窗口（1s ~ 55s） |
-| `ZHUNZOU_CLI_COMMAND` | 否 | `npx zhunzou-bridge` | `cli` 策略下提示模型执行的命令；直接运行 `bin/mcp.js` 时自动指向同目录 `cli.js` / `cli.mjs` |
-| `ZHUNZOU_HEARTBEAT_INTERVAL_MS` | 否 | `30000` | 在线心跳间隔（5s ~ 5min） |
-| `ZHUNZOU_WAKE_ADAPTER` | 否 | `auto` | `wake` 守护进程的适配器：`auto` / `opencode` / `claude` / `codex` / `command` / `notify` 等 |
-| `ZHUNZOU_WAKE_COMMAND` | 否 | 空 | `command` 适配器的命令模板，如 `claude -p {prompt}` |
-| `ZHUNZOU_WAKE_ARGS` | 否 | 空 | 追加给 CLI 适配器的参数（空格分隔） |
-| `ZHUNZOU_WAKE_CWD` | 否 | 当前目录 | 一次性适配器的工作目录 |
-| `ZHUNZOU_WAKE_RUN_TIMEOUT_MS` | 否 | `1800000` | 一次性适配器最长执行时间 |
-| `ZHUNZOU_WAKE_POLL_TIMEOUT_MS` | 否 | `40000` | 领取任务的长轮询窗口（1s ~ 55s） |
+| `HUB_TOKEN` | yes | — | Same as server `HUB_SECRET_TOKEN` |
+| `HUB_URL` | no | `http://127.0.0.1:8787` | Server URL |
+| `AGENT_ENV` | no | `unknown-<hostname>` | Environment label, e.g. `company-cursor`. `init` writes `<client>-<project>` so each workspace stays distinct |
+| `ZHUNZOU_AGENT_KIND` | no | `other` | Client type: `cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `windsurf` / `other`; written by `init` |
+| `ZHUNZOU_PROJECT` | no | auto-detected | Project name reported in heartbeats; defaults to the git root / cwd basename |
+| `ZHUNZOU_FALLBACK` | no | `cli` | `cli` or `mcp` after a 40s timeout |
+| `ZHUNZOU_WAIT_TIMEOUT_MS` | no | `40000` | Single long-poll window |
+| `ZHUNZOU_CLI_COMMAND` | no | `npx zhunzou-bridge` | Command shown in CLI fallback |
+| `ZHUNZOU_HEARTBEAT_INTERVAL_MS` | no | `30000` | Heartbeat interval |
 
-### 接入模板
+Templates live in [`packages/bridge/templates`](./packages/bridge/templates).
 
-- `packages/bridge/templates/.cursorrules`：Cursor 的行为约束（何时升级、如何等待）。
-- `packages/bridge/templates/AGENTS.md`：OpenCode 的行为约束；`init --target opencode` 会写入或追加到目标项目的 `AGENTS.md`。
-- `packages/bridge/templates/cursor-mcp.json.example`：Cursor `.cursor/mcp.json` 示例。
-- `packages/bridge/templates/opencode.json.example`：OpenCode V2 `mcp.servers` 配置示例。
-- `packages/bridge/templates/launchd.plist.example`：macOS 下让 `zhunzou-bridge wake` 登录自启的 launchd 配置。
+## API
 
-详见 [packages/bridge/README.md](./packages/bridge/README.md)。
+All `/api/*` routes require `Authorization: Bearer <HUB_SECRET_TOKEN>`. `/healthz` and `/a/:token` are public.
 
-### Windows 外部电脑
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/healthz` | Health check |
+| `GET` | `/a/:token` | Signed mobile approval page |
+| `POST` | `/a/:token/resolve` | Submit a decision from the page |
+| `POST` | `/api/tickets` | Create a ticket |
+| `GET` | `/api/tickets` | List tickets (`status`, `projectName`, `limit`) |
+| `GET` | `/api/tickets/:id` | Get one ticket |
+| `GET` | `/api/tickets/:id/wait?timeout=40000` | Long-poll for a decision |
+| `POST` | `/api/tickets/:id/resolve` | Human approval (`selectedOption`, `customInstruction?`, `confirmDestructive?`) |
+| `POST` | `/api/tickets/batch-resolve` | Batch approval (`ticketIds`, `selectedOption?`) |
+| `POST` | `/api/tickets/:id/extend` | Snooze the timeout (`minutes?`, default 10) |
+| `POST` | `/api/tickets/:id/cancel` | Cancel a pending ticket |
+| `POST` | `/api/tasks` | Dispatch a task to an env |
+| `GET` | `/api/tasks/next?env=...` | Bridge claims the next task |
+| `POST` | `/api/tasks/:id/complete` | Report task result |
+| `POST` | `/api/tasks/:id/log` | Append live output (`stdout` / `stderr` / `system`) |
+| `GET` | `/api/tasks/:id/logs` | Incremental log tail (`?after=&limit=`) |
+| `POST` | `/api/sessions` | Create a chat session |
+| `GET` | `/api/sessions` | List sessions |
+| `POST` | `/api/sessions/:id/messages` | Send a user message |
+| `GET` | `/api/sessions/next?env=...` | Runner claims the next message |
+| `POST` | `/api/sessions/:id/messages/:messageId/events` | Append streamed output |
+| `POST` | `/api/sessions/:id/messages/:messageId/complete` | Finish a turn (content + session id) |
+| `POST` | `/api/sessions/:id/messages/:messageId/retry` | Requeue a failed turn |
+| `POST` | `/api/status/heartbeat` | Bridge heartbeat |
+| `GET` | `/api/status` | Online environments |
+| `GET` | `/api/resume?env=...` | Pending/recent tickets + active tasks |
+| `GET/PUT` | `/api/rules` | Read/update `GLOBAL_RULES.md` |
+| `GET` | `/api/rules/candidates` | Distilled rule candidates |
+| `POST` | `/api/rules/candidates/:id/accept` | Accept a candidate rule |
+| `POST` | `/api/rules/candidates/:id/dismiss` | Dismiss a candidate rule |
+| `GET` | `/api/workspace-projects` | Project bindings per env |
+| `POST` | `/api/workspace-projects` | Bind a project to an env |
+| `DELETE` | `/api/workspace-projects/:id` | Unbind |
 
-在 Mac/Linux 上生成零依赖包：
+## Configuration
 
-```bash
-pnpm package:bridge:windows
-# 产物：release/zhunzou-bridge-windows.zip
-```
+Copy `.env.example` to `.env`. Common variables:
 
-Windows 只需安装 Node.js 20+，解压 zip 后按包内 `README-WINDOWS.md` 配置
-`.cursor/mcp.json`。包内含 `mcp.mjs` / `cli.mjs`，无需 npm install、无需克隆仓库。
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` / `HOST` | `8787` / `0.0.0.0` | Listen address |
+| `HUB_SECRET_TOKEN` | dev fallback | **Must be set in production** |
+| `DATABASE_PATH` | `./data/zhunzou.db` | SQLite file |
+| `GLOBAL_RULES_PATH` | `./GLOBAL_RULES.md` | Rule file |
+| `META_AGENT_PROVIDER` | `openai` | `openai` / `http` / `none` |
+| `OPENAI_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI-compatible endpoint |
+| `OPENAI_API_KEY` | empty | Empty = skip auto-review |
+| `META_AGENT_MODEL` | `deepseek-chat` | Review model |
+| `AUTO_RESOLVE_TIMEOUT_MS` | `0` | Timeout SLA; `0` disables |
+| `AUTO_RESOLVE_PROJECTS` | empty | Project allowlist; empty = all |
+| `PUBLIC_BASE_URL` | empty | Origin used in signed approval links |
+| `APPROVAL_LINK_SECRET` | `HUB_SECRET_TOKEN` | HMAC key for approval links |
+| `APPROVAL_LINK_TTL_MS` | `1800000` | Approval link lifetime |
+| `TASK_CLAIM_TIMEOUT_MS` | `1800000` | Requeue an offline `CLAIMED` task |
+| `TASK_HARD_TIMEOUT_MS` | `21600000` | Fail a `CLAIMED` task regardless of heartbeat |
+| `TASK_MAX_ATTEMPTS` | `3` | Max claims before failing |
 
-发布新版本到 hub（服务端会以 `/releases/bridge/` 静态托管，客户端 `node cli.mjs upgrade` 自更新）：
+## Safety model
 
-```bash
-pnpm publish:bridge          # 构建 standalone + 写 release/bridge + 刷新 zip
-bash deploy/deploy.sh        # 随仓库上传到 hub
-```
+- Human decisions always win over late Meta-Agent or timeout verdicts (conditional updates).
+- `risk: "destructive"` options require explicit human confirmation and are never auto-approved.
+- Approval links are HMAC-signed, scoped to one ticket, and expire; the ticket status prevents replay.
+- Notifications and plugins are fire-and-forget: a broken channel never blocks approvals.
+- Long-poll wakeups use an in-process `EventEmitter`, so deployment is **single instance** by design.
 
----
-
-## 测试
-
-```bash
-pnpm test          # shared 28 + server 149 + bridge 85 + web 28 = 290 个测试
-pnpm typecheck     # 全量类型检查
-pnpm build         # 全量构建（含 Vue 看板）
-pnpm smoke         # 构建、启动真实服务、HTTP 长轮询冒烟测试
-pnpm smoke:bridge  # 真实服务 + MCP stdio 客户端 + CLI 端到端验收
-pnpm smoke:web     # 构建看板 + 单端口静态托管 / SPA fallback / 同源 API 验收
-```
-
-`pnpm smoke` / `pnpm smoke:bridge` / `pnpm smoke:web` 的实际输出（本机）：
-
-```text
-wake latency: 9ms
-SMOKE TEST PASSED
-
-tool wake latency: 12ms
-BRIDGE SMOKE TEST PASSED
-
-  ok - / serves the dashboard
-  ok - hashed asset /assets/index-*.js served
-  ok - SPA fallback works
-  ok - API still served on the same port
-  ok - ticket creation works without CORS
-WEB SMOKE TEST PASSED
-```
-
-验收标准要求「resolve 后 100ms 内返回」，实测分别为 9ms 与 12ms。
-
----
-
-## 部署（单实例）
-
-> 长轮询唤醒依赖进程内 `EventEmitter`，**必须单实例部署**；多实例会拆散等待者。
-
-### systemd + nginx（推荐）
-
-默认部署到 `/opt/zhunzou`，systemd 常驻，nginx 反代到 `127.0.0.1:8899`（网页与 API 同源）：
+## Development
 
 ```bash
-# 1. DNS：把你的域名 A 记录指向服务器
-# 2. 部署（首次会安装 Node/pnpm、构建、创建 systemd 服务与 nginx 站点）
-bash deploy/deploy.sh --server <服务器IP> --domain hub.example.com
-
-# 3. DNS 生效后申请 Let's Encrypt 证书
-bash deploy/enable-https.sh --domain hub.example.com
-```
-
-- 部署结束会打印 `HUB_SECRET_TOKEN`，登录看板时粘贴即可；Token、数据库与规则保存在
-  `/opt/zhunzou/.env`、`/opt/zhunzou/data/`，重新部署不会覆盖。
-- 若服务器上存在 `/opt/pte-dojo/server/.env`，会自动复用其中的 `AI_*` 配置；也可以直接
-  提供 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `META_AGENT_MODEL` 环境变量。
-- 运维：`systemctl status zhunzou`、`journalctl -u zhunzou -f`。
-- 不想用 nginx 时可加 `--no-nginx`，服务只监听回环，由你自己的网关转发。
-- 详细参数与目录约定见 [deploy/README.md](./deploy/README.md)。
-
-### Docker Compose
-
-```bash
-cp .env.example .env          # 至少设置 HUB_SECRET_TOKEN
-docker compose up -d --build
-docker compose logs -f zhunzou
-```
-
-- 镜像多阶段构建：`deps → build → prod-deps → runtime`；
-- 运行时使用 `node:22-bookworm-slim` 的非 root `node` 用户；
-- SQLite 与 `GLOBAL_RULES.md` 持久化在 `zhunzou-data` 卷的 `/app/data`；
-- 内置 `HEALTHCHECK` 调用 `/healthz`；
-- 只暴露 `8787`，网页与 API 同源。
-
-### pm2
-
-```bash
-npm i -g pm2
+pnpm test          # 28 shared + 149 server + 85 bridge + 28 web
+pnpm typecheck
 pnpm build
-pm2 start ecosystem.config.cjs
-pm2 logs zhunzou
-# 或使用脚本：pnpm deploy:pm2
+pnpm smoke         # real HTTP long-poll smoke test
+pnpm smoke:web     # single-port dashboard smoke test
 ```
 
-`ecosystem.config.cjs` 固定 `instances: 1` + `exec_mode: 'fork'`，默认 `HOST=127.0.0.1`，建议前置 nginx / caddy 提供 HTTPS。更新代码后执行 `pm2 reload ecosystem.config.cjs --update-env`。
+## Deployment
 
----
+`deploy/` contains a systemd + nginx setup, HTTPS helper, and a one-command deploy script. `docker-compose.yml`, `Dockerfile`, and `ecosystem.config.cjs` (pm2) are also included.
 
-## 设计说明
+Because wakeups are in-process, run **one** server instance. If you need horizontal scaling, replace the `EventEmitter` wakeup layer with Redis pub/sub.
 
-- **零消息队列**：长轮询唤醒使用 Node 原生 `EventEmitter`，SQLite 仅持久化；满足单机/单进程部署的规模。若未来要多实例水平扩展，需把唤醒层替换为 Redis pub/sub。
-- **端侧零原生依赖**：bridge 只用 `fetch` + 官方 MCP SDK，Windows / macOS 直接 `node` 运行；MCP 的 stdout 严格留给协议，日志全部走 stderr。
-- **不引入 OpenAI SDK**：用 Node 内置 `fetch` 直连兼容接口，客户端零原生编译依赖，也方便替换 DeepSeek / OpenAI / Moonshot。
-- **工单 ID**：数据库自增整数，API 中以数字字符串返回（`"104"`），展示层格式化为 `#104`，兼顾短 ID 与长轮询路由。
-- **并发安全**：`resolve` / `markAutoResolved` 都带状态条件更新，重复审批返回 `409`，迟到的 Meta-Agent 结果不会覆盖人工决定。
-- **优雅退出**：`SIGINT` / `SIGTERM` 关闭 Fastify 与 SQLite 连接。
+## Contributing
 
----
-
-## 开源与贡献
-
-准奏以 MIT 协议开源，欢迎 Issue / PR。贡献指南见 [CONTRIBUTING.md](./CONTRIBUTING.md)，
-扩展开发见 [docs/PLUGINS.md](./docs/PLUGINS.md)，CI 配置见
-[.github/workflows/ci.yml](./.github/workflows/ci.yml)。
-
-如果你基于准奏接入了新的模型、通知渠道或 Agent 客户端，欢迎把适配方式整理成示例插件提交回来。
-
----
-
-## 后续可选增强
-
-- 多实例水平扩展：把进程内 `EventEmitter` 唤醒层替换为 Redis pub/sub；
-- 更多内置通知渠道（企业微信、钉钉、Gotify…）；
-- 存储适配器（Postgres / MySQL）与多租户；
-- 工单归档与统计：自动放行率、平均决策耗时。
+MIT licensed. Issues and PRs are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) and [docs/PLUGINS.md](./docs/PLUGINS.md). If you add a model provider, notification channel, or agent adapter, please contribute it as an example.

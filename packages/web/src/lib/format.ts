@@ -7,13 +7,11 @@ import type {
   TicketStatus,
 } from '@zhunzou/shared';
 
-export const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
-  PENDING_META: '总管预审中',
-  PENDING_HUMAN: '待批奏折',
-  AUTO_RESOLVED: '总管准奏',
-  HUMAN_RESOLVED: '人工准奏',
-  CANCELLED: '已取消',
-};
+import { t } from './i18n';
+
+export function ticketStatusLabel(status: TicketStatus): string {
+  return t(`ticketStatus.${status}`);
+}
 
 export const TICKET_STATUS_CLASSES: Record<TicketStatus, string> = {
   PENDING_META:
@@ -28,13 +26,9 @@ export const TICKET_STATUS_CLASSES: Record<TicketStatus, string> = {
     'bg-surface-container text-on-surface-variant ring-1 ring-inset ring-outline-variant/60',
 };
 
-export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
-  PENDING: '待领取',
-  CLAIMED: '执行中',
-  DONE: '已完成',
-  FAILED: '失败',
-  CANCELLED: '已取消',
-};
+export function taskStatusLabel(status: TaskStatus): string {
+  return t(`taskStatus.${status}`);
+}
 
 export const TASK_STATUS_CLASSES: Record<TaskStatus, string> = {
   PENDING:
@@ -52,11 +46,9 @@ export function isActiveTask(task: AgentTask): boolean {
   return task.status === 'PENDING' || task.status === 'CLAIMED';
 }
 
-export const ENV_STATUS_LABELS: Record<EnvStatus, string> = {
-  Running: '运行中',
-  Blocked: '等待决策',
-  Idle: '空闲',
-};
+export function envStatusLabel(status: EnvStatus): string {
+  return t(`envStatus.${status}`);
+}
 
 export const ENV_STATUS_CLASSES: Record<EnvStatus, string> = {
   Running: 'bg-secondary-container text-on-secondary-container',
@@ -122,20 +114,20 @@ export function relativeTime(timestamp: number, now: number = Date.now()): strin
   if (!timestamp) return '—';
 
   const diff = now - timestamp;
-  if (diff <= 0) return '刚刚';
+  if (diff <= 0) return t('time.justNow');
 
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 10) return '刚刚';
-  if (seconds < 60) return `${seconds} 秒前`;
+  if (seconds < 10) return t('time.justNow');
+  if (seconds < 60) return t('time.secondsAgo', { count: seconds });
 
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 60) return t('time.minutesAgo', { count: minutes });
 
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
+  if (hours < 24) return t('time.hoursAgo', { count: hours });
 
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days} 天前`;
+  if (days < 7) return t('time.daysAgo', { count: days });
 
   return formatDate(timestamp);
 }

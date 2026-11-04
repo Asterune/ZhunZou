@@ -16,13 +16,15 @@ import type { CreateTaskInput } from '@zhunzou/shared';
 import {
   relativeTime,
   TASK_STATUS_CLASSES,
-  TASK_STATUS_LABELS,
+  taskStatusLabel,
 } from '../lib/format';
+import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 import ProjectBindings from './ProjectBindings.vue';
 import TaskLogViewer from './TaskLogViewer.vue';
 
 const store = useHubStore();
+const { t } = useI18n();
 
 const form = reactive({
   env: '',
@@ -121,24 +123,24 @@ async function cancel(taskId: string): Promise<void> {
     <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
       <div>
         <div class="flex items-center gap-2 text-[11px] uppercase tracking-wider text-on-surface-variant">
-          <span>Dispatch Desk</span>
+          <span>{{ t('tasks.eyebrow') }}</span>
           <span class="text-outline-variant">·</span>
-          <span>自上而下 · 差遣</span>
+          <span>{{ t('tasks.eyebrowLocal') }}</span>
         </div>
         <h2
           class="mt-0.5 flex items-center gap-2 text-xl font-semibold text-on-surface"
           style="font-family: var(--font-serif)"
         >
-          下发任务
+          {{ t('tasks.title') }}
           <span
             class="rounded bg-surface-container px-1.5 py-0.5 text-[11px] font-medium tracking-normal text-on-surface-variant"
           >
-            待办 {{ store.activeTasks.length }} 项
+            {{ t('tasks.count', { count: store.activeTasks.length }) }}
           </span>
         </h2>
       </div>
       <span class="text-[11px] text-on-surface-variant">
-        Agent 调用 agent_hub_next_task 即可领取
+        {{ t('tasks.hint') }}
       </span>
     </div>
 
@@ -149,33 +151,33 @@ async function cancel(taskId: string): Promise<void> {
       <div class="grid gap-3 sm:grid-cols-2">
         <label class="block">
           <span class="flex items-center gap-1 text-[11px] font-medium text-on-surface-variant">
-            目标环境 <span class="text-primary">*</span>
+            {{ t('tasks.envLabel') }} <span class="text-primary">*</span>
           </span>
           <select
             v-model="form.env"
             required
             class="mt-1 h-10 w-full rounded-lg bg-surface-container-low px-3 font-mono text-sm text-on-surface shadow-inner outline-none transition focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20"
           >
-            <option value="" disabled>请选择已接入环境</option>
+            <option value="" disabled>{{ t('tasks.envPlaceholder') }}</option>
             <option v-for="env in envOptions" :key="env.env" :value="env.env">
-              {{ env.env }}{{ env.online ? ' · 在线' : ' · 离线' }}
+              {{ env.env }}{{ env.online ? t('tasks.envOnlineSuffix') : t('tasks.envOfflineSuffix') }}
             </option>
           </select>
           <span
             v-if="!envOptions.length"
             class="mt-1 block text-[11px] text-on-surface-variant/70"
           >
-            暂无已接入环境，请先启动 Agent 桥接。
+            {{ t('tasks.noEnv') }}
           </span>
         </label>
 
         <label class="block">
-          <span class="text-[11px] font-medium text-on-surface-variant">项目名（选填）</span>
+          <span class="text-[11px] font-medium text-on-surface-variant">{{ t('tasks.projectLabel') }}</span>
           <select
             v-model="form.projectName"
             class="mt-1 h-10 w-full rounded-lg bg-surface-container-low px-3 font-mono text-sm text-on-surface shadow-inner outline-none transition focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20"
           >
-            <option value="">不指定项目</option>
+            <option value="">{{ t('tasks.noProject') }}</option>
             <option v-for="project in projectOptions" :key="project" :value="project">
               {{ project }}
             </option>
@@ -184,7 +186,7 @@ async function cancel(taskId: string): Promise<void> {
             v-if="form.env && !projectOptions.length"
             class="mt-1 block text-[11px] text-on-surface-variant/70"
           >
-            该工作区还没有绑定项目，可在下方直接绑定。
+            {{ t('tasks.noBinding') }}
           </span>
         </label>
       </div>
@@ -194,40 +196,40 @@ async function cancel(taskId: string): Promise<void> {
       >
         <ProjectBindings :env="form.env" />
         <p class="mt-1.5 text-[11px] leading-4 text-on-surface-variant/70">
-          绑定的项目会出现在上方下拉框；Agent 心跳自动读取 OpenCode / Cursor 当前工作区，无需手动输入。
+          {{ t('tasks.bindingHint') }}
         </p>
       </div>
 
       <label class="mt-3 block">
         <span class="text-[11px] font-medium text-on-surface-variant">
-          任务标题 <span class="text-primary">*</span>
+          {{ t('tasks.titleLabel') }} <span class="text-primary">*</span>
         </span>
         <input
           v-model="form.title"
           required
           maxlength="200"
-          placeholder="一句话说明要做什么"
+          :placeholder="t('tasks.titlePlaceholder')"
           class="mt-1 h-10 w-full rounded-lg bg-surface-container-low px-3 text-sm text-on-surface shadow-inner outline-none transition placeholder:text-on-surface-variant/45 focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20"
         />
       </label>
 
       <label class="mt-3 block">
         <span class="text-[11px] font-medium text-on-surface-variant">
-          详细指令 <span class="text-primary">*</span>
+          {{ t('tasks.instructionLabel') }} <span class="text-primary">*</span>
         </span>
         <textarea
           v-model="form.instruction"
           required
           rows="4"
           maxlength="2000"
-          placeholder="写清目标、边界与验收标准。Agent 会按这段指令执行，完成后回报结果。"
+          :placeholder="t('tasks.instructionPlaceholder')"
           class="mt-1 w-full resize-y rounded-lg bg-surface-container-low px-3 py-2.5 text-sm leading-6 text-on-surface shadow-inner outline-none transition placeholder:text-on-surface-variant/45 focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20"
         />
       </label>
 
       <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
         <p class="text-[11px] text-on-surface-variant/70">
-          任务会排队到下一位在线的同环境 Agent 领取，不会打断正在审批的工单。
+          {{ t('tasks.queueHint') }}
         </p>
         <button
           type="submit"
@@ -236,7 +238,7 @@ async function cancel(taskId: string): Promise<void> {
         >
           <Loader2 v-if="submitting" :size="16" class="animate-spin" />
           <Send v-else :size="16" />
-          {{ submitting ? '下发中…' : '下发任务' }}
+          {{ submitting ? t('tasks.submitting') : t('tasks.submit') }}
         </button>
       </div>
     </form>
@@ -247,10 +249,10 @@ async function cancel(taskId: string): Promise<void> {
         style="font-family: var(--font-serif)"
       >
         <Inbox :size="16" class="text-primary" />
-        待办与执行中
+        {{ t('tasks.listTitle') }}
       </h3>
       <span class="text-[11px] text-on-surface-variant">
-        最近下发的排在前面
+        {{ t('tasks.listHint') }}
       </span>
     </div>
 
@@ -263,9 +265,9 @@ async function cancel(taskId: string): Promise<void> {
       >
         <Inbox :size="22" />
       </div>
-      <p class="mt-3 text-sm font-medium text-on-surface">暂无待办任务</p>
+      <p class="mt-3 text-sm font-medium text-on-surface">{{ t('tasks.emptyTitle') }}</p>
       <p class="mt-1 text-xs text-on-surface-variant">
-        在上方写下任务，指定环境后 Agent 领取即开始执行。
+        {{ t('tasks.emptyDesc') }}
       </p>
     </div>
 
@@ -284,13 +286,13 @@ async function cancel(taskId: string): Promise<void> {
                 class="rounded px-2 py-0.5 text-[11px] font-semibold"
                 :class="TASK_STATUS_CLASSES[task.status]"
               >
-                {{ TASK_STATUS_LABELS[task.status] }}
+                {{ taskStatusLabel(task.status) }}
               </span>
               <span
                 v-if="task.attempts > 1"
                 class="rounded bg-tertiary-fixed px-2 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed"
               >
-                第 {{ task.attempts }} 次领取
+                {{ t('tasks.attempt', { count: task.attempts }) }}
               </span>
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-on-surface-variant">
@@ -303,7 +305,7 @@ async function cancel(taskId: string): Promise<void> {
               </span>
               <span class="flex items-center gap-1">
                 <Clock :size="11" />
-                {{ relativeTime(task.createdAt) }}下发
+                {{ t('tasks.dispatchedAt', { time: relativeTime(task.createdAt) }) }}
               </span>
             </div>
           </div>
@@ -315,7 +317,7 @@ async function cancel(taskId: string): Promise<void> {
               @click="toggleLogs(task.id)"
             >
               <Terminal :size="13" />
-              {{ openLogs === task.id ? '收起输出' : '查看输出' }}
+              {{ openLogs === task.id ? t('tasks.hideOutput') : t('tasks.showOutput') }}
             </button>
             <button
               type="button"
@@ -325,7 +327,7 @@ async function cancel(taskId: string): Promise<void> {
             >
               <Loader2 v-if="cancelling === task.id" :size="13" class="animate-spin" />
               <XCircle v-else :size="13" />
-              取消
+              {{ t('tasks.cancel') }}
             </button>
           </div>
         </div>
@@ -339,7 +341,7 @@ async function cancel(taskId: string): Promise<void> {
           class="mt-2 flex items-center gap-1.5 text-[11px] text-secondary"
         >
           <CheckCircle2 :size="13" />
-          Agent 已领取，执行中{{ task.claimedAt ? ` · ${relativeTime(task.claimedAt)}` : '' }}
+          {{ t('tasks.claimed') }}{{ task.claimedAt ? ` · ${relativeTime(task.claimedAt)}` : '' }}
         </p>
 
         <TaskLogViewer
@@ -356,9 +358,9 @@ async function cancel(taskId: string): Promise<void> {
         style="font-family: var(--font-serif)"
       >
         <CheckCircle2 :size="16" class="text-secondary" />
-        已结束
+        {{ t('tasks.finished') }}
         <span class="text-[11px] font-normal text-on-surface-variant">
-          共 {{ store.finishedTasks.length }} 条
+          {{ t('tasks.finishedCount', { count: store.finishedTasks.length }) }}
         </span>
       </h3>
 
@@ -374,7 +376,7 @@ async function cancel(taskId: string): Promise<void> {
               class="rounded px-2 py-0.5 font-semibold"
               :class="TASK_STATUS_CLASSES[task.status]"
             >
-              {{ TASK_STATUS_LABELS[task.status] }}
+              {{ taskStatusLabel(task.status) }}
             </span>
             <span class="font-mono">{{ task.env }}</span>
             <span class="text-outline-variant">·</span>
@@ -385,7 +387,7 @@ async function cancel(taskId: string): Promise<void> {
               @click="toggleLogs(task.id)"
             >
               <Terminal :size="12" />
-              {{ openLogs === task.id ? '收起输出' : '输出' }}
+              {{ openLogs === task.id ? t('tasks.hideOutput') : t('tasks.output') }}
             </button>
           </div>
           <p class="mt-1.5 text-sm font-medium text-on-surface">{{ task.title }}</p>

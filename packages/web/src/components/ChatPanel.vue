@@ -17,11 +17,13 @@ import type {
 
 import { hubApi } from '../lib/api';
 import { relativeTime } from '../lib/format';
+import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
 import SessionOutput from './SessionOutput.vue';
 
 const store = useHubStore();
+const { t } = useI18n();
 
 const sessions = ref<ChatSession[]>([]);
 const activeId = ref('');
@@ -107,7 +109,7 @@ const canSend = computed(
 );
 
 function describe(error: unknown): string {
-  return error instanceof Error ? error.message : '操作失败';
+  return error instanceof Error ? error.message : t('chat.operationFailed');
 }
 
 /**
@@ -213,11 +215,11 @@ async function createSession(): Promise<void> {
   if (creating.value) return;
   const env = form.env.trim();
   if (!env) {
-    pushToast('请选择目标环境', 'error');
+    pushToast(t('chat.selectEnvError'), 'error');
     return;
   }
   if (!formEnvOnline.value) {
-    pushToast('该环境的端侧已离线，联网后再新建会话', 'error');
+    pushToast(t('chat.envOfflineError'), 'error');
     return;
   }
 
@@ -233,7 +235,7 @@ async function createSession(): Promise<void> {
     form.title = '';
     await loadSessions();
     await openSession(response.session.id);
-    pushToast('已创建会话', 'success');
+    pushToast(t('chat.created'), 'success');
   } catch (cause) {
     pushToast(describe(cause), 'error');
   } finally {
@@ -271,7 +273,7 @@ async function retryMessage(message: ChatMessage): Promise<void> {
     await hubApi.retryChatMessage(store.token, session.value.id, message.id);
     await refreshSession();
     await loadSessions();
-    pushToast('已重新排队，等待端侧领取', 'success');
+    pushToast(t('chat.requeued'), 'success');
   } catch (cause) {
     pushToast(describe(cause), 'error');
   } finally {
@@ -281,14 +283,14 @@ async function retryMessage(message: ChatMessage): Promise<void> {
 
 async function closeSession(): Promise<void> {
   if (!session.value || closing.value) return;
-  if (!globalThis.confirm('关闭这个会话？关闭后不能继续发消息。')) return;
+  if (!globalThis.confirm(t('chat.closeConfirm'))) return;
 
   closing.value = true;
   try {
     const response = await hubApi.closeChatSession(store.token, session.value.id);
     session.value = response.session;
     await loadSessions();
-    pushToast('会话已关闭', 'success');
+    pushToast(t('chat.closed'), 'success');
   } catch (cause) {
     pushToast(describe(cause), 'error');
   } finally {
@@ -338,10 +340,10 @@ onBeforeUnmount(stopPolling);
           class="text-xl font-semibold text-on-surface"
           style="font-family: var(--font-serif)"
         >
-          会话
+          {{ t('chat.title') }}
         </h2>
         <span class="text-[11px] text-on-surface-variant/70">
-          与任意项目的 Agent 多轮对话
+          {{ t('chat.subtitle') }}
         </span>
       </div>
       <button
@@ -350,7 +352,7 @@ onBeforeUnmount(stopPolling);
         @click="openForm"
       >
         <MessageSquarePlus :size="14" />
-        新建会话
+        {{ t('chat.new') }}
       </button>
     </div>
 
@@ -379,12 +381,12 @@ onBeforeUnmount(stopPolling);
               class="text-lg font-semibold text-on-surface"
               style="font-family: var(--font-serif)"
             >
-              新建会话
+              {{ t('chat.dialogTitle') }}
             </h3>
             <button
               type="button"
               class="grid h-8 w-8 place-items-center rounded-lg text-on-surface-variant hover:bg-surface-container"
-              aria-label="关闭"
+              :aria-label="t('agents.close')"
               @click="formOpen = false"
             >
               <X :size="16" />
@@ -392,13 +394,13 @@ onBeforeUnmount(stopPolling);
           </div>
 
           <label class="mb-3 block text-[12px] text-on-surface-variant">
-            目标环境
+            {{ t('chat.dialogEnv') }}
             <select
               v-model="form.env"
               class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2 text-[13px] text-on-surface outline-none focus:border-primary"
             >
               <option value="" disabled>
-                {{ envOptions.some((agent) => agent.online) ? '选择在线 Agent' : '没有在线 Agent' }}
+                {{ envOptions.some((agent) => agent.online) ? t('chat.selectOnline') : t('chat.noOnlineAgent') }}
               </option>
               <option
                 v-for="agent in envOptions"
@@ -406,18 +408,24 @@ onBeforeUnmount(stopPolling);
                 :value="agent.env"
                 :disabled="!agent.online"
               >
-                {{ agent.env }} · {{ agent.kind }}{{ agent.online ? '' : ' · 离线' }}
+                {{ agent.env }} · {{ agent.kind }}{{ agent.online ? '' : t('chat.offlineSuffix') }}
               </option>
             </select>
+            <span
+              v-if="!envOptions.some((agent) => agent.online)"
+              class="mt-1 block text-[11px] text-error"
+            >
+              {{ t('chat.noOnlineHint') }}
+            </span>
           </label>
 
           <label class="mb-3 block text-[12px] text-on-surface-variant">
-            项目（可选）
+            {{ t('chat.dialogProject') }}
             <select
               v-model="form.projectName"
               class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2 text-[13px] text-on-surface outline-none focus:border-primary"
             >
-              <option value="">使用项目默认目录</option>
+              <option value="">{{ t('chat.defaultDir') }}</option>
               <option v-for="project in projectOptions" :key="project" :value="project">
                 {{ project }}
               </option>
@@ -425,11 +433,11 @@ onBeforeUnmount(stopPolling);
           </label>
 
           <label class="mb-4 block text-[12px] text-on-surface-variant">
-            标题（可选）
+            {{ t('chat.dialogTitleLabel') }}
             <input
               v-model="form.title"
               maxlength="120"
-              placeholder="例如：重构登录页"
+              :placeholder="t('chat.dialogTitlePlaceholder')"
               class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2.5 text-[13px] text-on-surface outline-none focus:border-primary"
             />
           </label>
@@ -440,14 +448,14 @@ onBeforeUnmount(stopPolling);
               class="h-9 rounded-lg px-3 text-[12px] font-medium text-on-surface-variant hover:bg-surface-container"
               @click="formOpen = false"
             >
-              取消
+              {{ t('chat.cancel') }}
             </button>
             <button
               type="submit"
               class="h-9 rounded-lg bg-primary px-4 text-[12px] font-medium text-on-primary transition hover:bg-primary-container disabled:opacity-50"
               :disabled="creating || !form.env"
             >
-              {{ creating ? '创建中…' : '创建' }}
+              {{ creating ? t('chat.creating') : t('chat.create') }}
             </button>
           </div>
         </form>
@@ -458,7 +466,7 @@ onBeforeUnmount(stopPolling);
       <!-- Session list -->
       <aside class="space-y-2">
         <div class="flex items-center justify-between px-0.5 text-[11px] text-on-surface-variant">
-          <span>全部会话</span>
+          <span>{{ t('chat.all') }}</span>
           <button
             type="button"
             class="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-container"
@@ -489,7 +497,7 @@ onBeforeUnmount(stopPolling);
               v-if="item.status === 'CLOSED'"
               class="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[9px] text-on-surface-variant"
             >
-              已关闭
+              {{ t('chat.closedBadge') }}
             </span>
           </div>
           <div class="mt-1 flex items-center gap-1.5 text-[10px] text-on-surface-variant">
@@ -499,7 +507,7 @@ onBeforeUnmount(stopPolling);
             <span v-if="item.projectName" class="truncate">{{ item.projectName }}</span>
           </div>
           <div class="mt-1 text-[10px] text-on-surface-variant/60">
-            {{ item.messageCount ?? 0 }} 条消息 · {{ item.lastMessageAt ? relativeTime(item.lastMessageAt) : '刚创建' }}
+            {{ t('chat.messagesCount', { count: item.messageCount ?? 0 }) }} · {{ item.lastMessageAt ? relativeTime(item.lastMessageAt) : t('chat.justCreated') }}
           </div>
         </button>
 
@@ -507,7 +515,7 @@ onBeforeUnmount(stopPolling);
           v-if="listLoaded && !sessions.length"
           class="rounded-xl border border-dashed border-outline-variant bg-surface-container-low/60 px-3 py-6 text-center text-[12px] text-on-surface-variant"
         >
-          还没有会话。点「新建会话」选一个在线 Agent 开始。
+          {{ t('chat.emptyList') }}
         </p>
       </aside>
 
@@ -529,15 +537,15 @@ onBeforeUnmount(stopPolling);
                 {{ activeSession.projectName }}
               </span>
               <span v-if="activeSession.status === 'CLOSED'" class="text-primary">
-                · 已关闭
+                · {{ t('chat.closedBadge') }}
               </span>
               <span v-else-if="sessionOnline" class="flex items-center gap-1 text-secondary">
                 <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-secondary" />
-                在线
+                {{ t('chat.online') }}
               </span>
               <span v-else class="flex items-center gap-1 text-error">
                 <span class="h-1.5 w-1.5 rounded-full bg-error" />
-                端侧离线
+                {{ t('chat.agentOffline') }}
               </span>
             </p>
           </div>
@@ -549,7 +557,7 @@ onBeforeUnmount(stopPolling);
             @click="closeSession"
           >
             <XCircle :size="13" />
-            关闭
+            {{ t('chat.close') }}
           </button>
         </header>
 
@@ -574,21 +582,21 @@ onBeforeUnmount(stopPolling);
                 v-if="message.role === 'user' && message.status === 'FAILED'"
                 class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-[#ffd5d0]"
               >
-                <span>执行失败{{ message.error ? `：${message.error}` : '' }}</span>
+                <span>{{ t('chat.failed') }}{{ message.error ? `: ${message.error}` : '' }}</span>
                 <button
                   type="button"
                   class="rounded bg-white/15 px-1.5 py-0.5 text-[10px] font-medium text-white transition hover:bg-white/25 disabled:opacity-50"
                   :disabled="retrying === message.id || activeSession.status !== 'ACTIVE'"
                   @click="retryMessage(message)"
                 >
-                  {{ retrying === message.id ? '重试中…' : '重试' }}
+                  {{ retrying === message.id ? t('chat.retrying') : t('chat.retry') }}
                 </button>
               </p>
               <p
                 v-if="message.role === 'user' && message.status === 'PENDING'"
                 class="mt-1 text-[10px] text-on-primary/70"
               >
-                {{ sessionOnline ? '等待端侧领取…' : '等待端侧领取…（该环境当前离线）' }}
+                {{ sessionOnline ? t('chat.waiting') : t('chat.waitingOffline') }}
               </p>
             </div>
           </div>
@@ -597,7 +605,7 @@ onBeforeUnmount(stopPolling);
             v-if="!messages.length"
             class="py-10 text-center text-[12px] text-on-surface-variant"
           >
-            发送第一条消息开始对话。
+            {{ t('chat.firstMessage') }}
           </p>
 
           <SessionOutput
@@ -616,7 +624,7 @@ onBeforeUnmount(stopPolling);
               rows="2"
               maxlength="8000"
               :disabled="activeSession.status !== 'ACTIVE' || sending"
-              placeholder="给这个项目的 Agent 发消息…（Enter 发送，Shift+Enter 换行）"
+              :placeholder="t('chat.inputPlaceholder')"
               class="min-h-[52px] flex-1 resize-none rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-3 py-2 text-[13px] leading-5 text-on-surface outline-none focus:border-primary disabled:opacity-60"
               @keydown.enter.exact.prevent="send"
             />
@@ -624,15 +632,16 @@ onBeforeUnmount(stopPolling);
               type="button"
               class="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary text-on-primary transition hover:bg-primary-container disabled:opacity-40"
               :disabled="!canSend"
-              aria-label="发送"
+              :aria-label="t('chat.send')"
               @click="send"
             >
               <ArrowUp :size="17" />
             </button>
           </div>
           <p class="mt-1.5 text-[10px] text-on-surface-variant/60">
-            会话由端侧 runner 执行；本机需要常驻 <span class="font-mono">wake</span> 或
-            <span class="font-mono">fleet</span>，否则消息会停在待领取。
+            {{ t('chat.runnerHintBefore') }} <span class="font-mono">wake</span>
+            {{ t('chat.runnerHintMiddle') }}
+            <span class="font-mono">fleet</span>{{ t('chat.runnerHintAfter') }}
           </p>
         </div>
       </div>
@@ -643,7 +652,7 @@ onBeforeUnmount(stopPolling);
       >
         <div>
           <Plus :size="22" class="mx-auto mb-2 text-on-surface-variant/50" />
-          选择一个会话，或新建一个。
+          {{ t('chat.selectOrCreate') }}
         </div>
       </div>
     </div>

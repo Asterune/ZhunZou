@@ -16,10 +16,12 @@ import {
 import { computed, onMounted, ref, watch } from 'vue';
 
 import { relativeTime } from '../lib/format';
+import { useI18n } from '../lib/i18n';
 import { pushToast } from '../lib/toast';
 import { useHubStore } from '../stores/hub';
 
 const store = useHubStore();
+const { t } = useI18n();
 const draft = ref('');
 const original = ref('');
 const copied = ref(false);
@@ -81,10 +83,10 @@ async function copyRules(): Promise<void> {
   try {
     await navigator.clipboard.writeText(draft.value);
     copied.value = true;
-    pushToast('规则全文已复制', 'success');
+    pushToast(t('rules.copySuccess'), 'success');
     setTimeout(() => (copied.value = false), 1_800);
   } catch {
-    pushToast('复制失败，请手动选择文本', 'error');
+    pushToast(t('rules.copyFailed'), 'error');
   }
 }
 </script>
@@ -94,18 +96,18 @@ async function copyRules(): Promise<void> {
     <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
       <div>
         <div class="flex items-center gap-2 text-[11px] uppercase tracking-wider text-on-surface-variant">
-          <span>Meta-Agent Policy</span>
+          <span>{{ t('rules.eyebrow') }}</span>
           <span class="text-outline-variant">·</span>
-          <span>御批枢密章法</span>
+          <span>{{ t('rules.eyebrowLocal') }}</span>
         </div>
         <h2
           class="mt-0.5 text-xl font-semibold text-on-surface"
           style="font-family: var(--font-serif)"
         >
-          全局工程与架构规范
+          {{ t('rules.title') }}
         </h2>
         <p class="mt-1 max-w-2xl text-sm leading-6 text-on-surface-variant">
-          Meta-Agent 预审的唯一依据。保存后立即生效，无需重启服务。
+          {{ t('rules.subtitle') }}
         </p>
       </div>
     </div>
@@ -128,7 +130,7 @@ async function copyRules(): Promise<void> {
                 class="truncate text-sm font-semibold text-on-surface"
                 style="font-family: var(--font-serif)"
               >
-                御前待议 · 批复沉淀
+                {{ t('rules.candidatesTitle') }}
               </h3>
               <span
                 v-if="pendingCandidates.length"
@@ -138,7 +140,7 @@ async function copyRules(): Promise<void> {
               </span>
             </div>
             <p class="truncate text-[11px] text-on-surface-variant">
-              从人工批复中提炼的候选规则，采纳后立即并入 GLOBAL_RULES.md。
+              {{ t('rules.candidatesSubtitle') }}
             </p>
           </div>
         </div>
@@ -152,7 +154,7 @@ async function copyRules(): Promise<void> {
             :size="13"
             :class="{ 'animate-spin': store.ruleCandidatesLoading }"
           />
-          刷新
+          {{ t('rules.refresh') }}
         </button>
       </div>
 
@@ -174,7 +176,7 @@ async function copyRules(): Promise<void> {
               >
                 #{{ candidate.id }}
               </span>
-              <span>来自工单 #{{ candidate.ticketId }}</span>
+              <span>{{ t('rules.fromTicket', { id: candidate.ticketId }) }}</span>
               <span class="text-outline-variant">·</span>
               <span>{{ relativeTime(candidate.createdAt) }}</span>
             </div>
@@ -190,7 +192,7 @@ async function copyRules(): Promise<void> {
               @click="dismissCandidate(candidate.id)"
             >
               <X :size="13" />
-              忽略
+              {{ t('rules.ignore') }}
             </button>
             <button
               type="button"
@@ -204,14 +206,14 @@ async function copyRules(): Promise<void> {
                 class="animate-spin"
               />
               <Check v-else :size="13" />
-              采纳
+              {{ t('rules.accept') }}
             </button>
           </div>
         </div>
       </div>
 
       <p v-else class="px-4 py-4 text-xs leading-5 text-on-surface-variant">
-        暂无候选规则。每次人工批复后，系统会自动提炼一条可复用规范，供你一键采纳。
+        {{ t('rules.noCandidates') }}
       </p>
     </div>
 
@@ -231,13 +233,13 @@ async function copyRules(): Promise<void> {
               <span
                 v-if="dirty"
                 class="h-1.5 w-1.5 rounded-full bg-tertiary"
-                title="有未保存修改"
+                :title="t('rules.unsaved')"
               />
             </div>
             <div class="flex flex-wrap items-center gap-2 text-[11px] text-on-surface-variant">
-              <span>{{ draft.length }} 字符 / {{ lineCount }} 行</span>
+              <span>{{ t('rules.charsLines', { chars: draft.length, lines: lineCount }) }}</span>
               <span v-if="store.rules?.updatedAt">
-                · 更新于 {{ relativeTime(store.rules.updatedAt) }}
+                · {{ t('rules.updatedAt', { time: relativeTime(store.rules.updatedAt) }) }}
               </span>
             </div>
           </div>
@@ -247,7 +249,7 @@ async function copyRules(): Promise<void> {
             class="ml-1 flex items-center gap-1.5 rounded-full bg-tertiary-fixed px-2.5 py-1 text-[10px] font-medium text-on-tertiary-fixed"
           >
             <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-tertiary" />
-            有未保存修改
+            {{ t('rules.unsaved') }}
           </span>
         </div>
 
@@ -259,7 +261,7 @@ async function copyRules(): Promise<void> {
             @click="reload"
           >
             <RefreshCw :size="15" :class="{ 'animate-spin': store.rulesLoading }" />
-            重新加载
+            {{ t('rules.reload') }}
           </button>
           <button
             type="button"
@@ -269,7 +271,7 @@ async function copyRules(): Promise<void> {
           >
             <Loader2 v-if="store.savingRules" :size="15" class="animate-spin" />
             <Save v-else :size="15" />
-            {{ store.savingRules ? '颁行中…' : dirty ? '保存规则并生效' : '已保存' }}
+            {{ store.savingRules ? t('rules.saving') : dirty ? t('rules.saveAndApply') : t('rules.saved') }}
           </button>
         </div>
       </div>
@@ -293,7 +295,7 @@ async function copyRules(): Promise<void> {
           >
             <Check v-if="copied" :size="12" class="text-secondary" />
             <Copy v-else :size="12" />
-            {{ copied ? '已复制' : '复制' }}
+            {{ copied ? t('rules.copied') : t('rules.copy') }}
           </button>
         </div>
 
@@ -308,7 +310,7 @@ async function copyRules(): Promise<void> {
             ref="editor"
             v-model="draft"
             spellcheck="false"
-            placeholder="# 全局工程与架构规范&#10;&#10;1. 非破坏性重构一律采纳推荐方案。&#10;2. 数据库 schema 变更必须人工确认。"
+            :placeholder="t('rules.placeholder')"
             class="h-full w-full resize-none overflow-auto whitespace-pre-wrap border-0 bg-transparent px-3 py-3 font-mono text-[13px] leading-6 text-on-surface outline-none placeholder:text-on-surface-variant/35 sm:whitespace-pre"
             @scroll="syncScroll"
           />
@@ -319,7 +321,7 @@ async function copyRules(): Promise<void> {
         >
           <span class="flex items-center gap-1">
             <Sparkles :size="13" class="text-secondary" />
-            保存后 Meta-Agent 立即使用新规则
+            {{ t('rules.editorHint') }}
           </span>
           <span class="font-mono">GLOBAL_RULES.md</span>
         </div>
@@ -334,7 +336,7 @@ async function copyRules(): Promise<void> {
             style="font-family: var(--font-serif)"
           >
             <Lightbulb :size="16" />
-            怎么写更省事
+            {{ t('rules.tipsTitle') }}
           </h3>
           <div class="mt-2.5 space-y-2.5">
             <div class="flex items-start gap-2.5">
@@ -342,8 +344,8 @@ async function copyRules(): Promise<void> {
                 <GitBranch :size="15" />
               </span>
               <p class="text-xs leading-5 text-on-tertiary-fixed/85">
-                <strong class="font-medium text-on-surface">写清上下文边界。</strong>
-                例如 feature/* 可自动放行，main 分支合并必须人工呈批。
+                <strong class="font-medium text-on-surface">{{ t('rules.tipContextTitle') }}</strong>
+                {{ t('rules.tipContextBody') }}
               </p>
             </div>
             <div class="flex items-start gap-2.5">
@@ -351,8 +353,8 @@ async function copyRules(): Promise<void> {
                 <KeyRound :size="15" />
               </span>
               <p class="text-xs leading-5 text-on-tertiary-fixed/85">
-                <strong class="font-medium text-on-surface">规则越具体，自动放行率越高。</strong>
-                模糊的「视情况而定」等于没有规则。
+                <strong class="font-medium text-on-surface">{{ t('rules.tipSpecificTitle') }}</strong>
+                {{ t('rules.tipSpecificBody') }}
               </p>
             </div>
             <div class="flex items-start gap-2.5">
@@ -360,22 +362,22 @@ async function copyRules(): Promise<void> {
                 <History :size="15" />
               </span>
               <p class="text-xs leading-5 text-on-tertiary-fixed/85">
-                <strong class="font-medium text-on-surface">把底线写死。</strong>
-                删除数据、schema 变更、生产配置一律人工确认。
+                <strong class="font-medium text-on-surface">{{ t('rules.tipBottomTitle') }}</strong>
+                {{ t('rules.tipBottomBody') }}
               </p>
             </div>
           </div>
         </div>
 
         <div class="rounded-xl bg-surface-container-low p-3.5 shadow-sm">
-          <h3 class="text-sm font-semibold text-on-surface">示例偏好</h3>
+          <h3 class="text-sm font-semibold text-on-surface">{{ t('rules.exampleTitle') }}</h3>
           <ul class="mt-2 space-y-1.5 text-xs leading-5 text-on-surface-variant">
-            <li>· 前端状态管理统一 Pinia，禁止 Vuex。</li>
-            <li>· 后端优先 Fastify + SQLite，不引入消息队列。</li>
-            <li>· 非破坏性重构一律采纳推荐方案。</li>
+            <li>· {{ t('rules.example1') }}</li>
+            <li>· {{ t('rules.example2') }}</li>
+            <li>· {{ t('rules.example3') }}</li>
           </ul>
           <p class="mt-2.5 rounded-lg bg-surface-container px-2.5 py-2 text-[11px] leading-5 text-on-surface-variant">
-            这里的修改会直接写入服务器的 GLOBAL_RULES.md，建议纳入版本管理。
+            {{ t('rules.note') }}
           </p>
         </div>
       </aside>

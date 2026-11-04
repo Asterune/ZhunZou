@@ -1,13 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { AgentTask, DecisionTicket, EnvHeartbeat } from '@zhunzou/shared';
 
 import {
-  ENV_STATUS_LABELS,
-  TASK_STATUS_LABELS,
-  TICKET_STATUS_LABELS,
   envBadgeClass,
   envDotClass,
+  envStatusLabel,
   formatCountdown,
   formatDate,
   formatDateTime,
@@ -16,7 +14,14 @@ import {
   isTerminalTicket,
   optionLabel,
   relativeTime,
+  taskStatusLabel,
+  ticketStatusLabel,
 } from '../src/lib/format';
+import { setLocale } from '../src/lib/i18n';
+
+beforeEach(() => {
+  setLocale('zh');
+});
 
 function ticket(overrides: Partial<DecisionTicket> = {}): DecisionTicket {
   return {
@@ -64,11 +69,11 @@ function task(overrides: Partial<AgentTask> = {}): AgentTask {
 
 describe('status helpers', () => {
   it('labels every task status', () => {
-    expect(TASK_STATUS_LABELS.PENDING).toBe('待领取');
-    expect(TASK_STATUS_LABELS.CLAIMED).toBe('执行中');
-    expect(TASK_STATUS_LABELS.DONE).toBe('已完成');
-    expect(TASK_STATUS_LABELS.FAILED).toBe('失败');
-    expect(TASK_STATUS_LABELS.CANCELLED).toBe('已取消');
+    expect(taskStatusLabel('PENDING')).toBe('待领取');
+    expect(taskStatusLabel('CLAIMED')).toBe('执行中');
+    expect(taskStatusLabel('DONE')).toBe('已完成');
+    expect(taskStatusLabel('FAILED')).toBe('失败');
+    expect(taskStatusLabel('CANCELLED')).toBe('已取消');
   });
 
   it('classifies active tasks', () => {
@@ -79,15 +84,23 @@ describe('status helpers', () => {
     expect(isActiveTask(task({ status: 'CANCELLED' }))).toBe(false);
   });
   it('labels every ticket status', () => {
-    expect(TICKET_STATUS_LABELS.PENDING_HUMAN).toBe('待批奏折');
-    expect(TICKET_STATUS_LABELS.AUTO_RESOLVED).toBe('总管准奏');
-    expect(TICKET_STATUS_LABELS.CANCELLED).toBe('已取消');
+    expect(ticketStatusLabel('PENDING_HUMAN')).toBe('待批奏折');
+    expect(ticketStatusLabel('AUTO_RESOLVED')).toBe('总管准奏');
+    expect(ticketStatusLabel('CANCELLED')).toBe('已取消');
   });
 
   it('labels env statuses', () => {
-    expect(ENV_STATUS_LABELS.Running).toBe('运行中');
-    expect(ENV_STATUS_LABELS.Blocked).toBe('等待决策');
-    expect(ENV_STATUS_LABELS.Idle).toBe('空闲');
+    expect(envStatusLabel('Running')).toBe('运行中');
+    expect(envStatusLabel('Blocked')).toBe('等待决策');
+    expect(envStatusLabel('Idle')).toBe('空闲');
+  });
+
+  it('switches labels to English', () => {
+    setLocale('en');
+    expect(ticketStatusLabel('PENDING_HUMAN')).toBe('Awaiting you');
+    expect(taskStatusLabel('CLAIMED')).toBe('Running');
+    expect(envStatusLabel('Blocked')).toBe('Blocked');
+    expect(relativeTime(Date.now() - 5_000)).toBe('just now');
   });
 
   it('classifies awaiting vs terminal tickets', () => {

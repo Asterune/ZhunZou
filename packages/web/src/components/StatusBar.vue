@@ -3,14 +3,16 @@ import { Bot, Clock, Folder } from 'lucide-vue-next';
 import { computed } from 'vue';
 
 import {
-  ENV_STATUS_LABELS,
   envBadgeClass,
   envDotClass,
+  envStatusLabel,
   relativeTime,
 } from '../lib/format';
+import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 
 const store = useHubStore();
+const { t } = useI18n();
 const envs = computed(() => store.envs);
 const disabledEnvs = computed(
   () =>
@@ -39,15 +41,15 @@ const isDisabled = (env: { env: string }): boolean =>
           class="text-base font-semibold text-on-surface"
           style="font-family: var(--font-serif)"
         >
-          环境状态卷轴
+          {{ t('status.title') }}
         </h2>
         <span class="text-[11px] text-on-surface-variant/70">
-          {{ onlineCount }} / {{ envs.length }} 在线
+          {{ t('status.onlineCount', { online: onlineCount, total: envs.length }) }}
         </span>
       </div>
       <span class="flex items-center gap-1 text-[11px] font-medium text-secondary">
         <span class="h-1.5 w-1.5 rounded-full bg-secondary" />
-        自动轮询中
+        {{ t('status.autoPolling') }}
       </span>
     </div>
 
@@ -79,7 +81,7 @@ const isDisabled = (env: { env: string }): boolean =>
             </div>
             <p class="mt-0.5 truncate text-[11px] text-on-surface-variant/70">
               <Bot :size="11" class="mr-0.5 inline" />
-              {{ env.projectName || '未命名项目' }}
+              {{ env.projectName || t('status.unnamedProject') }}
             </p>
           </div>
 
@@ -93,10 +95,10 @@ const isDisabled = (env: { env: string }): boolean =>
           >
             {{
               isDisabled(env)
-                ? '已停用'
+                ? t('status.disabled')
                 : env.online
-                  ? ENV_STATUS_LABELS[env.status]
-                  : '离线'
+                  ? envStatusLabel(env.status)
+                  : t('status.offline')
             }}
           </span>
         </div>
@@ -107,7 +109,7 @@ const isDisabled = (env: { env: string }): boolean =>
             <span class="truncate font-mono">{{ env.projectName || '—' }}</span>
           </p>
           <p class="mt-0.5 truncate text-xs leading-5 text-on-surface">
-            {{ env.currentTask || '暂无活跃任务' }}
+            {{ env.currentTask || t('status.noActiveTask') }}
           </p>
         </div>
 
@@ -116,10 +118,10 @@ const isDisabled = (env: { env: string }): boolean =>
         >
           <span class="flex items-center gap-1">
             <Clock :size="11" />
-            心跳 {{ relativeTime(env.lastSeenAt) }}
+            {{ t('status.heartbeat', { time: relativeTime(env.lastSeenAt) }) }}
           </span>
           <span v-if="env.status === 'Blocked'" class="font-mono text-primary">
-            等待审批
+            {{ t('status.waitingApproval') }}
           </span>
         </div>
       </article>
@@ -129,7 +131,7 @@ const isDisabled = (env: { env: string }): boolean =>
       v-else
       class="rounded-xl border border-dashed border-outline-variant bg-surface-container-low/60 px-4 py-5 text-sm text-on-surface-variant"
     >
-      暂无接入端心跳。启动 Cursor / OpenCode 后会自动出现在这里。
+      {{ t('status.empty') }}
     </p>
   </section>
 </template>

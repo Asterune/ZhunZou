@@ -2,11 +2,13 @@
 import { Folder, Loader2, Plus, X } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
 
+import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 
 const props = defineProps<{ env: string }>();
 
 const store = useHubStore();
+const { t } = useI18n();
 const adding = ref(false);
 const projectName = ref('');
 
@@ -52,7 +54,7 @@ async function submit(): Promise<void> {
     <div class="flex flex-wrap items-center gap-1.5">
       <span class="flex items-center gap-1 text-[11px] font-medium text-on-surface-variant">
         <Folder :size="11" />
-        工作区项目
+        {{ t('bindings.label') }}
       </span>
 
       <span
@@ -67,11 +69,11 @@ async function submit(): Promise<void> {
             store.unbindingProjectId === project.id ||
             project.projectName === activeProject
           "
-          :aria-label="`解除 ${project.projectName} 绑定`"
+          :aria-label="t('bindings.unbind', { project: project.projectName })"
           :title="
             project.projectName === activeProject
-              ? '当前活跃项目，Agent 心跳会自动重新绑定'
-              : `解除 ${project.projectName} 绑定`
+              ? t('bindings.activeHint')
+              : t('bindings.unbind', { project: project.projectName })
           "
           class="grid h-4 w-4 place-items-center rounded text-on-surface-variant transition hover:bg-error-container hover:text-on-error-container disabled:cursor-not-allowed disabled:opacity-40"
           @click="store.unbindProject(project.id)"
@@ -89,7 +91,7 @@ async function submit(): Promise<void> {
         v-if="env && !bound.length"
         class="text-[11px] text-on-surface-variant/70"
       >
-        尚未绑定项目 · Agent 心跳会自动上报工作区
+        {{ t('bindings.none') }}
       </span>
 
       <button
@@ -99,18 +101,18 @@ async function submit(): Promise<void> {
         @click="adding = true"
       >
         <Plus :size="11" />
-        绑定项目
+        {{ t('bindings.bind') }}
       </button>
 
       <span
         v-if="env && !adding && !candidates.length && bound.length"
         class="text-[11px] text-on-surface-variant/70"
       >
-        已绑定全部已知项目
+        {{ t('bindings.allBound') }}
       </span>
 
       <span v-if="!env" class="text-[11px] text-on-surface-variant/70">
-        先选择目标环境
+        {{ t('bindings.selectEnv') }}
       </span>
     </div>
 
@@ -123,7 +125,7 @@ async function submit(): Promise<void> {
         v-model="projectName"
         class="h-8 min-w-[200px] flex-1 rounded-lg bg-surface-container-low px-2.5 font-mono text-xs text-on-surface shadow-inner outline-none transition focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20"
       >
-        <option value="" disabled>选择 Agent 已上报的项目</option>
+        <option value="" disabled>{{ t('bindings.placeholder') }}</option>
         <option v-for="name in candidates" :key="name" :value="name">
           {{ name }}
         </option>
@@ -134,14 +136,14 @@ async function submit(): Promise<void> {
         class="inline-flex h-8 items-center gap-1 rounded-lg bg-primary px-2.5 text-xs font-medium text-on-primary transition hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
       >
         <Loader2 v-if="store.bindingProject" :size="12" class="animate-spin" />
-        绑定
+        {{ t('bindings.bindBtn') }}
       </button>
       <button
         type="button"
         class="h-8 rounded-lg px-2 text-xs text-on-surface-variant transition hover:bg-surface-container"
         @click="adding = false"
       >
-        取消
+        {{ t('bindings.cancel') }}
       </button>
     </form>
   </div>

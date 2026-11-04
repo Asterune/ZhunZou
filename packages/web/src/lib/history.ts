@@ -7,15 +7,12 @@ export type HistoryFilter =
   | 'timeout'
   | 'cancelled';
 
-export const HISTORY_FILTERS: Array<{
-  key: HistoryFilter;
-  label: string;
-}> = [
-  { key: 'all', label: '全部' },
-  { key: 'human', label: '人工审批' },
-  { key: 'meta', label: '总管自动' },
-  { key: 'timeout', label: '超时默认' },
-  { key: 'cancelled', label: '已取消' },
+export const HISTORY_FILTERS: Array<{ key: HistoryFilter }> = [
+  { key: 'all' },
+  { key: 'human' },
+  { key: 'meta' },
+  { key: 'timeout' },
+  { key: 'cancelled' },
 ];
 
 function optionLabel(ticket: DecisionTicket): string {

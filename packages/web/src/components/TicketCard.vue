@@ -18,13 +18,15 @@ import {
   formatCountdown,
   relativeTime,
   TICKET_STATUS_CLASSES,
-  TICKET_STATUS_LABELS,
+  ticketStatusLabel,
 } from '../lib/format';
+import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 
 const props = defineProps<{ ticket: DecisionTicket }>();
 
 const store = useHubStore();
+const { t } = useI18n();
 const instruction = ref('');
 const submitting = ref(false);
 const pendingKey = ref('');
@@ -152,7 +154,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
         class="grid h-16 w-16 rotate-6 place-items-center rounded border-2 border-primary text-lg font-black tracking-widest text-primary"
         style="font-family: var(--font-serif)"
       >
-        待批
+        {{ t('ticket.watermark') }}
       </div>
     </div>
 
@@ -177,7 +179,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
               env: {{ ticket.env }}
             </span>
             <span class="text-on-surface-variant/70">
-              {{ relativeTime(ticket.createdAt) }}起奏
+              {{ t('ticket.submittedAt', { time: relativeTime(ticket.createdAt) }) }}
             </span>
           </div>
         </div>
@@ -186,7 +188,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
           class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold shadow-sm"
           :class="TICKET_STATUS_CLASSES[ticket.status]"
         >
-          {{ TICKET_STATUS_LABELS[ticket.status] }}
+          {{ ticketStatusLabel(ticket.status) }}
         </span>
       </header>
 
@@ -199,7 +201,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
           </span>
           <div class="min-w-0">
             <span class="block text-[11px] font-medium text-on-surface-variant">
-              已完成进展
+              {{ t('ticket.done') }}
             </span>
             <p class="text-sm leading-6 text-on-surface">{{ ticket.doneSummary }}</p>
           </div>
@@ -212,7 +214,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
           <div class="space-y-1 pl-2">
             <div class="flex items-center gap-1.5 text-primary">
               <Gavel :size="16" />
-              <span class="text-[13px] font-bold">请旨阻塞关键抉择</span>
+              <span class="text-[13px] font-bold">{{ t('ticket.blocker') }}</span>
             </div>
             <p class="break-words text-sm font-medium leading-6 text-on-surface">
               {{ ticket.blockerQuestion }}
@@ -228,7 +230,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
           </span>
           <div class="min-w-0">
             <span class="block text-[11px] font-medium text-on-surface-variant">
-              候命下一步
+              {{ t('ticket.next') }}
             </span>
             <p class="text-sm leading-6 text-on-surface">{{ ticket.nextStepPlan }}</p>
           </div>
@@ -239,7 +241,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
         v-if="ticket.status === 'PENDING_META'"
         class="mt-3 rounded-lg bg-surface-container px-3 py-2 text-xs leading-5 text-on-surface-variant"
       >
-        总管 Agent 正在按 GLOBAL_RULES.md 预审，通常几秒内自动处理；你也可以直接拍板。
+        {{ t('ticket.metaReviewing') }}
       </p>
 
       <div
@@ -250,7 +252,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
           class="flex items-center gap-1.5 text-[11px] font-semibold text-on-tertiary-fixed"
         >
           <Bot :size="14" />
-          总管为何不敢批
+          {{ t('ticket.metaReason') }}
         </span>
         <p class="mt-1 text-xs leading-5 text-on-tertiary-fixed/85">
           {{ ticket.resolutionReason }}
@@ -267,17 +269,17 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
             <strong class="font-mono font-semibold text-on-surface">
               {{ countdownLabel }}
             </strong>
-            后默认准奏方案 {{ ticket.recommendedOption }}
+            {{ t('ticket.timeoutPrefix', { option: ticket.recommendedOption }) }}
           </span>
           <span
             v-if="recommendedRisk === 'destructive'"
             class="rounded bg-error-container px-1.5 py-0.5 text-[10px] font-semibold text-on-error-container"
           >
-            高风险，不会自动执行
+            {{ t('ticket.destructiveNoAuto') }}
           </span>
         </template>
         <span v-else class="font-medium text-tertiary">
-          已到时限，正在执行默认裁决…
+          {{ t('ticket.timeoutReached') }}
         </span>
         <button
           type="button"
@@ -285,7 +287,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
           class="ml-auto shrink-0 rounded-md bg-surface-container-high px-2 py-1 text-[10px] font-medium text-on-surface transition hover:bg-surface-container-highest disabled:opacity-40"
           @click="extend"
         >
-          {{ extending ? '延长中…' : '暂缓 10 分钟' }}
+          {{ extending ? t('ticket.extending') : t('ticket.snooze') }}
         </button>
       </div>
 
@@ -295,7 +297,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
       >
         <AlertTriangle :size="14" class="shrink-0" />
         <span class="min-w-0 flex-1">
-          端侧 <span class="font-mono">{{ ticket.env }}</span> 已离线，工单可能已无人等待。
+          {{ t('ticket.envOffline', { env: ticket.env }) }}
         </span>
         <button
           type="button"
@@ -303,7 +305,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
           class="shrink-0 rounded-md px-2 py-1 text-[10px] font-semibold transition hover:bg-error/10 disabled:opacity-50"
           @click="requestCancel"
         >
-          {{ confirmingCancel ? '再次点击确认取消' : cancelling ? '取消中…' : '取消工单' }}
+          {{ confirmingCancel ? t('ticket.confirmCancel') : cancelling ? t('ticket.cancelling') : t('ticket.cancelTicket') }}
         </button>
       </div>
 
@@ -314,10 +316,10 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
         >
           <span class="flex items-center gap-1 font-medium text-primary">
             <PenLine :size="13" />
-            批红备忘 / 补充指令（选填）
+            {{ t('ticket.instructionLabel') }}
           </span>
           <span class="font-mono text-[10px] text-on-surface-variant/60">
-            随审批一起发送
+            {{ t('ticket.instructionHint') }}
           </span>
         </label>
         <textarea
@@ -325,7 +327,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
           v-model="instruction"
           rows="2"
           maxlength="2000"
-          placeholder="例如：先只改登录页，其他页面下个迭代处理"
+          :placeholder="t('ticket.instructionPlaceholder')"
           class="mt-1.5 w-full resize-none rounded-lg bg-surface-container-low px-3 py-2 text-sm text-on-surface shadow-inner outline-none transition placeholder:text-on-surface-variant/45 focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20"
         />
       </div>
@@ -334,7 +336,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
         <span
           class="block px-0.5 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant"
         >
-          抉择分支 · 高风险选项需二次确认
+          {{ t('ticket.optionsTitle') }}
         </span>
 
         <button
@@ -385,13 +387,13 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
               v-if="option.risk === 'destructive'"
               class="hidden rounded bg-error px-2 py-0.5 text-[10px] font-bold text-white sm:inline"
             >
-              高风险
+              {{ t('ticket.highRisk') }}
             </span>
             <span
               v-if="isRecommended(option.key)"
               class="hidden rounded bg-primary-container px-2 py-0.5 text-[10px] font-bold text-on-primary shadow-sm sm:inline"
             >
-              推荐
+              {{ t('ticket.recommended') }}
             </span>
             <Loader2
               v-if="submitting && pendingKey === option.key"
@@ -402,10 +404,10 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
               v-else-if="confirmingKey === option.key"
               class="text-[11px] font-semibold text-error"
             >
-              再次点击确认
+              {{ t('ticket.clickAgain') }}
             </span>
             <span v-else class="text-[11px] text-on-surface-variant/70">
-              {{ option.risk === 'destructive' ? '确认' : '准奏' }}
+              {{ option.risk === 'destructive' ? t('ticket.confirm') : t('ticket.approve') }}
             </span>
           </span>
         </button>
@@ -415,7 +417,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
         class="mt-3 flex items-center gap-1.5 border-t border-outline-variant/30 pt-2.5 text-[11px] text-on-surface-variant/75"
       >
         <BadgeCheck :size="13" class="text-primary" />
-        点击选项即提交审批 · 批红后 Agent 将立即恢复运行 · 高风险选项需二次确认
+        {{ t('ticket.footer') }}
       </div>
     </div>
   </article>

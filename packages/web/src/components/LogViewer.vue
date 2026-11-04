@@ -3,6 +3,7 @@ import { Terminal } from 'lucide-vue-next';
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import type { LogEntry } from '../lib/log';
+import { useI18n } from '../lib/i18n';
 
 const props = defineProps<{
   active: boolean;
@@ -15,6 +16,7 @@ const props = defineProps<{
 }>();
 
 const logs = ref<LogEntry[]>([]);
+const { t } = useI18n();
 const after = ref(0);
 const loading = ref(false);
 const error = ref('');
@@ -56,7 +58,7 @@ async function load(): Promise<void> {
       setTimeout(() => void load(), 50);
     }
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '输出加载失败';
+    error.value = cause instanceof Error ? cause.message : t('log.loadFailed');
   } finally {
     loading.value = false;
   }
@@ -92,16 +94,16 @@ watch(
     >
       <span class="flex items-center gap-1.5 font-medium">
         <Terminal :size="12" />
-        执行输出
+        {{ t('log.title') }}
       </span>
       <span class="flex items-center gap-2">
         <span v-if="active" class="flex items-center gap-1 text-secondary">
           <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-secondary" />
-          实时
+          {{ t('log.live') }}
         </span>
-        <span v-else-if="loading" class="text-on-surface-variant/60">加载中…</span>
+        <span v-else-if="loading" class="text-on-surface-variant/60">{{ t('log.loading') }}</span>
         <span v-else-if="logs.length === 0" class="text-on-surface-variant/60">
-          {{ emptyText || '无输出' }}
+          {{ emptyText || t('log.noOutput') }}
         </span>
       </span>
     </div>
@@ -119,7 +121,7 @@ watch(
             ? 'text-[#d8c48f]'
             : ''
       "
-    >{{ log.chunk }}</span><span v-if="!logs.length && !loading" class="text-[#8d8478]">{{ active ? '等待输出…' : (emptyText || '该任务没有输出。') }}</span></pre>
+    >{{ log.chunk }}</span><span v-if="!logs.length && !loading" class="text-[#8d8478]">{{ active ? t('log.waiting') : (emptyText || t('log.noTaskOutput')) }}</span></pre>
 
     <p
       v-if="error"

@@ -23,6 +23,7 @@ import {
   isTerminalTicket,
 } from '../lib/format';
 import { pushToast } from '../lib/toast';
+import { t } from '../lib/i18n';
 
 const TOKEN_KEY = 'zhunzou.token';
 const LEGACY_TOKEN_KEY = 'agent-hub.token';
@@ -64,9 +65,9 @@ function clearStoredToken(): void {
 
 function describeError(error: unknown): string {
   if (error instanceof ApiError) {
-    return error.status === 0 ? '无法连接服务端，请检查网络' : error.message;
+    return error.status === 0 ? t('store.networkError') : error.message;
   }
-  return error instanceof Error ? error.message : '未知错误';
+  return error instanceof Error ? error.message : t('store.unknownError');
 }
 
 export function createHubStore(api: HubApi = hubApi) {
@@ -218,7 +219,7 @@ export function createHubStore(api: HubApi = hubApi) {
       connection.value = 'online';
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        logout('登录已过期，请重新输入 Token');
+        logout(t('store.sessionExpired'));
         return;
       }
       connection.value = 'offline';
@@ -253,7 +254,7 @@ export function createHubStore(api: HubApi = hubApi) {
       } catch (error) {
         if (generation !== syncGeneration) return;
         if (error instanceof ApiError && error.status === 401) {
-          logout('登录已过期，请重新输入 Token');
+          logout(t('store.sessionExpired'));
           return;
         }
 
@@ -269,7 +270,7 @@ export function createHubStore(api: HubApi = hubApi) {
   async function login(candidate: string): Promise<boolean> {
     const value = candidate.trim();
     if (!value) {
-      authError.value = '请输入 Token';
+      authError.value = t('store.enterToken');
       return false;
     }
 
@@ -284,12 +285,12 @@ export function createHubStore(api: HubApi = hubApi) {
       lastSyncAt.value = Date.now();
       connection.value = 'online';
       start();
-      pushToast('登录成功，已开始同步', 'success');
+      pushToast(t('store.loginSuccess'), 'success');
       return true;
     } catch (error) {
       authError.value =
         error instanceof ApiError && error.status === 401
-          ? 'Token 无效，请检查服务端 HUB_SECRET_TOKEN'
+          ? t('store.invalidToken')
           : describeError(error);
       token.value = '';
       return false;
@@ -328,7 +329,7 @@ export function createHubStore(api: HubApi = hubApi) {
 
   function fail(error: unknown, fallback: string): void {
     if (error instanceof ApiError && error.status === 401) {
-      logout('登录已过期，请重新输入 Token');
+      logout(t('store.sessionExpired'));
       return;
     }
     pushToast(describeError(error) || fallback, 'error');
@@ -351,11 +352,11 @@ export function createHubStore(api: HubApi = hubApi) {
       tickets.value = tickets.value.map((ticket) =>
         ticket.id === ticketId ? response.ticket : ticket,
       );
-      pushToast(`已批准 #${ticketId} · 方案 ${selectedOption}`, 'success');
+      pushToast(t('store.approved', { id: ticketId, option: selectedOption }), 'success');
       void refresh();
       return true;
     } catch (error) {
-      fail(error, '审批失败');
+      fail(error, t('store.approveFailed'));
       return false;
     }
   }
@@ -383,14 +384,16 @@ export function createHubStore(api: HubApi = hubApi) {
       if (response.tickets.length === 0) {
         pushToast(
           skipped > 0
-            ? `没有可准奏的工单：${response.skipped[0]?.reason ?? '已被处理'}`
-            : '没有可准奏的工单',
+            ? t('store.noApprovableWithReason', {
+                reason: response.skipped[0]?.reason ?? t('store.alreadyHandled'),
+              })
+            : t('store.noApprovable'),
           'error',
         );
       } else {
         pushToast(
-          `已准奏 ${response.tickets.length} 封${
-            skipped > 0 ? `，跳过 ${skipped} 封` : ''
+          `${t('store.batchApproved', { count: response.tickets.length })}${
+            skipped > 0 ? t('store.batchSkipped', { count: skipped }) : ''
           }`,
           'success',
         );
@@ -398,7 +401,7 @@ export function createHubStore(api: HubApi = hubApi) {
       void refresh();
       return response.tickets.length > 0;
     } catch (error) {
-      fail(error, '批量审批失败');
+      fail(error, t('store.batchApproveFailed'));
       return false;
     } finally {
       batchResolving.value = false;
@@ -416,10 +419,10 @@ export function createHubStore(api: HubApi = hubApi) {
       tickets.value = tickets.value.map((ticket) =>
         ticket.id === ticketId ? response.ticket : ticket,
       );
-      pushToast(`已延长 #${ticketId} 的自动裁决时限 ${minutes} 分钟`, 'success');
+      pushToast(t('store.extended', { id: ticketId, minutes }), 'success');
       return true;
     } catch (error) {
-      fail(error, '延长时限失败');
+      fail(error, t('store.extendFailed'));
       return false;
     }
   }
@@ -430,11 +433,11 @@ export function createHubStore(api: HubApi = hubApi) {
       tickets.value = tickets.value.map((ticket) =>
         ticket.id === ticketId ? response.ticket : ticket,
       );
-      pushToast(`已取消工单 #${ticketId}`, 'success');
+      pushToast(t('store.ticketCancelled', { id: ticketId }), 'success');
       void refresh();
       return true;
     } catch (error) {
-      fail(error, '取消工单失败');
+      fail(error, t('store.ticketCancelFailed'));
       return false;
     }
   }
@@ -443,11 +446,11 @@ export function createHubStore(api: HubApi = hubApi) {
     try {
       const response = await api.createTask(token.value, input);
       tasks.value = [response.task, ...tasks.value];
-      pushToast(`已下发任务 #${response.task.id}`, 'success');
+      pushToast(t('store.taskDispatched', { id: response.task.id }), 'success');
       void refresh();
       return true;
     } catch (error) {
-      fail(error, '任务下发失败');
+      fail(error, t('store.taskDispatchFailed'));
       return false;
     }
   }
@@ -458,11 +461,11 @@ export function createHubStore(api: HubApi = hubApi) {
       tasks.value = tasks.value.map((task) =>
         task.id === taskId ? response.task : task,
       );
-      pushToast(`已取消任务 #${taskId}`, 'success');
+      pushToast(t('store.taskCancelled', { id: taskId }), 'success');
       void refresh();
       return true;
     } catch (error) {
-      fail(error, '取消任务失败');
+      fail(error, t('store.taskCancelFailed'));
       return false;
     }
   }
@@ -486,10 +489,10 @@ export function createHubStore(api: HubApi = hubApi) {
         ),
         response.project,
       ];
-      pushToast(`${env} 已绑定项目 ${projectName}`, 'success');
+      pushToast(t('store.projectBound', { env, project: projectName }), 'success');
       return true;
     } catch (error) {
-      fail(error, '项目绑定失败');
+      fail(error, t('store.projectBindFailed'));
       return false;
     } finally {
       bindingProject.value = false;
@@ -505,10 +508,10 @@ export function createHubStore(api: HubApi = hubApi) {
       workspaceProjects.value = workspaceProjects.value.filter(
         (project) => project.id !== projectId,
       );
-      pushToast('已解除项目绑定', 'success');
+      pushToast(t('store.projectUnbound'), 'success');
       return true;
     } catch (error) {
-      fail(error, '解除绑定失败');
+      fail(error, t('store.projectUnbindFailed'));
       return false;
     } finally {
       unbindingProjectId.value = '';
@@ -525,11 +528,11 @@ export function createHubStore(api: HubApi = hubApi) {
         ...agents.value.filter((agent) => agent.env !== response.agent.env),
         response.agent,
       ];
-      pushToast(`已登记接入端 ${response.agent.env}`, 'success');
+      pushToast(t('store.agentRegistered', { env: response.agent.env }), 'success');
       void refresh();
       return true;
     } catch (error) {
-      fail(error, '登记接入端失败');
+      fail(error, t('store.agentRegisterFailed'));
       return false;
     } finally {
       agentActionEnv.value = '';
@@ -548,10 +551,10 @@ export function createHubStore(api: HubApi = hubApi) {
       agents.value = agents.value.map((agent) =>
         agent.env === env ? response.agent : agent,
       );
-      pushToast('接入端配置已更新', 'success');
+      pushToast(t('store.agentUpdated'), 'success');
       return true;
     } catch (error) {
-      fail(error, '更新接入端失败');
+      fail(error, t('store.agentUpdateFailed'));
       return false;
     } finally {
       agentActionEnv.value = '';
@@ -566,10 +569,10 @@ export function createHubStore(api: HubApi = hubApi) {
       await api.deleteAgent(token.value, env);
       agents.value = agents.value.filter((agent) => agent.env !== env);
       envs.value = envs.value.filter((item) => item.env !== env);
-      pushToast(`已删除接入端 ${env}`, 'success');
+      pushToast(t('store.agentDeleted', { env }), 'success');
       return true;
     } catch (error) {
-      fail(error, '删除接入端失败');
+      fail(error, t('store.agentDeleteFailed'));
       return false;
     } finally {
       agentActionEnv.value = '';
@@ -587,10 +590,10 @@ export function createHubStore(api: HubApi = hubApi) {
         ...agents.value.filter((agent) => agent.env !== env),
         response.agent,
       ];
-      pushToast('已签发新的 Agent Token（仅显示一次）', 'success');
+      pushToast(t('store.tokenIssued'), 'success');
       return response.token;
     } catch (error) {
-      fail(error, '签发 Token 失败');
+      fail(error, t('store.tokenIssueFailed'));
       return null;
     } finally {
       agentActionEnv.value = '';
@@ -606,10 +609,10 @@ export function createHubStore(api: HubApi = hubApi) {
       agents.value = agents.value.map((agent) =>
         agent.env === env ? response.agent : agent,
       );
-      pushToast('已吊销 Agent Token', 'success');
+      pushToast(t('store.tokenRevoked'), 'success');
       return true;
     } catch (error) {
-      fail(error, '吊销 Token 失败');
+      fail(error, t('store.tokenRevokeFailed'));
       return false;
     } finally {
       agentActionEnv.value = '';
@@ -624,7 +627,7 @@ export function createHubStore(api: HubApi = hubApi) {
       const response = await api.listAgents(token.value);
       agents.value = response.agents;
     } catch (error) {
-      fail(error, '接入端加载失败');
+      fail(error, t('store.agentsLoadFailed'));
     } finally {
       agentsLoading.value = false;
     }
@@ -638,7 +641,7 @@ export function createHubStore(api: HubApi = hubApi) {
     try {
       rules.value = await api.getRules(token.value);
     } catch (error) {
-      fail(error, '规则加载失败');
+      fail(error, t('store.rulesLoadFailed'));
     } finally {
       rulesLoading.value = false;
     }
@@ -648,10 +651,10 @@ export function createHubStore(api: HubApi = hubApi) {
     savingRules.value = true;
     try {
       rules.value = await api.saveRules(token.value, content);
-      pushToast('规则已保存，Meta-Agent 立即生效', 'success');
+      pushToast(t('store.rulesSaved'), 'success');
       return true;
     } catch (error) {
-      fail(error, '规则保存失败');
+      fail(error, t('store.rulesSaveFailed'));
       return false;
     } finally {
       savingRules.value = false;
@@ -666,7 +669,7 @@ export function createHubStore(api: HubApi = hubApi) {
       const response = await api.listRuleCandidates(token.value, undefined, 100);
       ruleCandidates.value = response.candidates;
     } catch (error) {
-      fail(error, '候选规则加载失败');
+      fail(error, t('store.candidatesLoadFailed'));
     } finally {
       ruleCandidatesLoading.value = false;
     }
@@ -682,10 +685,10 @@ export function createHubStore(api: HubApi = hubApi) {
         candidate.id === candidateId ? response.candidate : candidate,
       );
       if (response.rules) rules.value = response.rules;
-      pushToast(`规则 #${candidateId} 已并入 GLOBAL_RULES.md`, 'success');
+      pushToast(t('store.candidateAccepted', { id: candidateId }), 'success');
       return true;
     } catch (error) {
-      fail(error, '采纳规则失败');
+      fail(error, t('store.candidateAcceptFailed'));
       return false;
     } finally {
       ruleCandidateActionId.value = '';
@@ -701,10 +704,10 @@ export function createHubStore(api: HubApi = hubApi) {
       ruleCandidates.value = ruleCandidates.value.map((candidate) =>
         candidate.id === candidateId ? response.candidate : candidate,
       );
-      pushToast(`已忽略候选规则 #${candidateId}`, 'success');
+      pushToast(t('store.candidateDismissed', { id: candidateId }), 'success');
       return true;
     } catch (error) {
-      fail(error, '忽略规则失败');
+      fail(error, t('store.candidateDismissFailed'));
       return false;
     } finally {
       ruleCandidateActionId.value = '';
