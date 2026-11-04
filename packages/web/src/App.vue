@@ -211,10 +211,10 @@ onBeforeUnmount(() => {
             aria-label="立即刷新"
             title="立即刷新"
             class="grid h-9 w-9 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface disabled:opacity-50"
-            :disabled="store.refreshing"
-            @click="store.refresh()"
+            :disabled="store.manualRefreshing"
+            @click="store.refresh({ manual: true })"
           >
-            <RefreshCw :size="18" :class="{ 'animate-spin': store.refreshing }" />
+            <RefreshCw :size="18" :class="{ 'animate-spin': store.manualRefreshing }" />
           </button>
           <button
             type="button"
@@ -241,7 +241,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="shrink-0 rounded-md bg-tertiary px-2.5 py-1 text-[11px] font-medium text-on-tertiary-fixed transition hover:opacity-90"
-          @click="store.refresh()"
+          @click="store.refresh({ manual: true })"
         >
           重试
         </button>

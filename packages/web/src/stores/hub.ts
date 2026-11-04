@@ -79,6 +79,10 @@ export function createHubStore(api: HubApi = hubApi) {
 
   const authenticating = ref(false);
   const refreshing = ref(false);
+  // Only manual refreshes should animate the header button. Background polling
+  // reuses `refreshing` as an in-flight guard, which would otherwise make the
+  // icon spin (and blink) on every poll.
+  const manualRefreshing = ref(false);
   const rulesLoading = ref(false);
   const savingRules = ref(false);
   const ruleCandidatesLoading = ref(false);
@@ -175,10 +179,11 @@ export function createHubStore(api: HubApi = hubApi) {
     return [...names].sort((left, right) => left.localeCompare(right));
   });
 
-  async function refresh(): Promise<void> {
+  async function refresh(options: { manual?: boolean } = {}): Promise<void> {
     if (!token.value || refreshing.value) return;
 
     refreshing.value = true;
+    if (options.manual) manualRefreshing.value = true;
     try {
       const [status, list, taskList, bindings, agentList, exchangeList] =
         await Promise.all([
@@ -208,6 +213,7 @@ export function createHubStore(api: HubApi = hubApi) {
       lastError.value = describeError(error);
     } finally {
       refreshing.value = false;
+      if (options.manual) manualRefreshing.value = false;
     }
   }
 
@@ -695,6 +701,7 @@ export function createHubStore(api: HubApi = hubApi) {
     pendingRuleCandidates,
     authenticating,
     refreshing,
+    manualRefreshing,
     rulesLoading,
     savingRules,
     ruleCandidatesLoading,

@@ -29,6 +29,7 @@ const session = ref<ChatSession | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const draft = ref('');
 const loadingList = ref(false);
+const listLoaded = ref(false);
 const loadingSession = ref(false);
 const creating = ref(false);
 const sending = ref(false);
@@ -44,6 +45,7 @@ const form = reactive({
 });
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let listInFlight = false;
 
 const envOptions = computed(() => {
   const agents = store.agents.filter((agent) => agent.status === 'active');
@@ -81,12 +83,22 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : '操作失败';
 }
 
-async function loadSessions(selectFirst = false): Promise<void> {
-  if (loadingList.value) return;
-  loadingList.value = true;
+/**
+ * Refresh the sidebar. Background polling passes `silent: true` so it never
+ * toggles `loadingList`; flipping that flag used to unmount the empty state
+ * (and spin the refresh icon) every couple of seconds, which read as a flash.
+ */
+async function loadSessions(
+  selectFirst = false,
+  options: { silent?: boolean } = {},
+): Promise<void> {
+  if (listInFlight) return;
+  listInFlight = true;
+  if (!options.silent) loadingList.value = true;
   try {
     const response = await hubApi.listChatSessions(store.token, undefined, 50);
     sessions.value = response.sessions;
+    listLoaded.value = true;
     error.value = '';
 
     if (selectFirst && !activeId.value && response.sessions[0]) {
@@ -102,7 +114,8 @@ async function loadSessions(selectFirst = false): Promise<void> {
   } catch (cause) {
     error.value = describe(cause);
   } finally {
-    loadingList.value = false;
+    listInFlight = false;
+    if (!options.silent) loadingList.value = false;
   }
 }
 
@@ -135,7 +148,7 @@ function startPolling(): void {
   stopPolling();
   pollTimer = setInterval(() => {
     if (typeof document === 'undefined' || !document.hidden) {
-      void loadSessions();
+      void loadSessions(false, { silent: true });
       void refreshSession();
     }
   }, 2_000);
@@ -428,7 +441,7 @@ onBeforeUnmount(stopPolling);
         </button>
 
         <p
-          v-if="!sessions.length && !loadingList"
+          v-if="listLoaded && !sessions.length"
           class="rounded-xl border border-dashed border-outline-variant bg-surface-container-low/60 px-3 py-6 text-center text-[12px] text-on-surface-variant"
         >
           还没有会话。点「新建会话」选一个在线 Agent 开始。
@@ -522,6 +535,7 @@ onBeforeUnmount(stopPolling);
 
           <SessionOutput
             v-if="runningMessage"
+            :key="runningMessage.id"
             :session-id="activeSession.id"
             :message-id="runningMessage.id"
             :active="true"
