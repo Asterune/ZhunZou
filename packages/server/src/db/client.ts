@@ -129,6 +129,19 @@ CREATE TABLE IF NOT EXISTS chat_events (
 
 CREATE INDEX IF NOT EXISTS idx_chat_events_session ON chat_events(session_id, id);
 
+CREATE TABLE IF NOT EXISTS exchanges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  env TEXT NOT NULL,
+  project_name TEXT,
+  question TEXT,
+  conclusion TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_exchanges_env ON exchanges(env, id);
+CREATE INDEX IF NOT EXISTS idx_exchanges_project ON exchanges(project_name, id);
+CREATE INDEX IF NOT EXISTS idx_exchanges_created ON exchanges(created_at);
+
 CREATE TABLE IF NOT EXISTS workspace_projects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   env TEXT NOT NULL,

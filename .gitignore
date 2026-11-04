@@ -11,3 +11,6 @@ dist-standalone/
 .DS_Store
 *.log
 pnpm-debug.log*
+
+# 准奏 MCP 配置（含环境 Token，禁止提交）
+.cursor/mcp.json

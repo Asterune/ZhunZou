@@ -30,15 +30,18 @@ import type {
   CreateTicketInput,
   DecisionTicket,
   EnvHeartbeat,
+  Exchange,
   HeartbeatInput,
   ListAgentsQuery,
   ListChatEventsQuery,
   ListChatSessionsQuery,
+  ListExchangesQuery,
   ListRuleCandidatesQuery,
   ListTaskLogsQuery,
   ListTasksQuery,
   ListTicketsQuery,
   ListWorkspaceProjectsQuery,
+  ReportExchangeInput,
   ResolveTicketInput,
   RuleCandidate,
   SendChatMessageInput,
@@ -58,6 +61,7 @@ import {
   chatMessages,
   chatSessions,
   envHeartbeats,
+  exchanges,
   ruleCandidates,
   taskLogs,
   tickets,
@@ -67,6 +71,7 @@ import {
   type ChatEventRow,
   type ChatMessageRow,
   type ChatSessionRow,
+  type ExchangeRow,
   type HeartbeatRow,
   type RuleCandidateRow,
   type TaskLogRow,
@@ -80,6 +85,8 @@ const AWAITING: TicketStatus[] = ['PENDING_META', 'PENDING_HUMAN'];
 /** Keep each task's live log bounded; older chunks are trimmed on append. */
 const MAX_TASK_LOG_BYTES = 256 * 1024;
 const MAX_CHAT_EVENT_BYTES = 256 * 1024;
+/** Per-env history cap for mirrored IDE exchanges. */
+const MAX_EXCHANGES_PER_ENV = 200;
 
 /**
  * Older bridge builds hard-coded this label before task reporting existed.
@@ -227,6 +234,17 @@ function toRuleCandidate(row: RuleCandidateRow): RuleCandidate {
     status: row.status,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function toExchange(row: ExchangeRow): Exchange {
+  return {
+    id: String(row.id),
+    env: row.env,
+    ...(row.projectName ? { projectName: row.projectName } : {}),
+    ...(row.question ? { question: row.question } : {}),
+    ...(row.conclusion ? { conclusion: row.conclusion } : {}),
+    createdAt: row.createdAt,
   };
 }
 
@@ -404,6 +422,13 @@ export interface TicketStore {
     messageId: number,
     now?: number,
   ): ChatMessage | null;
+  /** Record the question/conclusion summary of one IDE conversation turn. */
+  createExchange(
+    env: string,
+    input: Omit<ReportExchangeInput, 'env'>,
+    now?: number,
+  ): Exchange;
+  listExchanges(query: ListExchangesQuery): Exchange[];
   /** Awaiting tickets plus recently terminal ones, for bridge restart recovery. */
   listResumeTickets(env: string, since: number, limit?: number): DecisionTicket[];
 
@@ -1347,6 +1372,66 @@ export class TicketRepository implements TicketStore {
       .where(eq(chatSessions.id, sessionId))
       .run();
     return toChatMessage(row);
+  }
+
+  createExchange(
+    env: string,
+    input: Omit<ReportExchangeInput, 'env'>,
+    now = Date.now(),
+  ): Exchange {
+    const row = this.db
+      .insert(exchanges)
+      .values({
+        env,
+        projectName: input.projectName ?? null,
+        question: input.question ?? null,
+        conclusion: input.conclusion ?? null,
+        createdAt: now,
+      })
+      .returning()
+      .get();
+
+    if (input.projectName) {
+      this.bindWorkspaceProject(env, input.projectName, now);
+    }
+    this.trimExchanges(env);
+    return toExchange(row);
+  }
+
+  listExchanges(query: ListExchangesQuery): Exchange[] {
+    const filters = [
+      ...(query.env ? [eq(exchanges.env, query.env)] : []),
+      ...(query.projectName
+        ? [eq(exchanges.projectName, query.projectName)]
+        : []),
+    ];
+
+    const rows = this.db
+      .select()
+      .from(exchanges)
+      .where(filters.length ? and(...filters) : undefined)
+      .orderBy(desc(exchanges.id))
+      .limit(query.limit)
+      .all();
+
+    return rows.map(toExchange);
+  }
+
+  /** Keep only the newest N exchanges per env so the table stays bounded. */
+  private trimExchanges(env: string): void {
+    const rows = this.db
+      .select({ id: exchanges.id })
+      .from(exchanges)
+      .where(eq(exchanges.env, env))
+      .orderBy(desc(exchanges.id))
+      .all();
+
+    const overflow = rows
+      .slice(MAX_EXCHANGES_PER_ENV)
+      .map((row) => row.id);
+    if (overflow.length === 0) return;
+
+    this.db.delete(exchanges).where(inArray(exchanges.id, overflow)).run();
   }
 
   private trimChatEvents(sessionId: number): void {

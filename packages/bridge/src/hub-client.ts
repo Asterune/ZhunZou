@@ -11,11 +11,13 @@ import type {
   CreateTicketInput,
   DecisionTicket,
   EnvHeartbeat,
+  Exchange,
   HeartbeatInput,
   ListTasksQuery,
   NextChatMessageResponse,
   NextTaskResponse,
   ReleaseTaskInput,
+  ReportExchangeInput,
   ResumeResponse,
   TaskListResponse,
   TaskLog,
@@ -29,6 +31,7 @@ import {
   createTicketSchema,
   heartbeatSchema,
   releaseTaskSchema,
+  reportExchangeSchema,
   ticketIdSchema,
 } from '@zhunzou/shared';
 
@@ -72,6 +75,9 @@ export interface HubApi {
   completeTask(taskId: string, input: CompleteTaskInput): Promise<AgentTask>;
   appendTaskLog(taskId: string, input: AppendTaskLogInput): Promise<TaskLog>;
   releaseTask(taskId: string, input: ReleaseTaskInput): Promise<AgentTask>;
+  reportExchange(
+    input: Omit<ReportExchangeInput, 'env'>,
+  ): Promise<Exchange>;
   resume(sinceMs?: number): Promise<ResumeResponse>;
 }
 
@@ -304,6 +310,22 @@ export class HubClient implements HubApi {
     );
 
     return body.task;
+  }
+
+  async reportExchange(
+    input: Omit<ReportExchangeInput, 'env'>,
+  ): Promise<Exchange> {
+    const payload = reportExchangeSchema.parse({
+      ...input,
+      env: this.config.agentEnv,
+    });
+
+    const body = await this.request<{ exchange: Exchange }>(
+      '/api/exchanges',
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
+    return body.exchange;
   }
 
   /** Best-effort status update; never blocks a decision. */

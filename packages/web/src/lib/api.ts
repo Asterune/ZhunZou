@@ -13,6 +13,7 @@ import type {
   CreateTaskInput,
   DecisionTicket,
   EnvHeartbeat,
+  ExchangeListResponse,
   ExtendTicketInput,
   ResolveTicketInput,
   RuleCandidateActionResponse,
@@ -48,6 +49,11 @@ interface ApiErrorBody {
 export interface HubApi {
   status(token: string): Promise<{ envs: EnvHeartbeat[] }>;
   listAgents(token: string): Promise<AgentListResponse>;
+  listExchanges(
+    token: string,
+    limit?: number,
+    env?: string,
+  ): Promise<ExchangeListResponse>;
   createAgent(token: string, input: CreateAgentInput): Promise<AgentResponse>;
   updateAgent(
     token: string,
@@ -187,6 +193,12 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
     status: (token) => request<{ envs: EnvHeartbeat[] }>(token, '/api/status'),
 
     listAgents: (token) => request<AgentListResponse>(token, '/api/agents'),
+
+    listExchanges: (token, limit = 20, env) =>
+      request<ExchangeListResponse>(
+        token,
+        `/api/exchanges?limit=${limit}${env ? `&env=${encodeURIComponent(env)}` : ''}`,
+      ),
 
     createAgent: (token, input) =>
       request<AgentResponse>(token, '/api/agents', {

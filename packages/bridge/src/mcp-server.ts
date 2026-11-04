@@ -140,6 +140,24 @@ const reportTaskInput = {
     .describe('Current env status; defaults to Running'),
 };
 
+const reportExchangeInput = {
+  question: z
+    .string()
+    .trim()
+    .min(1)
+    .max(4000)
+    .optional()
+    .describe("The human's request or follow-up question for this turn"),
+  conclusion: z
+    .string()
+    .trim()
+    .min(1)
+    .max(20000)
+    .optional()
+    .describe('What you concluded or delivered in this turn'),
+  projectName: z.string().trim().min(1).max(128).optional(),
+};
+
 export interface McpServerDependencies {
   client: HubApi;
   config: BridgeConfig;
@@ -396,6 +414,34 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
 
         return renderToolResult(
           `Zhunzou status updated: ${heartbeat.env} is now ${heartbeat.status} (${args.currentTask}).`,
+        );
+      } catch (error) {
+        return renderToolError(errorText(error));
+      }
+    },
+  );
+
+  server.registerTool(
+    'agent_hub_report_exchange',
+    {
+      title: 'Mirror this turn to the Zhunzou dashboard',
+      description:
+        "Call this once per turn after you answer the human, so the dashboard's conversation view shows what was asked " +
+        'and what you concluded. Interactive IDE chats do not stream their transcript, so this summary is the only way ' +
+        'the human can follow the work from the hub. Keep the conclusion short (a few sentences), skip secrets, and pass ' +
+        'at least one of question / conclusion.',
+      inputSchema: reportExchangeInput,
+    },
+    async (args) => {
+      try {
+        const exchange = await client.reportExchange({
+          ...(args.question ? { question: args.question } : {}),
+          ...(args.conclusion ? { conclusion: args.conclusion } : {}),
+          ...(args.projectName ? { projectName: args.projectName } : {}),
+        });
+
+        return renderToolResult(
+          `Zhunzou exchange #${exchange.id} synced from ${exchange.env}.`,
         );
       } catch (error) {
         return renderToolError(errorText(error));

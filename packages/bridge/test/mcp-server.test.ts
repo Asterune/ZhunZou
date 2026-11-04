@@ -72,6 +72,12 @@ function fakeHub(overrides: Partial<HubApi> = {}): HubApi {
     completeTask: vi.fn(async () =>
       makeTask({ status: 'DONE', result: '已补测试', completedAt: 3 }),
     ),
+    reportExchange: vi.fn(async (input: { question?: string; conclusion?: string }) => ({
+      id: '42',
+      env: 'company-cursor',
+      createdAt: 4,
+      ...input,
+    })),
     resume: vi.fn(async () => ({
       tickets: [makeTicket(), makeTicket({ status: 'AUTO_RESOLVED', selectedOption: 'A' })],
       tasks: [makeTask()],
@@ -102,6 +108,7 @@ describe('MCP tool registration', () => {
         'agent_hub_escalate',
         'agent_hub_next_task',
         'agent_hub_notify_done',
+        'agent_hub_report_exchange',
         'agent_hub_report_task',
         'agent_hub_resume',
         'agent_hub_wait',
@@ -297,6 +304,33 @@ describe('agent_hub_notify_done', () => {
       expect(client.heartbeat).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'Idle', projectName: 'yikuaomed-erp' }),
       );
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe('agent_hub_report_exchange', () => {
+  it('mirrors the question and conclusion to the hub', async () => {
+    const client = fakeHub();
+    const { mcpClient, close } = await connect(client);
+
+    try {
+      const result = await mcpClient.callTool({
+        name: 'agent_hub_report_exchange',
+        arguments: {
+          projectName: 'agent-hub',
+          question: '能看到 Cursor 在跑什么吗？',
+          conclusion: '已接入对话摘要。',
+        },
+      });
+
+      expect(textOf(result)).toContain('exchange #42 synced');
+      expect(client.reportExchange).toHaveBeenCalledWith({
+        projectName: 'agent-hub',
+        question: '能看到 Cursor 在跑什么吗？',
+        conclusion: '已接入对话摘要。',
+      });
     } finally {
       await close();
     }

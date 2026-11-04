@@ -180,6 +180,23 @@ export const chatEvents = sqliteTable(
   ],
 );
 
+export const exchanges = sqliteTable(
+  'exchanges',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    env: text('env').notNull(),
+    projectName: text('project_name'),
+    question: text('question'),
+    conclusion: text('conclusion'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    index('idx_exchanges_env').on(table.env, table.id),
+    index('idx_exchanges_project').on(table.projectName, table.id),
+    index('idx_exchanges_created').on(table.createdAt),
+  ],
+);
+
 export const workspaceProjects = sqliteTable(
   'workspace_projects',
   {
@@ -229,5 +246,7 @@ export type TaskLogInsert = typeof taskLogs.$inferInsert;
 export type ChatSessionRow = typeof chatSessions.$inferSelect;
 export type ChatMessageRow = typeof chatMessages.$inferSelect;
 export type ChatEventRow = typeof chatEvents.$inferSelect;
+export type ExchangeRow = typeof exchanges.$inferSelect;
+export type ExchangeInsert = typeof exchanges.$inferInsert;
 export type WorkspaceProjectRow = typeof workspaceProjects.$inferSelect;
 export type WorkspaceProjectInsert = typeof workspaceProjects.$inferInsert;

@@ -68,4 +68,12 @@
 
 - 看板下发的任务：调用 `agent_hub_complete_task(taskId, status: "DONE", result: "...")`；失败则传 `status: "FAILED"` 并说明原因。
 - 普通任务：任务完成或进入空闲时，调用 `agent_hub_notify_done`，让看板状态灯变为 Idle。
+
+## 对话同步（每轮一次）
+
+- 每轮回答完人类后，调用 `agent_hub_report_exchange`，把这一轮的追问和你的结论同步到看板：
+  - `question`：人类这一轮问的原话（可精简）；
+  - `conclusion`：你实际做了什么、得出什么结论（几句话说清，不要贴大段日志）。
+- IDE 对话不会自动流到看板，只有调用这个工具，看板才看得到你们的对话摘要。
+- 不要上传密钥、Token、身份证号等敏感内容。
 <!-- zhunzou:end -->

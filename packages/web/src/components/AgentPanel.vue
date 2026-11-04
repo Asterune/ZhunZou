@@ -388,6 +388,26 @@ async function copyToken(): Promise<void> {
         </p>
 
         <div
+          v-if="store.latestExchangeFor(agent.env)"
+          class="mt-2 rounded-md border border-outline-variant/25 bg-surface-container-lowest px-2 py-1.5 text-[11px] leading-5"
+        >
+          <template
+            v-for="exchange in [store.latestExchangeFor(agent.env)!]"
+            :key="exchange.id"
+          >
+            <p v-if="exchange.question" class="text-on-surface-variant">
+              <span class="text-on-surface-variant/60">追问 · </span>{{ exchange.question }}
+            </p>
+            <p v-if="exchange.conclusion" class="mt-1 text-on-surface">
+              <span class="text-on-surface-variant/60">结论 · </span>{{ exchange.conclusion }}
+            </p>
+            <p class="mt-1 text-[10px] text-on-surface-variant/50">
+              {{ relativeTime(exchange.createdAt) }}
+            </p>
+          </template>
+        </div>
+
+        <div
           class="mt-3 flex items-center justify-between gap-2 rounded-lg border border-outline-variant/25 bg-surface-container-lowest px-2.5 py-2"
         >
           <div class="flex min-w-0 items-center gap-1.5 text-[11px]">

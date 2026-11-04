@@ -7,6 +7,7 @@ import type {
   CreateTaskInput,
   DecisionTicket,
   EnvHeartbeat,
+  Exchange,
   ResolveTicketInput,
   RuleCandidate,
   RulesResponse,
@@ -69,6 +70,7 @@ export function createHubStore(api: HubApi = hubApi) {
   const token = ref(loadStoredToken());
   const envs = ref<EnvHeartbeat[]>([]);
   const agents = ref<Agent[]>([]);
+  const exchanges = ref<Exchange[]>([]);
   const tickets = ref<DecisionTicket[]>([]);
   const tasks = ref<AgentTask[]>([]);
   const rules = ref<RulesResponse | null>(null);
@@ -135,6 +137,13 @@ export function createHubStore(api: HubApi = hubApi) {
       .sort((left, right) => right.createdAt - left.createdAt),
   );
 
+  /** Newest mirrored exchange for an env, or null when it never reported one. */
+  function latestExchangeFor(env: string): Exchange | null {
+    return (
+      exchanges.value.find((exchange) => exchange.env === env) ?? null
+    );
+  }
+
   /** Projects bound to a workspace, sorted for the dispatch dropdown. */
   function projectsForEnv(env: string): WorkspaceProject[] {
     return workspaceProjects.value
@@ -171,16 +180,19 @@ export function createHubStore(api: HubApi = hubApi) {
 
     refreshing.value = true;
     try {
-      const [status, list, taskList, bindings, agentList] = await Promise.all([
-        api.status(token.value),
-        api.listTickets(token.value, TICKET_LIMIT),
-        api.listTasks(token.value, TICKET_LIMIT),
-        api.listWorkspaceProjects(token.value),
-        api.listAgents(token.value),
-      ]);
+      const [status, list, taskList, bindings, agentList, exchangeList] =
+        await Promise.all([
+          api.status(token.value),
+          api.listTickets(token.value, TICKET_LIMIT),
+          api.listTasks(token.value, TICKET_LIMIT),
+          api.listWorkspaceProjects(token.value),
+          api.listAgents(token.value),
+          api.listExchanges(token.value, 100),
+        ]);
 
       envs.value = status.envs;
       agents.value = agentList.agents;
+      exchanges.value = exchangeList.exchanges;
       tickets.value = list.tickets;
       tasks.value = taskList.tasks;
       workspaceProjects.value = bindings.projects;
@@ -669,6 +681,7 @@ export function createHubStore(api: HubApi = hubApi) {
     token,
     envs,
     agents: sortedAgents,
+    exchanges,
     rules,
     tasks,
     ruleCandidates,
@@ -715,6 +728,7 @@ export function createHubStore(api: HubApi = hubApi) {
     revokeAgentToken,
     loadAgents,
     projectsForEnv,
+    latestExchangeFor,
     loadRules,
     saveRules,
     loadRuleCandidates,

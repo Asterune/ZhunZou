@@ -443,6 +443,49 @@ export const nextChatMessageResponseSchema = z.object({
 });
 
 /* ------------------------------------------------------------------ */
+/* Conversation exchanges mirrored from the IDE                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One turn of an IDE conversation: the question the human asked and the
+ * conclusion the agent reported. Interactive MCP sessions do not stream
+ * their transcript, so agents push this summary instead.
+ */
+export const exchangeSchema = z.object({
+  id: ticketIdSchema,
+  env: envSchema,
+  projectName: projectNameSchema.optional(),
+  question: z.string().max(4_000).optional(),
+  conclusion: z.string().max(20_000).optional(),
+  createdAt: z.number().int().nonnegative(),
+});
+
+export const reportExchangeSchema = z
+  .object({
+    env: envSchema,
+    question: z.string().trim().min(1).max(4_000).optional(),
+    conclusion: z.string().trim().min(1).max(20_000).optional(),
+    projectName: projectNameSchema.optional(),
+  })
+  .refine((value) => Boolean(value.question ?? value.conclusion), {
+    message: 'question 与 conclusion 至少填写一项',
+  });
+
+export const listExchangesQuerySchema = z.object({
+  env: envSchema.optional(),
+  projectName: projectNameSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const exchangeResponseSchema = z.object({
+  exchange: exchangeSchema,
+});
+
+export const exchangeListResponseSchema = z.object({
+  exchanges: z.array(exchangeSchema),
+});
+
+/* ------------------------------------------------------------------ */
 /* Workspace ↔ project bindings                                       */
 /* ------------------------------------------------------------------ */
 
@@ -699,6 +742,12 @@ export type ChatEventListResponse = z.infer<typeof chatEventListResponseSchema>;
 export type NextChatMessageResponse = z.infer<
   typeof nextChatMessageResponseSchema
 >;
+
+export type Exchange = z.infer<typeof exchangeSchema>;
+export type ReportExchangeInput = z.infer<typeof reportExchangeSchema>;
+export type ListExchangesQuery = z.infer<typeof listExchangesQuerySchema>;
+export type ExchangeResponse = z.infer<typeof exchangeResponseSchema>;
+export type ExchangeListResponse = z.infer<typeof exchangeListResponseSchema>;
 export type TaskResponse = z.infer<typeof taskResponseSchema>;
 export type TaskListResponse = z.infer<typeof taskListResponseSchema>;
 export type NextTaskResponse = z.infer<typeof nextTaskResponseSchema>;

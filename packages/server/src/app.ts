@@ -30,6 +30,7 @@ import {
   listAgentsQuerySchema,
   listChatEventsQuerySchema,
   listChatSessionsQuerySchema,
+  listExchangesQuerySchema,
   listRuleCandidatesQuerySchema,
   listTaskLogsQuerySchema,
   listTasksQuerySchema,
@@ -38,6 +39,7 @@ import {
   nextChatMessageQuerySchema,
   nextTaskQuerySchema,
   releaseTaskSchema,
+  reportExchangeSchema,
   resolveTicketSchema,
   resumeQuerySchema,
   sendChatMessageSchema,
@@ -1333,6 +1335,20 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         }
 
         return { task: cancelled };
+      });
+
+      // Agent mirrors the human's question and its conclusion for one turn.
+      api.post('/exchanges', async (request, reply) => {
+        const input = reportExchangeSchema.parse(request.body);
+        requireEnvAccess(request, input.env);
+        const exchange = repo.createExchange(input.env, input);
+        return reply.code(201).send({ exchange });
+      });
+
+      api.get('/exchanges', async (request) => {
+        requireAdmin(request);
+        const query = listExchangesQuerySchema.parse(request.query);
+        return { exchanges: repo.listExchanges(query) };
       });
 
       // Bridge heartbeat: Running / Blocked / Idle.
