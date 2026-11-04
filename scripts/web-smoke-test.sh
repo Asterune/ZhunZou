@@ -29,6 +29,11 @@ if [[ ! -f "$ROOT/packages/web/dist/index.html" ]]; then
 fi
 
 echo "starting server on port $PORT..."
+if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
+  echo "port $PORT already serves a hub; set WEB_SMOKE_PORT to a free port"
+  exit 1
+fi
+
 (
   cd "$ROOT/packages/server"
   NODE_ENV=test \
@@ -56,6 +61,14 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 
+# A stale server on the same port would answer /healthz and silently make the
+# checks below pass against the wrong build.
+if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+  echo "port $PORT is already in use by another process (set WEB_SMOKE_PORT)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 BASE="http://127.0.0.1:$PORT"
 
 echo "checking dashboard shell..."
@@ -74,6 +87,14 @@ echo "  ok - hashed asset $ASSET served"
 
 curl -fsS "$BASE/tickets/104" | grep -q 'id="app"'
 echo "  ok - SPA fallback works"
+
+echo "checking PWA assets..."
+curl -fsS "$BASE/manifest.webmanifest" | grep -q '"start_url": "/"'
+curl -fsSI "$BASE/manifest.webmanifest" | grep -qi 'cache-control: no-cache'
+curl -fsSI "$BASE/sw.js" | grep -qi 'cache-control: no-cache'
+curl -fsS "$BASE/offline.html" | grep -qi 'offline'
+curl -fsS "$BASE/icons/icon-192.png" >/dev/null
+echo "  ok - manifest, service worker, offline page and icons served"
 
 curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE/api/status" | grep -q '"envs"'
 echo "  ok - API still served on the same port"
