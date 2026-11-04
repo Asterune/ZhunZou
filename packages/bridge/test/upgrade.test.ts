@@ -169,6 +169,27 @@ describe('runUpgrade', () => {
     ).rejects.toThrow(/非法文件名/);
   });
 
+  it('installs nested template files from the manifest', async () => {
+    hubUrl = await startHub({
+      version: '0.2.0',
+      files: {
+        'mcp.mjs': 'new mcp',
+        'templates/AGENTS.md': 'rules',
+      },
+    });
+
+    const result = await runUpgrade({
+      hubUrl,
+      installRoot: root,
+      currentVersion: '0.1.0',
+    });
+
+    expect(result.status).toBe('updated');
+    expect(
+      readFileSync(join(root, 'versions', '0.2.0', 'templates', 'AGENTS.md'), 'utf8'),
+    ).toBe('rules');
+  });
+
   it('rolls back to the newest older installed version', async () => {
     for (const version of ['0.1.0', '0.2.0']) {
       mkdirSync(join(root, 'versions', version), { recursive: true });

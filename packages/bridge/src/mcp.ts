@@ -6,6 +6,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { loadBridgeConfig } from './config.js';
 import { HubClient } from './hub-client.js';
+import { maybeAutoUpgrade } from './auto-upgrade.js';
 import { delegateToActiveRelease } from './launcher.js';
 import { createMcpServer } from './mcp-server.js';
 import { createPresenceReporter } from './presence.js';
@@ -23,6 +24,14 @@ async function main(): Promise<void> {
   process.env.ZHUNZOU_CLI_COMMAND ??= `"${process.execPath}" "${cliPath}"`;
 
   const config = loadBridgeConfig();
+
+  // Standalone installs keep themselves current; the new version applies on
+  // the next launch. Fire-and-forget so the MCP handshake is never delayed.
+  void maybeAutoUpgrade({
+    hubUrl: config.hubUrl,
+    log: (line) => console.error(`[zhunzou] ${line}`),
+  });
+
   const client = new HubClient(config);
   const presence = createPresenceReporter(client, {
     intervalMs: config.heartbeatIntervalMs,

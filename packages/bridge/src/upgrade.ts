@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -128,15 +129,16 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, '');
 }
 
-/** Reject `../` and absolute paths coming from a manifest. */
+/** Reject `../`, absolute paths and Windows drive/UNC tricks in a manifest. */
 function assertSafeFileName(name: string): void {
-  if (
-    name === '' ||
-    name.includes('/') ||
-    name.includes('\\') ||
-    name === '.' ||
-    name === '..'
-  ) {
+  if (name === '' || name.includes('\\') || name.startsWith('/')) {
+    throw new Error(`发布清单包含非法文件名：${JSON.stringify(name)}`);
+  }
+  const parts = name.split('/');
+  if (parts.some((part) => part === '' || part === '.' || part === '..')) {
+    throw new Error(`发布清单包含非法文件名：${JSON.stringify(name)}`);
+  }
+  if (/^[a-zA-Z]:/.test(name)) {
     throw new Error(`发布清单包含非法文件名：${JSON.stringify(name)}`);
   }
 }
@@ -308,6 +310,26 @@ export function assertUpgradableInstall(installRoot: string): void {
     throw new Error(
       '当前目录是构建产物，不是免安装包；请在解压后的 zhunzou-bridge 目录里执行',
     );
+  }
+  if (isSourceCheckout(installRoot)) {
+    throw new Error(
+      '当前目录是源码仓库的构建产物，不是免安装包；请用 git/pnpm 更新',
+    );
+  }
+}
+
+/** True for `packages/bridge/dist-standalone` and the tsx `src/` build. */
+function isSourceCheckout(installRoot: string): boolean {
+  const packageFile = join(installRoot, '..', 'package.json');
+  if (!existsSync(packageFile)) return false;
+
+  try {
+    const pkg = JSON.parse(readFileSync(packageFile, 'utf8')) as {
+      name?: unknown;
+    };
+    return pkg.name === 'zhunzou-bridge';
+  } catch {
+    return false;
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "zhunzou-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Local MCP server + CLI that bridges Cursor/OpenCode to the Zhunzou decision service",
   "license": "MIT",

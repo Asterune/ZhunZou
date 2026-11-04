@@ -1,3 +1,4 @@
+import { maybeAutoUpgrade } from './auto-upgrade.js';
 import { createProgram } from './cli-program.js';
 import { delegateToActiveRelease } from './launcher.js';
 
@@ -9,6 +10,14 @@ process.on('SIGINT', () => {
 async function main(): Promise<void> {
   // After `upgrade`, current.json points at a newer versions/<v>/cli.mjs.
   if (await delegateToActiveRelease(import.meta.url)) return;
+
+  // Long-running daemons self-update; short commands (wait/next-task) must not
+  // pay for a network round-trip.
+  if (process.argv[2] === 'wake' || process.argv[2] === 'fleet') {
+    void maybeAutoUpgrade({
+      log: (line) => process.stderr.write(`[zhunzou] ${line}\n`),
+    });
+  }
 
   await createProgram().parseAsync(process.argv);
 }

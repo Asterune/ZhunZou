@@ -156,7 +156,15 @@ node cli.mjs wait --ticket 104
 桥接包会从 hub 检查新版本，只写 `versions\` 和 `current.json`，**不覆盖正在运行的
 `mcp.mjs`**，所以升级时不需要先关 Cursor（新版本在下次启动时生效）。
 
-在 `zhunzou-bridge` 目录执行：
+从 0.1.1 起默认开启自动更新：`mcp.mjs` / `wake` 启动时会在后台检查一次
+`/api/bridge/latest`（每 6 小时最多一次），有新版就下载、校验 sha256 并切换，
+**下次启动生效**。失败只写日志，不影响当前使用。
+
+- 关闭自动更新：设置环境变量 `ZHUNZOU_AUTO_UPGRADE=0`
+- 调整检查间隔：`ZHUNZOU_AUTO_UPGRADE_INTERVAL_MS=21600000`（毫秒）
+- 仅对解压版生效；npm 安装和源码仓库请用 npm / git 更新
+
+也可以随时手动执行：
 
 ```powershell
 node cli.mjs upgrade --check    # 只看有没有新版本

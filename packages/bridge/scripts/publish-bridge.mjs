@@ -64,6 +64,7 @@ rmSync(targetDir, { recursive: true, force: true });
 mkdirSync(targetDir, { recursive: true });
 
 const files = {};
+const skipped = [];
 const walk = (dir) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const absolute = join(dir, entry.name);
@@ -72,6 +73,13 @@ const walk = (dir) => {
       continue;
     }
     const name = relative(sourceDir, absolute).split('\\').join('/');
+    // The self-updater installs each release into a flat versions/<v>/ folder
+    // and older clients reject nested manifest entries. Keep the manifest flat;
+    // the Windows zip still ships templates/ from dist-standalone.
+    if (name.includes('/')) {
+      skipped.push(name);
+      continue;
+    }
     const contents = readFileSync(absolute);
     const destination = join(targetDir, name);
     mkdirSync(dirname(destination), { recursive: true });
@@ -83,6 +91,9 @@ const walk = (dir) => {
   }
 };
 walk(sourceDir);
+if (skipped.length > 0) {
+  console.log(`[publish] 跳过嵌套文件 ${skipped.length} 个（自更新只安装顶层文件）`);
+}
 
 const manifest = {
   version,
