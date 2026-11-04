@@ -183,6 +183,14 @@ describe('loadWakeConfig', () => {
     expect(config.cwd).toBe('/tmp/work');
   });
 
+  it('reads the chat model override', () => {
+    expect(
+      loadWakeConfig({ ZHUNZOU_CHAT_MODEL: ' opencode-go/deepseek-v4.1-flash ' }, '/tmp')
+        .chatModel,
+    ).toBe('opencode-go/deepseek-v4.1-flash');
+    expect(loadWakeConfig({}, '/tmp').chatModel).toBeUndefined();
+  });
+
   it('maps unknown adapters to auto', () => {
     expect(loadWakeConfig({ ZHUNZOU_WAKE_ADAPTER: 'nope' }, '/tmp')).toMatchObject({
       adapter: 'auto',

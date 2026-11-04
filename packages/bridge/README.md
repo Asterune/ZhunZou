@@ -207,6 +207,7 @@ zhunzou-bridge wake --once
 
 ### 常驻运行
 
+`wake` 会同时跑**任务循环**和**会话循环**（适配器支持可恢复 CLI 时），所以单目录常驻也能在看板「会话」页对话。
 macOS 用 `templates/launchd.plist.example` 放到 `~/Library/LaunchAgents/`；
 Linux 用 systemd `ExecStart=/path/to/node /path/to/cli.js wake`；也可以交给 pm2：
 

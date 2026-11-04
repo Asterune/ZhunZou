@@ -14,7 +14,7 @@ import type {
 } from '@zhunzou/shared';
 
 import type { HubApi } from '../src/hub-client.js';
-import { parseChatOutput, runSessionDaemon } from '../src/session.js';
+import { openCodeSessionId, parseChatOutput, runSessionDaemon } from '../src/session.js';
 import { loadWakeConfig } from '../src/wake/config.js';
 import { testConfig } from './helpers.js';
 
@@ -89,6 +89,14 @@ function makeClient(calls: Calls): HubApi {
     },
   } as unknown as HubApi;
 }
+
+describe('openCodeSessionId', () => {
+  it('produces ids OpenCode accepts', () => {
+    const id = openCodeSessionId();
+    expect(id).toMatch(/^ses_[0-9a-f]{32}$/);
+    expect(openCodeSessionId()).not.toBe(id);
+  });
+});
 
 describe('parseChatOutput', () => {
   it('reads Cursor/Claude JSON output and session ids', () => {

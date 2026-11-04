@@ -28,6 +28,8 @@ export interface WakeConfig {
   command?: string;
   /** Extra arguments appended to preset CLI adapters. */
   extraArgs: string[];
+  /** Model name passed to the CLI for interactive chat turns, if configured. */
+  chatModel?: string;
   /** Working directory handed to run adapters. */
   cwd: string;
   /** How long a `run` adapter may execute before it is killed. */
@@ -71,6 +73,7 @@ export function loadWakeConfig(
   cwd: string = process.cwd(),
 ): WakeConfig {
   const command = (env.ZHUNZOU_WAKE_COMMAND ?? '').trim();
+  const chatModel = (env.ZHUNZOU_CHAT_MODEL ?? '').trim();
   const extraArgs = (env.ZHUNZOU_WAKE_ARGS ?? '')
     .split(/\s+/)
     .map((part) => part.trim())
@@ -79,6 +82,7 @@ export function loadWakeConfig(
   return {
     adapter: readAdapter(env.ZHUNZOU_WAKE_ADAPTER),
     ...(command ? { command } : {}),
+    ...(chatModel ? { chatModel } : {}),
     extraArgs,
     cwd: resolve((env.ZHUNZOU_WAKE_CWD ?? '').trim() || cwd),
     runTimeoutMs: clamp(

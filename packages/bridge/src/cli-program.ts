@@ -14,6 +14,7 @@ import {
 } from './fleet.js';
 import { HubClient } from './hub-client.js';
 import { runInit } from './init.js';
+import { runSessionDaemon, supportsChat } from './session.js';
 import { BRIDGE_VERSION } from './version.js';
 import { defaultInstallRoot, runUpgrade } from './upgrade.js';
 import { waitForDecision } from './wait-command.js';
@@ -245,12 +246,34 @@ export function createProgram(): Command {
           wake.adapter = options.adapter as WakeAdapterName;
         }
 
-        process.exitCode = await runWakeDaemon({
-          client: new HubClient(hub),
-          hub,
-          wake,
-          ...(options.once === true ? { once: true } : {}),
-        });
+        const client = new HubClient(hub);
+        const loops: Array<Promise<number>> = [
+          runWakeDaemon({
+            client,
+            hub,
+            wake,
+            ...(options.once === true ? { once: true } : {}),
+          }),
+        ];
+
+        // Chat sessions are only serviced by a session loop. `fleet` starts one
+        // per project; a standalone `wake` daemon must do the same, otherwise
+        // dashboard conversations sit in "waiting for the client" forever.
+        if (supportsChat(wake)) {
+          loops.push(
+            runSessionDaemon({
+              client,
+              hub,
+              wake,
+              ...(options.once === true ? { once: true } : {}),
+              stdout: (line) => process.stdout.write(`${line}\n`),
+              stderr: (line) => process.stderr.write(`${line}\n`),
+            }),
+          );
+        }
+
+        const codes = await Promise.all(loops);
+        process.exitCode = codes.find((code) => code !== 0) ?? 0;
       },
     );
 

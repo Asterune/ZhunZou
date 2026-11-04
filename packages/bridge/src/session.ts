@@ -45,6 +45,14 @@ const RESUME_CAPABLE: WakeAdapterName[] = [
   'command',
 ];
 
+/**
+ * OpenCode session ids must start with `ses`; it rejects a bare UUID.
+ * `opencode run --session <id>` creates the session when it is unknown.
+ */
+export function openCodeSessionId(): string {
+  return `ses_${randomUUID().replace(/-/g, '')}`;
+}
+
 function resolveChatAdapter(wake: WakeConfig): WakeAdapterName {
   if (wake.adapter !== 'auto') return wake.adapter;
 
@@ -94,10 +102,17 @@ function buildChatRun(
     case 'opencode':
     case 'opencode-run': {
       // OpenCode accepts a client-provided id and creates the session if needed.
-      const assigned = externalId ?? randomUUID();
+      const assigned = externalId ?? openCodeSessionId();
       return {
         binary: 'opencode',
-        args: ['run', '--auto', '--session', assigned, message.content],
+        args: [
+          'run',
+          '--auto',
+          ...(wake.chatModel ? ['-m', wake.chatModel] : []),
+          '--session',
+          assigned,
+          message.content,
+        ],
         externalId: assigned,
       };
     }
@@ -110,6 +125,7 @@ function buildChatRun(
           '--force',
           '--output-format',
           'json',
+          ...(wake.chatModel ? ['--model', wake.chatModel] : []),
           ...(externalId ? ['--resume', externalId] : []),
           message.content,
         ],
@@ -122,6 +138,7 @@ function buildChatRun(
           '-p',
           '--output-format',
           'json',
+          ...(wake.chatModel ? ['--model', wake.chatModel] : []),
           ...(externalId ? ['--resume', externalId] : []),
           message.content,
         ],
