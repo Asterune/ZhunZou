@@ -85,14 +85,21 @@ const sessionAgent = computed(() =>
 
 const sessionOnline = computed(() => Boolean(sessionAgent.value?.online));
 
+/**
+ * Only projects that belong to the selected env. Mixing in `knownProjects`
+ * leaked projects from other environments into the dialog, so switching the
+ * target env appeared to have no effect on the project dropdown.
+ */
 const projectOptions = computed(() => {
   if (!form.env) return [];
-  const bound = store.projectsForEnv(form.env).map(
-    (project) => project.projectName,
+  const names = new Set(
+    store
+      .projectsForEnv(form.env)
+      .map((project) => project.projectName),
   );
-  return [...new Set([...bound, ...store.knownProjects])].sort((left, right) =>
-    left.localeCompare(right),
-  );
+  const active = store.envs.find((item) => item.env === form.env)?.projectName;
+  if (active) names.add(active);
+  return [...names].sort((left, right) => left.localeCompare(right));
 });
 
 const runningMessage = computed(() =>
