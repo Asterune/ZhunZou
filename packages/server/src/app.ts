@@ -9,7 +9,7 @@ import Fastify, {
 } from 'fastify';
 import { z, ZodError } from 'zod';
 
-import type { DecisionTicket } from '@zhunzou/shared';
+import type { DecisionTicket, SyncState } from '@zhunzou/shared';
 import {
   appendChatEventSchema,
   appendTaskLogSchema,
@@ -43,6 +43,7 @@ import {
   resolveTicketSchema,
   resumeQuerySchema,
   sendChatMessageSchema,
+  syncQuerySchema,
   ticketIdSchema,
   updateAgentSchema,
   updateRulesSchema,
@@ -65,7 +66,7 @@ import {
   ConflictError,
   NotFoundError,
 } from './errors.js';
-import { TaskEventBus, SessionEventBus, TicketEventBus } from './events.js';
+import { SyncEventBus, TaskEventBus, SessionEventBus, TicketEventBus } from './events.js';
 import { createMetaAgent, type MetaAgent } from './meta-agent.js';
 import {
   createNotifiers,
@@ -174,6 +175,60 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const bus = new TicketEventBus();
   const taskBus = new TaskEventBus();
   const sessionBus = new SessionEventBus();
+
+  // -----------------------------------------------------------------
+  // Dashboard sync (long poll)
+  // -----------------------------------------------------------------
+  // One fingerprint per second is shared by every connected dashboard;
+  // `rev` only advances when something the UI renders actually changed.
+  const syncBus = new SyncEventBus();
+  let syncTicker: ReturnType<typeof setInterval> | null = null;
+  let syncFingerprint = '';
+
+  const refreshSyncFingerprint = (): void => {
+    let next: string;
+    try {
+      next = repo.syncFingerprint();
+    } catch (error) {
+      app.log.error(
+        { err: (error as Error).message },
+        'sync fingerprint failed',
+      );
+      return;
+    }
+
+    if (syncFingerprint === '') {
+      syncFingerprint = next;
+      return;
+    }
+    if (next === syncFingerprint) return;
+
+    syncFingerprint = next;
+    syncBus.bump();
+  };
+
+  const ensureSyncTicker = (): void => {
+    if (syncTicker !== null) return;
+    syncTicker = setInterval(refreshSyncFingerprint, 1_000);
+    syncTicker.unref?.();
+  };
+
+  const stopSyncTickerIfIdle = (): void => {
+    if (syncTicker !== null && syncBus.waiters === 0) {
+      clearInterval(syncTicker);
+      syncTicker = null;
+    }
+  };
+
+  const syncSnapshot = (): SyncState => ({
+    envs: repo.listHeartbeats(),
+    tickets: repo.list({ limit: 200 }).tickets,
+    tasks: repo.listTasks({ limit: 200 }).tasks,
+    projects: repo.listWorkspaceProjects({}).projects,
+    agents: repo.listAgents({}),
+    exchanges: repo.listExchanges({ limit: 100 }),
+  });
+
   const rulesStore = new RulesStore(config.rulesPath);
   const metaAgent =
     options.metaAgent ?? createMetaAgent(config.metaAgent, fetch);
@@ -197,6 +252,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       clearInterval(sweeper);
       sweeper = null;
     }
+    if (syncTicker !== null) {
+      clearInterval(syncTicker);
+      syncTicker = null;
+    }
+    // Release held long polls so a restart does not wait for their timeout.
+    syncBus.bump();
     await closePlugins(plugins, app.log);
     sqlite.close();
   });
@@ -1361,6 +1422,36 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       api.get('/status', async (request) => {
         requireAdmin(request);
         return { envs: repo.listHeartbeats() };
+      });
+
+      // Dashboard long poll: returns the whole snapshot once, then stays
+      // silent until anything changes. `after=0` always gets a snapshot.
+      api.get('/sync', async (request) => {
+        requireAdmin(request);
+        const query = syncQuerySchema.parse(request.query);
+
+        // Catch changes that happened while no dashboard was waiting (the
+        // ticker is stopped when idle, so the stored fingerprint may be old).
+        refreshSyncFingerprint();
+
+        let rev = syncBus.revision;
+        if (rev === query.after && query.timeout > 0) {
+          ensureSyncTicker();
+          const wake = await syncBus.wait(query.after, query.timeout);
+          stopSyncTickerIfIdle();
+          rev = wake.rev;
+          if (wake.timedOut) return { rev, changed: false };
+        }
+
+        if (rev === query.after) return { rev, changed: false };
+
+        return {
+          // Re-read after building the snapshot in case another change
+          // landed while the queries were running.
+          rev: syncBus.revision,
+          changed: true,
+          state: syncSnapshot(),
+        };
       });
 
       // Bridge restart recovery: pending decisions plus recently terminal

@@ -309,6 +309,11 @@ export interface TicketStore {
   ): DecisionTicket;
   get(id: number): DecisionTicket | null;
   list(query: ListTicketsQuery): { tickets: DecisionTicket[]; total: number };
+  /**
+   * Cheap value that changes whenever anything the dashboard renders changes.
+   * Used by GET /api/sync to decide whether a long-poll should wake.
+   */
+  syncFingerprint(): string;
   resolve(id: number, input: ResolveTicketInput, now?: number): DecisionTicket;
   markAutoResolved(
     id: number,
@@ -1053,12 +1058,20 @@ export class TicketRepository implements TicketStore {
       .all();
 
     const counts = new Map(
-      this.db
-        .select({ sessionId: chatMessages.sessionId, value: count() })
-        .from(chatMessages)
-        .groupBy(chatMessages.sessionId)
-        .all()
-        .map((row) => [row.sessionId, Number(row.value)]),
+      rows.length === 0
+        ? []
+        : this.db
+            .select({ sessionId: chatMessages.sessionId, value: count() })
+            .from(chatMessages)
+            .where(
+              inArray(
+                chatMessages.sessionId,
+                rows.map((row) => row.id),
+              ),
+            )
+            .groupBy(chatMessages.sessionId)
+            .all()
+            .map((row) => [row.sessionId, Number(row.value)]),
     );
 
     return rows.map((row) =>
@@ -1891,5 +1904,30 @@ export class TicketRepository implements TicketStore {
       .get();
 
     return row ? toRuleCandidate(row) : null;
+  }
+
+  /**
+   * Dashboard change fingerprint.
+   *
+   * Every subquery is an indexed `MAX()`/`COUNT()` so this stays O(log n)
+   * even as the tables grow. The columns deliberately ignore chat_events
+   * (streamed output has its own cheap pager) so streaming does not wake
+   * every connected dashboard.
+   */
+  syncFingerprint(): string {
+    const row = this.db.get<Record<string, number>>(sql`
+      SELECT
+        COALESCE((SELECT MAX(updated_at) FROM tickets), 0) AS tickets_updated,
+        COALESCE((SELECT MAX(updated_at) FROM agent_tasks), 0) AS tasks_updated,
+        COALESCE((SELECT MAX(updated_at) FROM chat_messages), 0) AS messages_updated,
+        COALESCE((SELECT MAX(updated_at) FROM chat_sessions), 0) AS sessions_updated,
+        COALESCE((SELECT MAX(updated_at) FROM agents), 0) AS agents_updated,
+        COALESCE((SELECT MAX(last_seen_at) FROM env_heartbeats), 0) AS heartbeats_seen,
+        COALESCE((SELECT MAX(id) FROM exchanges), 0) AS exchanges_max,
+        (SELECT COUNT(*) FROM agents) AS agents_count,
+        (SELECT COUNT(*) FROM env_heartbeats) AS heartbeats_count,
+        (SELECT COUNT(*) FROM workspace_projects) AS projects_count
+    `);
+    return row ? Object.values(row).join(':') : '';
   }
 }

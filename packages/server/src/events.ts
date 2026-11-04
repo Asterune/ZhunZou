@@ -116,6 +116,71 @@ export class SessionEventBus {
     return this.emitter.listenerCount(this.channel(env));
   }
 }
+/**
+ * Coarse "something changed" bus for the dashboard.
+ *
+ * The server recomputes a cheap database fingerprint once per second while a
+ * waiter is attached; when it changes, `bump()` advances the revision and
+ * wakes every long-poll. Idle dashboards therefore cost one held request per
+ * timeout instead of six requests every few seconds.
+ */
+export class SyncEventBus {
+  private readonly emitter = new EventEmitter();
+  private rev = 1;
+
+  constructor() {
+    this.emitter.setMaxListeners(0);
+  }
+
+  get revision(): number {
+    return this.rev;
+  }
+
+  get waiters(): number {
+    return this.emitter.listenerCount('change');
+  }
+
+  bump(): number {
+    this.rev += 1;
+    this.emitter.emit('change', this.rev);
+    return this.rev;
+  }
+
+  /**
+   * Resolve as soon as the revision differs from `after`, or on timeout.
+   * A stale/unknown `after` (for example a client from before a restart)
+   * resolves immediately so it receives a fresh snapshot.
+   */
+  wait(
+    after: number,
+    timeoutMs: number,
+  ): Promise<{ rev: number; timedOut: boolean }> {
+    if (this.rev !== after) {
+      return Promise.resolve({ rev: this.rev, timedOut: false });
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+
+      const finish = (rev: number, timedOut: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.emitter.removeListener('change', onChange);
+        resolve({ rev, timedOut });
+      };
+
+      const onChange = (rev: number) => finish(rev, false);
+
+      const timer = setTimeout(() => finish(this.rev, true), timeoutMs);
+      // Do not keep the process alive just because a dashboard is waiting.
+      timer.unref?.();
+
+      this.emitter.once('change', onChange);
+    });
+  }
+}
+
 export class TaskEventBus {
   private readonly emitter = new EventEmitter();
 

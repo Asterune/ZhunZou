@@ -20,6 +20,7 @@ import type {
   RuleCandidateListResponse,
   RuleCandidateStatus,
   RulesResponse,
+  SyncResponse,
   TaskListResponse,
   TaskLogListResponse,
   TaskResponse,
@@ -95,6 +96,7 @@ export interface HubApi {
     candidateId: string,
   ): Promise<RuleCandidateActionResponse>;
   listTasks(token: string, limit?: number): Promise<TaskListResponse>;
+  sync(token: string, after?: number, timeout?: number): Promise<SyncResponse>;
   getTaskLogs(
     token: string,
     taskId: string,
@@ -292,6 +294,13 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
 
     listTasks: (token, limit = 100) =>
       request<TaskListResponse>(token, `/api/tasks?limit=${limit}`),
+
+    // Long poll: the server holds the request until the dashboard changes.
+    sync: (token, after = 0, timeout = 25_000) =>
+      request<SyncResponse>(
+        token,
+        `/api/sync?after=${after}&timeout=${timeout}`,
+      ),
 
     getTaskLogs: (token, taskId, after = 0, limit = 200) =>
       request<TaskLogListResponse>(

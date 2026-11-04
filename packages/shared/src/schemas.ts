@@ -632,6 +632,41 @@ export const workspaceProjectListResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 });
 
+/* ------------------------------------------------------------------ */
+/* Dashboard sync long-poll                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Query accepted by GET /api/sync.
+ *
+ * `after` is the revision the client already has; the request is held open
+ * until the server revision moves past it (or the timeout elapses), so an
+ * idle dashboard costs one request per timeout instead of a fixed poll rate.
+ */
+export const syncQuerySchema = z.object({
+  after: z.coerce.number().int().nonnegative().default(0),
+  timeout: z.coerce.number().int().min(0).max(55_000).default(25_000),
+});
+
+/** Everything the dashboard needs for one render, in a single response. */
+export const syncStateSchema = z.object({
+  envs: z.array(envHeartbeatSchema),
+  tickets: z.array(decisionTicketSchema),
+  tasks: z.array(agentTaskSchema),
+  projects: z.array(workspaceProjectSchema),
+  agents: z.array(agentSchema),
+  exchanges: z.array(exchangeSchema),
+});
+
+export const syncResponseSchema = z.object({
+  /** Monotonic revision; echo it back as `after` on the next request. */
+  rev: z.number().int().nonnegative(),
+  /** False on a clean timeout: the client's state is already current. */
+  changed: z.boolean(),
+  /** Present only when `changed` is true. */
+  state: syncStateSchema.optional(),
+});
+
 export const rulesResponseSchema = z.object({
   content: z.string(),
   updatedAt: z.number().int().nonnegative(),
@@ -769,6 +804,9 @@ export type WorkspaceProjectResponse = z.infer<
 export type WorkspaceProjectListResponse = z.infer<
   typeof workspaceProjectListResponseSchema
 >;
+export type SyncQuery = z.infer<typeof syncQuerySchema>;
+export type SyncState = z.infer<typeof syncStateSchema>;
+export type SyncResponse = z.infer<typeof syncResponseSchema>;
 export type RulesResponse = z.infer<typeof rulesResponseSchema>;
 export type UpdateRulesInput = z.infer<typeof updateRulesSchema>;
 export type RuleCandidate = z.infer<typeof ruleCandidateSchema>;

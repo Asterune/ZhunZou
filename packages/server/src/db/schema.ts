@@ -44,17 +44,22 @@ export const tickets = sqliteTable(
     index('idx_tickets_status').on(table.status),
     index('idx_tickets_project').on(table.projectName),
     index('idx_tickets_created').on(table.createdAt),
+    index('idx_tickets_updated').on(table.updatedAt),
   ],
 );
 
-export const envHeartbeats = sqliteTable('env_heartbeats', {
-  env: text('env').primaryKey(),
-  status: text('status').$type<EnvStatus>().notNull(),
-  projectName: text('project_name'),
-  currentTask: text('current_task'),
-  note: text('note'),
-  lastSeenAt: integer('last_seen_at').notNull(),
-});
+export const envHeartbeats = sqliteTable(
+  'env_heartbeats',
+  {
+    env: text('env').primaryKey(),
+    status: text('status').$type<EnvStatus>().notNull(),
+    projectName: text('project_name'),
+    currentTask: text('current_task'),
+    note: text('note'),
+    lastSeenAt: integer('last_seen_at').notNull(),
+  },
+  (table) => [index('idx_env_heartbeats_seen').on(table.lastSeenAt)],
+);
 
 /**
  * Registry of bridges/agents. `env` stays the identity used by tickets and
@@ -86,6 +91,7 @@ export const agents = sqliteTable(
     uniqueIndex('idx_agents_token_hash').on(table.tokenHash),
     index('idx_agents_status').on(table.status),
     index('idx_agents_kind').on(table.kind),
+    index('idx_agents_updated').on(table.updatedAt),
   ],
 );
 
@@ -111,6 +117,7 @@ export const agentTasks = sqliteTable(  'agent_tasks',
     index('idx_agent_tasks_status').on(table.status),
     index('idx_agent_tasks_env').on(table.env),
     index('idx_agent_tasks_created').on(table.createdAt),
+    index('idx_agent_tasks_updated').on(table.updatedAt),
   ],
 );
 
@@ -144,6 +151,7 @@ export const chatSessions = sqliteTable(
   (table) => [
     index('idx_chat_sessions_env').on(table.env),
     index('idx_chat_sessions_status').on(table.status),
+    index('idx_chat_sessions_updated').on(table.updatedAt),
   ],
 );
 
@@ -162,6 +170,7 @@ export const chatMessages = sqliteTable(
   (table) => [
     index('idx_chat_messages_session').on(table.sessionId, table.id),
     index('idx_chat_messages_status').on(table.status),
+    index('idx_chat_messages_updated').on(table.updatedAt),
   ],
 );
 

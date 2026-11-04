@@ -45,13 +45,35 @@ const form = reactive({
 });
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let slowTimer: ReturnType<typeof setInterval> | null = null;
 let listInFlight = false;
 
 const envOptions = computed(() => {
   const agents = store.agents.filter((agent) => agent.status === 'active');
-  if (agents.length > 0) return agents;
-  return [];
+  // Online agents first so the default choice is one that can actually pick
+  // the message up; offline ones stay visible but disabled.
+  return [...agents].sort((left, right) => {
+    if (left.online !== right.online) return left.online ? -1 : 1;
+    return left.env.localeCompare(right.env);
+  });
 });
+
+/** Env of the first agent that can actually claim a message, if any. */
+function preferredEnv(options = envOptions.value): string {
+  return options.find((agent) => agent.online)?.env ?? '';
+}
+
+const formAgent = computed(() =>
+  envOptions.value.find((agent) => agent.env === form.env),
+);
+
+const formEnvOnline = computed(() => Boolean(formAgent.value?.online));
+
+const sessionAgent = computed(() =>
+  store.agents.find((agent) => agent.env === session.value?.env),
+);
+
+const sessionOnline = computed(() => Boolean(sessionAgent.value?.online));
 
 const projectOptions = computed(() => {
   if (!form.env) return [];
@@ -70,6 +92,11 @@ const runningMessage = computed(() =>
 );
 
 const activeSession = computed(() => session.value);
+
+/** A turn is in flight, so short-interval polls are worth their cost. */
+const busy = computed(
+  () => Boolean(runningMessage.value) || sending.value || Boolean(retrying.value),
+);
 
 const canSend = computed(
   () =>
@@ -144,20 +171,41 @@ async function openSession(id: string): Promise<void> {
   }
 }
 
+// The dashboard long poll tells us when sessions or messages changed. Only
+// fall back to timers as a safety net, and poll faster while a turn runs.
+watch(
+  () => store.rev,
+  () => {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    void loadSessions(false, { silent: true });
+    void refreshSession();
+  },
+);
+
 function startPolling(): void {
   stopPolling();
   pollTimer = setInterval(() => {
-    if (typeof document === 'undefined' || !document.hidden) {
-      void loadSessions(false, { silent: true });
-      void refreshSession();
-    }
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (!busy.value) return;
+    void loadSessions(false, { silent: true });
+    void refreshSession();
   }, 2_000);
+  // Recovery net in case a revision is missed (restart, dropped event).
+  slowTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    void loadSessions(false, { silent: true });
+    void refreshSession();
+  }, 20_000);
 }
 
 function stopPolling(): void {
   if (pollTimer !== null) {
     clearInterval(pollTimer);
     pollTimer = null;
+  }
+  if (slowTimer !== null) {
+    clearInterval(slowTimer);
+    slowTimer = null;
   }
 }
 
@@ -166,6 +214,10 @@ async function createSession(): Promise<void> {
   const env = form.env.trim();
   if (!env) {
     pushToast('请选择目标环境', 'error');
+    return;
+  }
+  if (!formEnvOnline.value) {
+    pushToast('该环境的端侧已离线，联网后再新建会话', 'error');
     return;
   }
 
@@ -246,11 +298,15 @@ async function closeSession(): Promise<void> {
 
 function openForm(): void {
   formOpen.value = true;
-  if (!form.env && envOptions.value[0]) form.env = envOptions.value[0].env;
+  const current = envOptions.value.find((agent) => agent.env === form.env);
+  if (!current?.online) form.env = preferredEnv();
 }
 
 watch(envOptions, (options) => {
-  if (!form.env && options[0]) form.env = options[0].env;
+  const current = options.find((agent) => agent.env === form.env);
+  if (!current?.online) {
+    form.env = preferredEnv(options);
+  }
 }, { immediate: true });
 
 watch(
@@ -341,9 +397,16 @@ onBeforeUnmount(stopPolling);
               v-model="form.env"
               class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2 text-[13px] text-on-surface outline-none focus:border-primary"
             >
-              <option value="" disabled>选择在线 Agent</option>
-              <option v-for="agent in envOptions" :key="agent.env" :value="agent.env">
-                {{ agent.env }} · {{ agent.kind }}
+              <option value="" disabled>
+                {{ envOptions.some((agent) => agent.online) ? '选择在线 Agent' : '没有在线 Agent' }}
+              </option>
+              <option
+                v-for="agent in envOptions"
+                :key="agent.env"
+                :value="agent.env"
+                :disabled="!agent.online"
+              >
+                {{ agent.env }} · {{ agent.kind }}{{ agent.online ? '' : ' · 离线' }}
               </option>
             </select>
           </label>
@@ -468,9 +531,13 @@ onBeforeUnmount(stopPolling);
               <span v-if="activeSession.status === 'CLOSED'" class="text-primary">
                 · 已关闭
               </span>
-              <span v-else class="flex items-center gap-1 text-secondary">
+              <span v-else-if="sessionOnline" class="flex items-center gap-1 text-secondary">
                 <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-secondary" />
                 在线
+              </span>
+              <span v-else class="flex items-center gap-1 text-error">
+                <span class="h-1.5 w-1.5 rounded-full bg-error" />
+                端侧离线
               </span>
             </p>
           </div>
@@ -521,7 +588,7 @@ onBeforeUnmount(stopPolling);
                 v-if="message.role === 'user' && message.status === 'PENDING'"
                 class="mt-1 text-[10px] text-on-primary/70"
               >
-                等待端侧领取…
+                {{ sessionOnline ? '等待端侧领取…' : '等待端侧领取…（该环境当前离线）' }}
               </p>
             </div>
           </div>
@@ -564,7 +631,8 @@ onBeforeUnmount(stopPolling);
             </button>
           </div>
           <p class="mt-1.5 text-[10px] text-on-surface-variant/60">
-            会话由端侧 runner 执行；没有运行中的 fleet 时消息会停在待领取。
+            会话由端侧 runner 执行；本机需要常驻 <span class="font-mono">wake</span> 或
+            <span class="font-mono">fleet</span>，否则消息会停在待领取。
           </p>
         </div>
       </div>

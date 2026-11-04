@@ -11,6 +11,7 @@ import type {
   ResolveTicketInput,
   RuleCandidate,
   RulesResponse,
+  SyncState,
   UpdateAgentInput,
   WorkspaceProject,
 } from '@zhunzou/shared';
@@ -25,8 +26,10 @@ import { pushToast } from '../lib/toast';
 
 const TOKEN_KEY = 'zhunzou.token';
 const LEGACY_TOKEN_KEY = 'agent-hub.token';
-const POLL_INTERVAL_MS = 5_000;
-const TICKET_LIMIT = 200;
+/** Held long-poll window; must stay below the nginx 75s read timeout. */
+const SYNC_TIMEOUT_MS = 25_000;
+/** Backoff after a network/5xx error before re-arming the long poll. */
+const SYNC_RETRY_MS = 4_000;
 
 function loadStoredToken(): string {
   try {
@@ -76,6 +79,8 @@ export function createHubStore(api: HubApi = hubApi) {
   const rules = ref<RulesResponse | null>(null);
   const ruleCandidates = ref<RuleCandidate[]>([]);
   const workspaceProjects = ref<WorkspaceProject[]>([]);
+  /** Server revision of the snapshot currently applied. */
+  const rev = ref(0);
 
   const authenticating = ref(false);
   const refreshing = ref(false);
@@ -97,7 +102,7 @@ export function createHubStore(api: HubApi = hubApi) {
   const lastError = ref('');
   const authError = ref('');
 
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let syncGeneration = 0;
 
   const pendingTickets = computed(() =>
     tickets.value
@@ -179,28 +184,35 @@ export function createHubStore(api: HubApi = hubApi) {
     return [...names].sort((left, right) => left.localeCompare(right));
   });
 
+  /**
+   * Replace every slice of dashboard state with one server snapshot.
+   * The snapshot is built from the same repository calls the individual
+   * endpoints used, so the shapes are identical.
+   */
+  function applySnapshot(state: SyncState): void {
+    envs.value = state.envs;
+    agents.value = state.agents;
+    exchanges.value = state.exchanges;
+    tickets.value = state.tickets;
+    tasks.value = state.tasks;
+    workspaceProjects.value = state.projects;
+  }
+
+  /**
+   * Force a snapshot right now (login, manual refresh, after a mutation).
+   * `after=0` sidesteps the long poll: the server always answers with state.
+   */
   async function refresh(options: { manual?: boolean } = {}): Promise<void> {
     if (!token.value || refreshing.value) return;
 
     refreshing.value = true;
     if (options.manual) manualRefreshing.value = true;
     try {
-      const [status, list, taskList, bindings, agentList, exchangeList] =
-        await Promise.all([
-          api.status(token.value),
-          api.listTickets(token.value, TICKET_LIMIT),
-          api.listTasks(token.value, TICKET_LIMIT),
-          api.listWorkspaceProjects(token.value),
-          api.listAgents(token.value),
-          api.listExchanges(token.value, 100),
-        ]);
-
-      envs.value = status.envs;
-      agents.value = agentList.agents;
-      exchanges.value = exchangeList.exchanges;
-      tickets.value = list.tickets;
-      tasks.value = taskList.tasks;
-      workspaceProjects.value = bindings.projects;
+      const response = await api.sync(token.value, 0, 0);
+      rev.value = response.rev;
+      if (response.changed && response.state) {
+        applySnapshot(response.state);
+      }
       lastSyncAt.value = Date.now();
       lastError.value = '';
       connection.value = 'online';
@@ -214,6 +226,43 @@ export function createHubStore(api: HubApi = hubApi) {
     } finally {
       refreshing.value = false;
       if (options.manual) manualRefreshing.value = false;
+    }
+  }
+
+  /**
+   * One held request instead of six polls: the server only answers when the
+   * dashboard data changed (or after the timeout, which re-arms the poll).
+   */
+  async function runSyncLoop(generation: number): Promise<void> {
+    while (generation === syncGeneration && token.value) {
+      try {
+        const response = await api.sync(
+          token.value,
+          rev.value,
+          SYNC_TIMEOUT_MS,
+        );
+        if (generation !== syncGeneration) return;
+
+        rev.value = response.rev;
+        if (response.changed && response.state) {
+          applySnapshot(response.state);
+        }
+        lastSyncAt.value = Date.now();
+        lastError.value = '';
+        connection.value = 'online';
+      } catch (error) {
+        if (generation !== syncGeneration) return;
+        if (error instanceof ApiError && error.status === 401) {
+          logout('登录已过期，请重新输入 Token');
+          return;
+        }
+
+        connection.value = 'offline';
+        lastError.value = describeError(error);
+        await new Promise((resolve) =>
+          setTimeout(resolve, SYNC_RETRY_MS),
+        );
+      }
     }
   }
 
@@ -253,6 +302,7 @@ export function createHubStore(api: HubApi = hubApi) {
     stop();
     token.value = '';
     clearStoredToken();
+    rev.value = 0;
     envs.value = [];
     agents.value = [];
     tickets.value = [];
@@ -266,36 +316,14 @@ export function createHubStore(api: HubApi = hubApi) {
     authError.value = message;
   }
 
-  function onVisibilityChange(): void {
-    if (typeof document !== 'undefined' && !document.hidden) {
-      void refresh();
-    }
-  }
-
   function start(): void {
     stop();
     if (!token.value) return;
-
-    void refresh();
-
-    if (typeof window !== 'undefined') {
-      timer = setInterval(() => {
-        if (typeof document === 'undefined' || !document.hidden) {
-          void refresh();
-        }
-      }, POLL_INTERVAL_MS);
-      document.addEventListener('visibilitychange', onVisibilityChange);
-    }
+    void runSyncLoop(syncGeneration);
   }
 
   function stop(): void {
-    if (timer !== null) {
-      clearInterval(timer);
-      timer = null;
-    }
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    }
+    syncGeneration += 1;
   }
 
   function fail(error: unknown, fallback: string): void {
@@ -712,6 +740,7 @@ export function createHubStore(api: HubApi = hubApi) {
     agentActionEnv,
     agentsLoading,
     connection,
+    rev,
     lastSyncAt,
     lastError,
     authError,

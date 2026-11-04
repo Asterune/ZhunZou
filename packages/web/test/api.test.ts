@@ -220,6 +220,20 @@ describe('createHubApi', () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('/api/tickets?limit=50');
   });
 
+  it('long-polls the dashboard sync endpoint with the current revision', async () => {
+    const fetchImpl = mockFetch(
+      jsonResponse({ rev: 7, changed: false }),
+    );
+    const api = createHubApi(fetchImpl);
+
+    const result = await api.sync(token, 6, 25_000);
+
+    expect(result).toEqual({ rev: 7, changed: false });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      '/api/sync?after=6&timeout=25000',
+    );
+  });
+
   it('posts an approval with the selected option and instruction', async () => {
     const fetchImpl = mockFetch(jsonResponse({ ticket }));
     const api = createHubApi(fetchImpl);

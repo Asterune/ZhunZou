@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_tickets_project ON tickets(project_name);
 CREATE INDEX IF NOT EXISTS idx_tickets_created ON tickets(created_at);
+CREATE INDEX IF NOT EXISTS idx_tickets_updated ON tickets(updated_at);
 
 CREATE TABLE IF NOT EXISTS env_heartbeats (
   env TEXT PRIMARY KEY,
@@ -38,6 +39,8 @@ CREATE TABLE IF NOT EXISTS env_heartbeats (
   note TEXT,
   last_seen_at INTEGER NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_env_heartbeats_seen ON env_heartbeats(last_seen_at);
 
 CREATE TABLE IF NOT EXISTS agents (
   env TEXT PRIMARY KEY,
@@ -58,6 +61,7 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_token_hash ON agents(token_hash);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 CREATE INDEX IF NOT EXISTS idx_agents_kind ON agents(kind);
+CREATE INDEX IF NOT EXISTS idx_agents_updated ON agents(updated_at);
 
 CREATE TABLE IF NOT EXISTS agent_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,6 +82,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_env ON agent_tasks(env);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_created ON agent_tasks(created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_updated ON agent_tasks(updated_at);
 
 CREATE TABLE IF NOT EXISTS task_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,6 +108,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_env ON chat_sessions(env);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_status ON chat_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated ON chat_sessions(updated_at);
 
 CREATE TABLE IF NOT EXISTS chat_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,6 +123,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_status ON chat_messages(status);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_updated ON chat_messages(updated_at);
 
 CREATE TABLE IF NOT EXISTS chat_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
