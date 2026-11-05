@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import { loadBridgeConfig } from './config.js';
-import { HubClient } from './hub-client.js';
+import { createHubApi } from './hub.js';
 import { maybeAutoUpgrade } from './auto-upgrade.js';
 import { delegateToActiveRelease } from './launcher.js';
 import { createMcpServer } from './mcp-server.js';
@@ -32,7 +32,7 @@ async function main(): Promise<void> {
     log: (line) => console.error(`[zhunzou] ${line}`),
   });
 
-  const client = new HubClient(config);
+  const client = createHubApi(config);
   const presence = createPresenceReporter(client, {
     intervalMs: config.heartbeatIntervalMs,
     ...(config.projectName ? { projectName: config.projectName } : {}),
@@ -47,6 +47,7 @@ async function main(): Promise<void> {
 
   const shutdown = (): void => {
     presence.stop();
+    client.close?.();
     process.exit(0);
   };
   process.once('SIGINT', shutdown);

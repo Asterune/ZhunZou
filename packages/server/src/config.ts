@@ -80,6 +80,34 @@ export interface ServerConfig {
   approvalLinkSecret: string;
   /** How long a one-click approval link stays valid. */
   approvalLinkTtlMs: number;
+
+  /** Enable the device/dashboard WebSocket gateway. */
+  realtimeEnabled: boolean;
+  /** Lifetime of a browser WebSocket ticket. */
+  realtimeTicketTtlMs: number;
+  /** How often a device daemon should heartbeat over WS. */
+  realtimeHeartbeatMs: number;
+  /** Close a device socket after this long without any frame. */
+  realtimeHeartbeatTimeoutMs: number;
+
+  /** Enable interactive PTY terminal sessions. */
+  terminalEnabled: boolean;
+  /** Global cap on STARTING/ACTIVE/DETACHED terminal sessions. */
+  terminalMaxSessions: number;
+  /** Per-device cap on active terminal sessions. */
+  terminalMaxSessionsPerDevice: number;
+  /** Close a terminal after this long without input or output. */
+  terminalIdleTimeoutMs: number;
+  /** Keep a detached session for this long while a device reconnects. */
+  terminalDetachTtlMs: number;
+  /** In-memory scrollback per terminal session. */
+  terminalScrollbackBytes: number;
+  /** Maximum simultaneous browser viewers per session. */
+  terminalMaxViewers: number;
+  /** Input bytes per second accepted from one terminal session. */
+  terminalInputBytesPerSec: number;
+  /** Empty = all devices; otherwise only these envs may open terminals. */
+  terminalAllowedEnvs: string[];
 }
 
 function readInt(
@@ -312,5 +340,56 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       min: 60_000,
       max: 7 * 24 * 60 * 60 * 1000,
     }),
+    realtimeEnabled: readBool(env.REALTIME_ENABLED, true),
+    realtimeTicketTtlMs: readInt(
+      env.REALTIME_TICKET_TTL_MS,
+      60_000,
+      { min: 5_000, max: 10 * 60 * 1000 },
+    ),
+    realtimeHeartbeatMs: readInt(
+      env.REALTIME_HEARTBEAT_MS,
+      30_000,
+      { min: 5_000, max: 300_000 },
+    ),
+    realtimeHeartbeatTimeoutMs: readInt(
+      env.REALTIME_HEARTBEAT_TIMEOUT_MS,
+      90_000,
+      { min: 15_000, max: 60 * 60 * 1000 },
+    ),
+    terminalEnabled: readBool(env.TERMINAL_ENABLED, true),
+    terminalMaxSessions: readInt(env.TERMINAL_MAX_SESSIONS, 32, {
+      min: 1,
+      max: 500,
+    }),
+    terminalMaxSessionsPerDevice: readInt(
+      env.TERMINAL_MAX_SESSIONS_PER_DEVICE,
+      4,
+      { min: 1, max: 50 },
+    ),
+    terminalIdleTimeoutMs: readInt(
+      env.TERMINAL_IDLE_TIMEOUT_MS,
+      30 * 60 * 1000,
+      { min: 60_000, max: 24 * 60 * 60 * 1000 },
+    ),
+    terminalDetachTtlMs: readInt(
+      env.TERMINAL_DETACH_TTL_MS,
+      5 * 60 * 1000,
+      { min: 10_000, max: 24 * 60 * 60 * 1000 },
+    ),
+    terminalScrollbackBytes: readInt(
+      env.TERMINAL_SCROLLBACK_BYTES,
+      1024 * 1024,
+      { min: 16 * 1024, max: 16 * 1024 * 1024 },
+    ),
+    terminalMaxViewers: readInt(env.TERMINAL_MAX_VIEWERS, 8, {
+      min: 1,
+      max: 50,
+    }),
+    terminalInputBytesPerSec: readInt(
+      env.TERMINAL_INPUT_BYTES_PER_SEC,
+      64 * 1024,
+      { min: 1_024, max: 10 * 1024 * 1024 },
+    ),
+    terminalAllowedEnvs: readList(env.TERMINAL_ALLOWED_ENVS),
   };
 }

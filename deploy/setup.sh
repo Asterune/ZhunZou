@@ -212,6 +212,28 @@ if [ "$INSTALL_NGINX" = "1" ]; then
     log "nginx 配置已存在，保留：${NGINX_CONF}"
   fi
 
+  # Certbot rewrites this file, so setup.sh cannot replace it wholesale.
+  # Add the WebSocket upgrade headers and their map in place when missing.
+  if ! grep -q 'proxy_set_header Upgrade' "$NGINX_CONF"; then
+    if grep -q 'proxy_http_version 1.1;' "$NGINX_CONF"; then
+      sed -i '/proxy_http_version 1.1;/a\        proxy_set_header Upgrade $http_upgrade;' "$NGINX_CONF"
+      sed -i '/proxy_set_header Upgrade $http_upgrade;/a\        proxy_set_header Connection $zhunzou_connection_upgrade;' "$NGINX_CONF"
+      log "已补充 WebSocket Upgrade 头"
+    else
+      warn "nginx 配置缺少 proxy_http_version 1.1，请手工添加 WebSocket Upgrade 头"
+    fi
+  fi
+
+  if ! grep -q 'map $http_upgrade $zhunzou_connection_upgrade' "$NGINX_CONF"; then
+    NGINX_TMP="$(mktemp)"
+    {
+      printf '%s\n' 'map $http_upgrade $zhunzou_connection_upgrade {' '    default upgrade;' "    '' close;" '}' ''
+      cat "$NGINX_CONF"
+    } > "$NGINX_TMP"
+    mv "$NGINX_TMP" "$NGINX_CONF"
+    log "已补充 WebSocket upgrade map"
+  fi
+
   if nginx -t; then
     systemctl enable nginx >/dev/null 2>&1 || true
     systemctl reload nginx

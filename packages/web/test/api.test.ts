@@ -5,6 +5,7 @@ import type {
   AgentTask,
   DecisionTicket,
   EnvHeartbeat,
+  TerminalSession,
 } from '@zhunzou/shared';
 
 import { ApiError, createHubApi } from '../src/lib/api';
@@ -61,6 +62,18 @@ const agent: Agent = {
   updatedAt: 1,
 };
 
+const terminal: TerminalSession = {
+  id: '7',
+  env: 'home-mac',
+  title: 'deploy shell',
+  cols: 120,
+  rows: 30,
+  status: 'ACTIVE',
+  createdAt: 1,
+  updatedAt: 1,
+  lastActiveAt: 1,
+};
+
 const task: AgentTask = {
   id: '12',
   env: 'company-windows',
@@ -97,6 +110,45 @@ describe('createHubApi', () => {
 
     expect(result.agents[0]).toMatchObject({ env: 'company-cursor', kind: 'cursor' });
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('/api/agents');
+  });
+
+  it('creates, lists and closes terminal sessions', async () => {
+    const fetchImpl = mockFetch(jsonResponse({ session: terminal }));
+    const api = createHubApi(fetchImpl);
+
+    await api.createTerminal(token, { env: 'home-mac', cols: 120, rows: 30 });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('/api/terminals');
+    expect((fetchImpl.mock.calls[0]?.[1] as RequestInit).method).toBe('POST');
+
+    await api.listTerminals(token, 'home-mac');
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe('/api/terminals?limit=50&env=home-mac');
+
+    await api.closeTerminal(token, '7', 'done');
+    expect(fetchImpl.mock.calls[2]?.[0]).toBe('/api/terminals/7/close');
+    expect(
+      JSON.parse(String((fetchImpl.mock.calls[2]?.[1] as RequestInit).body)),
+    ).toEqual({ reason: 'done' });
+
+    await api.getTerminalAudit(token, '7');
+    expect(fetchImpl.mock.calls[3]?.[0]).toBe(
+      '/api/terminals/7/audit?after=0&limit=100',
+    );
+
+    await api.getTerminalStats(token);
+    expect(fetchImpl.mock.calls[4]?.[0]).toBe('/api/terminals/stats');
+  });
+
+  it('exchanges the admin token for a short-lived realtime ticket', async () => {
+    const fetchImpl = mockFetch(
+      jsonResponse({ ticket: 'realtime.1.sig', expiresAt: 2 }),
+    );
+    const api = createHubApi(fetchImpl);
+
+    const result = await api.createRealtimeTicket(token);
+
+    expect(result.ticket).toBe('realtime.1.sig');
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('/api/realtime/ticket');
+    expect((fetchImpl.mock.calls[0]?.[1] as RequestInit).method).toBe('POST');
   });
 
   it('registers, edits, issues and revokes agent tokens', async () => {

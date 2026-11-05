@@ -111,6 +111,98 @@ describe('interactive sessions', () => {
     }
   });
 
+  it('accepts long messages up to the 32000 character limit', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+
+      const long = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: { content: 'a'.repeat(20_000) },
+      });
+      expect(long.statusCode).toBe(201);
+      expect((long.json().message as ChatMessage).status).toBe('PENDING');
+
+      const tooLong = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: { content: 'a'.repeat(32_001) },
+      });
+      expect(tooLong.statusCode).toBe(400);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('deletes a session together with its transcript', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: { content: '先别回，我马上删掉这个会话' },
+      });
+
+      const removed = await ctx.app.inject({
+        method: 'DELETE',
+        url: `/api/sessions/${session.id}`,
+        headers: ctx.auth,
+      });
+      expect(removed.statusCode).toBe(200);
+      expect(removed.json()).toMatchObject({ deleted: true });
+
+      const loaded = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}`,
+        headers: ctx.auth,
+      });
+      expect(loaded.statusCode).toBe(404);
+
+      const list = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/sessions',
+        headers: ctx.auth,
+      });
+      expect(list.json().sessions).toHaveLength(0);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('refuses to delete a session whose message is running', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const agentAuth = await issueAgentToken(ctx);
+      await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: { content: 'long turn' },
+      });
+      await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10`,
+        headers: agentAuth,
+      });
+
+      const removed = await ctx.app.inject({
+        method: 'DELETE',
+        url: `/api/sessions/${session.id}`,
+        headers: ctx.auth,
+      });
+      expect(removed.statusCode).toBe(409);
+      expect(removed.json().error.code).toBe('SESSION_BUSY');
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('scopes sessions and messages to the agent token env', async () => {
     const ctx = await createTestContext();
     try {

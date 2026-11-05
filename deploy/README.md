@@ -7,6 +7,7 @@
 - 进程：systemd `zhunzou.service`，监听 `127.0.0.1:8899`
 - 入口：nginx `hub.l1uqi.com` → `127.0.0.1:8899`（网页与 API 同源）
 - 数据：`/opt/zhunzou/data/zhunzou.db`、`data/GLOBAL_RULES.md`
+- WebSocket：nginx 配置包含 `/ws/*` 的 `Upgrade` / `Connection` 头；对已有 certbot 配置，`setup.sh` 会在原文件上补齐，不会覆盖证书配置
 - 首次部署会复用 `/opt/pte-dojo/server/.env` 中的 `AI_*` 配置作为 Meta-Agent
 
 ## 一键部署

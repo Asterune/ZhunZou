@@ -9,9 +9,17 @@ import {
   ScrollText,
   Send,
   SlidersHorizontal,
+  SquareTerminal,
   WifiOff,
 } from 'lucide-vue-next';
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  computed,
+  defineAsyncComponent,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue';
 
 import AgentPanel from './components/AgentPanel.vue';
 import BatchApproveDialog from './components/BatchApproveDialog.vue';
@@ -29,7 +37,11 @@ import { relativeTime } from './lib/format';
 import { useI18n } from './lib/i18n';
 import { useHubStore } from './stores/hub';
 
-type Tab = 'pending' | 'tasks' | 'chat' | 'agents' | 'history' | 'rules';
+type Tab = 'pending' | 'tasks' | 'chat' | 'terminal' | 'agents' | 'history' | 'rules';
+
+const TerminalPanel = defineAsyncComponent(
+  () => import('./components/TerminalPanel.vue'),
+);
 
 const store = useHubStore();
 const { t } = useI18n();
@@ -39,6 +51,7 @@ function initialTab(): Tab {
   const value = new URLSearchParams(window.location.search).get('tab');
   return value === 'tasks' ||
     value === 'chat' ||
+    value === 'terminal' ||
     value === 'agents' ||
     value === 'history' ||
     value === 'rules'
@@ -66,6 +79,11 @@ const tabs = computed(() => [
     key: 'chat' as const,
     label: t('app.tabs.chat'),
     icon: MessageSquare,
+  },
+  {
+    key: 'terminal' as const,
+    label: t('app.tabs.terminal'),
+    icon: SquareTerminal,
   },
   {
     key: 'agents' as const,
@@ -130,7 +148,7 @@ onBeforeUnmount(() => {
 
   <div
     v-else
-    class="paper-grain min-h-screen bg-surface pb-[calc(6rem_+_env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] md:pb-0"
+    class="paper-grain min-h-screen bg-surface pb-[calc(6rem_+_env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] lg:pb-0"
   >
     <header
       class="sticky top-0 z-40 border-b border-outline-variant/35 bg-surface pt-[env(safe-area-inset-top)] shadow-[0_1px_8px_rgba(30,27,25,0.04)]"
@@ -151,11 +169,11 @@ onBeforeUnmount(() => {
               >
                 {{ t('app.brand') }}
               </h1>
-              <span class="hidden text-[10px] uppercase tracking-[0.16em] text-on-surface-variant/60 sm:inline">
+              <span class="hidden text-[10px] uppercase tracking-[0.16em] text-on-surface-variant/60 xl:inline">
                 {{ t('app.wordmark') }}
               </span>
             </div>
-            <div class="flex items-center gap-1.5 text-[11px]">
+            <div class="flex items-center gap-1.5 whitespace-nowrap text-[11px]">
               <span class="relative flex h-2 w-2">
                 <span
                   v-if="store.connection === 'online'"
@@ -169,8 +187,8 @@ onBeforeUnmount(() => {
               <span class="font-medium" :class="connectionTextClass">
                 {{ connectionLabel }}
               </span>
-              <span class="text-on-surface-variant/35">•</span>
-              <span class="text-on-surface-variant">
+              <span class="hidden text-on-surface-variant/35 xl:inline">•</span>
+              <span class="hidden text-on-surface-variant xl:inline">
                 {{ store.lastSyncAt ? relativeTime(store.lastSyncAt) : t('app.syncing') }}
               </span>
             </div>
@@ -178,14 +196,14 @@ onBeforeUnmount(() => {
         </div>
 
         <nav
-          class="ml-4 hidden items-center gap-1 rounded-xl bg-surface-container/80 p-1 ring-1 ring-inset ring-outline-variant/40 md:flex"
+          class="ml-4 hidden shrink-0 items-center gap-1 rounded-xl bg-surface-container/80 p-1 ring-1 ring-inset ring-outline-variant/40 lg:flex"
           :aria-label="t('app.mainNav')"
         >
           <button
             v-for="tab in tabs"
             :key="tab.key"
             type="button"
-            class="flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-medium"
+            class="flex h-8 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-sm font-medium"
             :aria-current="activeTab === tab.key ? 'page' : undefined"
             :class="
               activeTab === tab.key
@@ -197,17 +215,15 @@ onBeforeUnmount(() => {
             <component :is="tab.icon" :size="16" />
             {{ tab.label }}
             <span
+              v-if="tab.count"
               class="grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold"
-              :aria-hidden="!tab.count"
               :class="
-                tab.count
-                  ? activeTab === tab.key
-                    ? 'bg-on-primary/20 text-on-primary'
-                    : 'bg-primary text-on-primary'
-                  : 'invisible'
+                activeTab === tab.key
+                  ? 'bg-on-primary/20 text-on-primary'
+                  : 'bg-primary text-on-primary'
               "
             >
-              {{ tab.count || '' }}
+              {{ tab.count }}
             </span>
           </button>
         </nav>
@@ -255,7 +271,7 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <StatusBar />
+      <StatusBar v-if="activeTab === 'pending'" />
 
       <section v-if="activeTab === 'pending'">
         <div class="mb-4 flex flex-wrap items-end justify-between gap-2 px-0.5">
@@ -329,6 +345,8 @@ onBeforeUnmount(() => {
 
       <ChatPanel v-else-if="activeTab === 'chat'" />
 
+      <TerminalPanel v-else-if="activeTab === 'terminal'" />
+
       <AgentPanel v-else-if="activeTab === 'agents'" />
 
       <HistoryList v-else-if="activeTab === 'history'" />
@@ -349,7 +367,7 @@ onBeforeUnmount(() => {
     </footer>
 
     <nav
-      class="fixed inset-x-0 bottom-0 z-40 border-t border-outline-variant/35 bg-surface/95 pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] shadow-[0_-2px_12px_rgba(30,27,25,0.05)] backdrop-blur-xl md:hidden"
+      class="fixed inset-x-0 bottom-0 z-40 border-t border-outline-variant/35 bg-surface/95 pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] shadow-[0_-2px_12px_rgba(30,27,25,0.05)] backdrop-blur-xl lg:hidden"
     >
       <div class="flex h-16 items-stretch">
         <button

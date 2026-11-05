@@ -15,6 +15,11 @@ import {
   TASK_STATUSES,
   TICKET_STATUSES,
 } from './constants.js';
+import {
+  DEVICE_TRANSPORTS,
+  deviceCapabilitiesSchema,
+  deviceStatsSchema,
+} from './device.js';
 
 /* ------------------------------------------------------------------ */
 /* Branded-ish scalars                                                 */
@@ -201,6 +206,20 @@ export const agentSchema = z.object({
   version: z.string().max(40).optional(),
   host: z.string().max(120).optional(),
   os: z.string().max(60).optional(),
+  /** Realtime device protocol version, present once a WS device connects. */
+  protocolVersion: z.number().int().positive().optional(),
+  /** Local CLI inventory and PTY capability reported by the device daemon. */
+  capabilities: deviceCapabilitiesSchema.optional(),
+  /** Last CPU/memory/load snapshot. */
+  deviceStats: deviceStatsSchema.optional(),
+  /** Which transport is currently attached: ws for the device daemon, http for legacy bridges. */
+  transport: z.enum(DEVICE_TRANSPORTS).optional(),
+  /** Whether the realtime WS peer is currently attached. */
+  connected: z.boolean().optional(),
+  /** Whether this device may open interactive terminals. */
+  terminalEnabled: z.boolean().optional(),
+  /** When the current WS connection was established. */
+  connectedAt: z.number().int().nonnegative().optional(),
   /** First characters of the active token, for display; never the secret. */
   tokenPrefix: z.string().max(16).optional(),
   hasToken: z.boolean(),
@@ -227,6 +246,7 @@ export const updateAgentSchema = z
     name: z.string().trim().min(1).max(64).optional(),
     kind: z.enum(AGENT_KINDS).optional(),
     status: z.enum(AGENT_STATUSES).optional(),
+    terminalEnabled: z.boolean().optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: 'at least one field must be provided',
@@ -359,7 +379,7 @@ export const chatMessageSchema = z.object({
   id: ticketIdSchema,
   sessionId: ticketIdSchema,
   role: z.enum(CHAT_ROLES),
-  content: z.string().max(20_000),
+  content: z.string().max(32_000),
   status: z.enum(CHAT_MESSAGE_STATUSES),
   error: z.string().max(2_000).optional(),
   createdAt: z.number().int().nonnegative(),
@@ -382,7 +402,7 @@ export const createChatSessionSchema = z.object({
 });
 
 export const sendChatMessageSchema = z.object({
-  content: z.string().trim().min(1).max(8_000),
+  content: z.string().trim().min(1).max(32_000),
 });
 
 export const completeChatMessageSchema = z.object({
@@ -717,6 +737,12 @@ export const healthResponseSchema = z.object({
   now: z.number().int().nonnegative(),
 });
 
+/** Short-lived capability used by the browser to open a WebSocket. */
+export const realtimeTicketResponseSchema = z.object({
+  ticket: z.string().min(1),
+  expiresAt: z.number().int().nonnegative(),
+});
+
 /* ------------------------------------------------------------------ */
 /* Inferred types                                                      */
 /* ------------------------------------------------------------------ */
@@ -818,3 +844,6 @@ export type RuleCandidateActionResponse = z.infer<
   typeof ruleCandidateActionResponseSchema
 >;
 export type ApiError = z.infer<typeof apiErrorSchema>;
+export type RealtimeTicketResponse = z.infer<
+  typeof realtimeTicketResponseSchema
+>;

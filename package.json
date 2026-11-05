@@ -25,6 +25,7 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "server": "pnpm --filter @zhunzou/server start",
+    "device": "pnpm --filter @zhunzou/device start",
     "smoke": "bash scripts/smoke-test.sh",
     "smoke:bridge": "bash scripts/bridge-smoke-test.sh",
     "smoke:web": "bash scripts/web-smoke-test.sh",

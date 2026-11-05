@@ -15,6 +15,19 @@ export {
 } from './config.js';
 export { TicketEventBus } from './events.js';
 export {
+  attachRealtimeGateway,
+  type RealtimeGateway,
+} from './realtime/gateway.js';
+export {
+  createTerminalManager,
+  type TerminalManager,
+} from './realtime/terminal-manager.js';
+export {
+  buildRealtimeTicket,
+  verifyRealtimeTicket,
+  type RealtimeTicketPayload,
+} from './realtime/ticket.js';
+export {
   buildRequestHeaders,
   buildUserPrompt,
   createMetaAgent,

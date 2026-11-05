@@ -4,6 +4,7 @@ import {
   MessageSquarePlus,
   Plus,
   RefreshCw,
+  Trash2,
   X,
   XCircle,
 } from 'lucide-vue-next';
@@ -44,6 +45,7 @@ const loadingSession = ref(false);
 const creating = ref(false);
 const sending = ref(false);
 const closing = ref(false);
+const deletingId = ref('');
 const retrying = ref('');
 const error = ref('');
 
@@ -345,6 +347,30 @@ async function closeSession(): Promise<void> {
   }
 }
 
+async function deleteSession(item: ChatSession): Promise<void> {
+  if (deletingId.value) return;
+  if (!globalThis.confirm(t('chat.deleteConfirm', { title: item.title }))) {
+    return;
+  }
+
+  deletingId.value = item.id;
+  try {
+    await hubApi.deleteChatSession(store.token, item.id);
+    if (activeId.value === item.id) {
+      activeId.value = '';
+      session.value = null;
+      messages.value = [];
+    }
+    sessions.value = sessions.value.filter((entry) => entry.id !== item.id);
+    await loadSessions();
+    pushToast(t('chat.deleted'), 'success');
+  } catch (cause) {
+    pushToast(describe(cause), 'error');
+  } finally {
+    deletingId.value = '';
+  }
+}
+
 function openForm(): void {
   formOpen.value = true;
   const current = envOptions.value.find((agent) => agent.env === form.env);
@@ -511,7 +537,9 @@ onBeforeUnmount(stopPolling);
 
     <div class="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
       <!-- Session list -->
-      <aside class="space-y-2">
+      <aside
+        class="flex max-h-[45dvh] flex-col gap-2 lg:h-[clamp(420px,calc(100dvh_-_14rem),760px)] lg:max-h-none"
+      >
         <div class="flex items-center justify-between px-0.5 text-[11px] text-on-surface-variant">
           <span>{{ t('chat.all') }}</span>
           <button
@@ -524,46 +552,64 @@ onBeforeUnmount(stopPolling);
           </button>
         </div>
 
-        <button
-          v-for="item in sessions"
-          :key="item.id"
-          type="button"
-          class="w-full rounded-xl border px-3 py-2.5 text-left transition"
-          :class="
-            item.id === activeId
-              ? 'border-primary/40 bg-primary/5'
-              : 'border-outline-variant/35 bg-surface-container-low hover:bg-surface-container'
-          "
-          @click="openSession(item.id)"
-        >
-          <div class="flex items-center justify-between gap-2">
-            <span class="truncate text-[12px] font-semibold text-on-surface">
-              {{ item.title }}
-            </span>
-            <span
-              v-if="item.status === 'CLOSED'"
-              class="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[9px] text-on-surface-variant"
+        <div class="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-0.5">
+          <div v-for="item in sessions" :key="item.id" class="group relative">
+            <button
+              type="button"
+              class="w-full rounded-xl border py-2.5 pl-3 pr-8 text-left transition"
+              :class="
+                item.id === activeId
+                  ? 'border-primary/40 bg-primary/5'
+                  : 'border-outline-variant/35 bg-surface-container-low hover:bg-surface-container'
+              "
+              @click="openSession(item.id)"
             >
-              {{ t('chat.closedBadge') }}
-            </span>
-          </div>
-          <div class="mt-1 flex items-center gap-1.5 text-[10px] text-on-surface-variant">
-            <span class="rounded bg-surface-container-high px-1 py-0.5 font-mono">
-              {{ item.env }}
-            </span>
-            <span v-if="item.projectName" class="truncate">{{ item.projectName }}</span>
-          </div>
-          <div class="mt-1 text-[10px] text-on-surface-variant/60">
-            {{ t('chat.messagesCount', { count: item.messageCount ?? 0 }) }} · {{ item.lastMessageAt ? relativeTime(item.lastMessageAt) : t('chat.justCreated') }}
-          </div>
-        </button>
+              <div class="flex items-center justify-between gap-2">
+                <span class="truncate text-[12px] font-semibold text-on-surface">
+                  {{ item.title }}
+                </span>
+                <span
+                  v-if="item.status === 'CLOSED'"
+                  class="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[9px] text-on-surface-variant"
+                >
+                  {{ t('chat.closedBadge') }}
+                </span>
+              </div>
+              <div class="mt-1 flex items-center gap-1.5 text-[10px] text-on-surface-variant">
+                <span class="rounded bg-surface-container-high px-1 py-0.5 font-mono">
+                  {{ item.env }}
+                </span>
+                <span v-if="item.projectName" class="truncate">{{ item.projectName }}</span>
+              </div>
+              <div class="mt-1 text-[10px] text-on-surface-variant/60">
+                {{ t('chat.messagesCount', { count: item.messageCount ?? 0 }) }} · {{ item.lastMessageAt ? relativeTime(item.lastMessageAt) : t('chat.justCreated') }}
+              </div>
+            </button>
 
-        <p
-          v-if="listLoaded && !sessions.length"
-          class="rounded-xl border border-dashed border-outline-variant bg-surface-container-low/60 px-3 py-6 text-center text-[12px] text-on-surface-variant"
-        >
-          {{ t('chat.emptyList') }}
-        </p>
+            <button
+              type="button"
+              class="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-md text-on-surface-variant/70 opacity-100 transition hover:bg-error-container hover:text-on-error-container focus-visible:opacity-100 disabled:opacity-40 sm:opacity-0 sm:group-hover:opacity-100"
+              :aria-label="t('chat.delete')"
+              :title="t('chat.delete')"
+              :disabled="deletingId === item.id"
+              @click.stop="deleteSession(item)"
+            >
+              <RefreshCw
+                v-if="deletingId === item.id"
+                :size="13"
+                class="animate-spin"
+              />
+              <Trash2 v-else :size="13" />
+            </button>
+          </div>
+
+          <p
+            v-if="listLoaded && !sessions.length"
+            class="rounded-xl border border-dashed border-outline-variant bg-surface-container-low/60 px-3 py-6 text-center text-[12px] text-on-surface-variant"
+          >
+            {{ t('chat.emptyList') }}
+          </p>
+        </div>
       </aside>
 
       <!-- Chat -->
@@ -674,7 +720,7 @@ onBeforeUnmount(stopPolling);
             <textarea
               v-model="draft"
               rows="2"
-              maxlength="8000"
+              maxlength="32000"
               :disabled="activeSession.status !== 'ACTIVE' || sending"
               :placeholder="t('chat.inputPlaceholder')"
               class="min-h-[52px] flex-1 resize-none rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-3 py-2 text-[13px] leading-5 text-on-surface outline-none focus:border-primary disabled:opacity-60"

@@ -21,6 +21,7 @@ import {
   createAgentSchema,
   createChatSessionSchema,
   createTaskSchema,
+  createTerminalSchema,
   createTicketSchema,
   extendTicketSchema,
   formatTicketId,
@@ -34,6 +35,9 @@ import {
   listRuleCandidatesQuerySchema,
   listTaskLogsQuerySchema,
   listTasksQuerySchema,
+  listTerminalAuditQuerySchema,
+  listTerminalEventsQuerySchema,
+  listTerminalsQuerySchema,
   listTicketsQuerySchema,
   listWorkspaceProjectsQuerySchema,
   nextChatMessageQuerySchema,
@@ -44,6 +48,8 @@ import {
   resumeQuerySchema,
   sendChatMessageSchema,
   syncQuerySchema,
+  terminalAuditExportQuerySchema,
+  terminalCloseSchema,
   ticketIdSchema,
   updateAgentSchema,
   updateRulesSchema,
@@ -85,6 +91,19 @@ import {
   createRuleDistiller,
   type RuleDistiller,
 } from './rule-distiller.js';
+import {
+  attachRealtimeGateway,
+  type RealtimeGateway,
+} from './realtime/gateway.js';
+import {
+  attachDeviceRouter,
+  type DeviceRouter,
+} from './realtime/device-router.js';
+import {
+  createTerminalManager,
+  type TerminalManager,
+} from './realtime/terminal-manager.js';
+import { buildRealtimeTicket } from './realtime/ticket.js';
 import { RulesStore } from './rules-store.js';
 
 declare module 'fastify' {
@@ -184,6 +203,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const syncBus = new SyncEventBus();
   let syncTicker: ReturnType<typeof setInterval> | null = null;
   let syncFingerprint = '';
+  let syncBroadcast: ((rev: number) => void) | null = null;
 
   const refreshSyncFingerprint = (): void => {
     let next: string;
@@ -204,7 +224,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     if (next === syncFingerprint) return;
 
     syncFingerprint = next;
-    syncBus.bump();
+    syncBroadcast?.(syncBus.bump());
   };
 
   const ensureSyncTicker = (): void => {
@@ -214,11 +234,18 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   };
 
   const stopSyncTickerIfIdle = (): void => {
+    // With the realtime gateway enabled the ticker also feeds WebSocket
+    // dashboards, so it must stay alive even when no HTTP long poll is held.
+    if (config.realtimeEnabled) return;
     if (syncTicker !== null && syncBus.waiters === 0) {
       clearInterval(syncTicker);
       syncTicker = null;
     }
   };
+
+  // Establish the baseline before the first mutation so a ticket created
+  // between build and the first ticker tick still produces a change frame.
+  refreshSyncFingerprint();
 
   const syncSnapshot = (): SyncState => ({
     envs: repo.listHeartbeats(),
@@ -238,6 +265,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const notifiers = options.notifiers ?? createNotifiers(config.notifications, app.log);
   let plugins: HubPlugin[] = [];
   let sweeper: ReturnType<typeof setInterval> | null = null;
+  let realtime: RealtimeGateway | null = null;
+  let terminals: TerminalManager | null = null;
+  let deviceRouter: DeviceRouter | null = null;
   let closing = false;
 
   app.decorate('repo', repo);
@@ -258,6 +288,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     }
     // Release held long polls so a restart does not wait for their timeout.
     syncBus.bump();
+    deviceRouter?.close();
+    terminals?.closeAll();
+    realtime?.close();
     await closePlugins(plugins, app.log);
     sqlite.close();
   });
@@ -1266,6 +1299,28 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return { session: closed };
       });
 
+      // Permanently removes the session, its transcript and streamed output.
+      api.delete('/sessions/:id', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const session = repo.getChatSession(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+        const running = repo
+          .listChatMessages(Number(session.id))
+          .some((message) => message.status === 'RUNNING');
+        if (running) {
+          throw new ConflictError(
+            `session ${formatTicketId(id)} has a running message`,
+            'SESSION_BUSY',
+          );
+        }
+        repo.deleteChatSession(Number(session.id));
+        sessionBus.publish(session);
+        return { deleted: true, id: session.id };
+      });
+
       api.post('/sessions/:id/messages/:messageId/events', async (request, reply) => {
         const { id, messageId } = chatMessageParamsSchema.parse(request.params);
         const session = repo.getChatSession(parseTicketId(id));
@@ -1437,6 +1492,148 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       api.get('/status', async (request) => {
         requireAdmin(request);
         return { envs: repo.listHeartbeats() };
+      });
+
+      // Browsers cannot set an Authorization header on a WebSocket handshake.
+      // The dashboard exchanges its admin token for this short-lived ticket.
+      api.post('/realtime/ticket', async (request) => {
+        requireAdmin(request);
+        if (!config.realtimeEnabled) {
+          throw new ConflictError(
+            'realtime gateway is disabled',
+            'REALTIME_DISABLED',
+          );
+        }
+        const expiresAt = Date.now() + config.realtimeTicketTtlMs;
+        return {
+          ticket: buildRealtimeTicket(expiresAt, config.approvalLinkSecret),
+          expiresAt,
+        };
+      });
+
+      api.get('/realtime/status', async (request) => {
+        requireAdmin(request);
+        return {
+          enabled: config.realtimeEnabled,
+          devices: realtime?.deviceCount() ?? 0,
+          dashboards: realtime?.dashboardCount() ?? 0,
+          bridges: realtime?.bridgeCount() ?? 0,
+          heartbeatMs: config.realtimeHeartbeatMs,
+        };
+      });
+
+      // -----------------------------------------------------------------
+      // Interactive PTY terminals
+      // -----------------------------------------------------------------
+
+      const requireTerminals = (): TerminalManager => {
+        if (!terminals) {
+          throw new ConflictError(
+            'terminal sessions are disabled',
+            'TERMINAL_DISABLED',
+          );
+        }
+        return terminals;
+      };
+
+      api.post('/terminals', async (request, reply) => {
+        requireAdmin(request);
+        const input = createTerminalSchema.parse(request.body);
+        const session = requireTerminals().create(input);
+        return reply.code(201).send({ session });
+      });
+
+      api.get('/terminals', async (request) => {
+        requireAdmin(request);
+        const query = listTerminalsQuerySchema.parse(request.query);
+        return requireTerminals().list(query);
+      });
+
+      api.get('/terminals/stats', async (request) => {
+        requireAdmin(request);
+        return requireTerminals().stats();
+      });
+
+      api.get('/terminals/:id', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const session = requireTerminals().get(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`terminal ${formatTicketId(id)} not found`);
+        }
+        return { session };
+      });
+
+      api.post('/terminals/:id/close', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const input = terminalCloseSchema.parse(request.body ?? {});
+        return { session: requireTerminals().close(parseTicketId(id), input.reason) };
+      });
+
+      api.get('/terminals/:id/events', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const query = listTerminalEventsQuerySchema.parse(request.query);
+        return requireTerminals().events(parseTicketId(id), query);
+      });
+
+      api.get('/terminals/:id/audit', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const query = listTerminalAuditQuerySchema.parse(request.query);
+        return requireTerminals().audit(parseTicketId(id), query);
+      });
+
+      api.get('/terminals/:id/audit/export', async (request, reply) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const terminalId = parseTicketId(id);
+        const session = repo.getTerminalSession(terminalId);
+        if (!session) {
+          throw new NotFoundError(`terminal ${formatTicketId(id)} not found`);
+        }
+        const { format } = terminalAuditExportQuerySchema.parse(request.query);
+        const { entries } = repo.listTerminalAudit(terminalId, {
+          after: 0,
+          limit: 5_000,
+        });
+
+        if (format === 'csv') {
+          const escape = (value: string | undefined): string => {
+            const raw = value ?? '';
+            // Prevent spreadsheet formula injection in exported CSVs.
+            const safe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+            return `"${safe.replace(/"/g, '""')}"`;
+          };
+          const rows = [
+            ['id', 'createdAt', 'kind', 'viewerId', 'data'].join(','),
+            ...entries.map((entry) =>
+              [
+                escape(entry.id),
+                escape(String(entry.createdAt)),
+                escape(entry.kind),
+                escape(entry.viewerId),
+                escape(entry.data),
+              ].join(','),
+            ),
+          ];
+          return reply
+            .type('text/csv; charset=utf-8')
+            .header(
+              'content-disposition',
+              `attachment; filename="terminal-${terminalId}-audit.csv"`,
+            )
+            .send(rows.join('\n'));
+        }
+
+        return reply
+          .type('application/x-ndjson; charset=utf-8')
+          .header(
+            'content-disposition',
+            `attachment; filename="terminal-${terminalId}-audit.jsonl"`,
+          )
+          .send(entries.map((entry) => JSON.stringify(entry)).join('\n'));
       });
 
       // Dashboard long poll: returns the whole snapshot once, then stays
@@ -1657,6 +1854,36 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     },
     { prefix: '/api' },
   );
+
+  // -----------------------------------------------------------------
+  // Realtime gateway (device reverse connections + dashboard presence)
+  // -----------------------------------------------------------------
+  realtime = attachRealtimeGateway({
+    app,
+    config,
+    repo,
+    getSyncState: syncSnapshot,
+    getRevision: () => syncBus.revision,
+  });
+  if (realtime) {
+    syncBroadcast = (rev) => realtime?.broadcast({ type: 'sync.changed', rev });
+    ensureSyncTicker();
+    terminals = createTerminalManager({
+      config,
+      repo,
+      gateway: realtime,
+      log: app.log,
+    });
+    deviceRouter = attachDeviceRouter({
+      config,
+      repo,
+      gateway: realtime,
+      ticketBus: bus,
+      taskBus,
+      sessionBus,
+      onChanged: refreshSyncFingerprint,
+    });
+  }
 
   // -----------------------------------------------------------------
   // Operator plugins (optional): loaded after routes are registered.

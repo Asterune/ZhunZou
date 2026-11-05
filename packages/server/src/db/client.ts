@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS agents (
   version TEXT,
   host TEXT,
   os TEXT,
+  protocol_version INTEGER,
+  capabilities TEXT,
+  device_stats TEXT,
+  transport TEXT,
+  connected_at INTEGER,
+  terminal_enabled INTEGER NOT NULL DEFAULT 1,
   token_hash TEXT,
   token_prefix TEXT,
   token_created_at INTEGER,
@@ -136,6 +142,42 @@ CREATE TABLE IF NOT EXISTS chat_events (
 
 CREATE INDEX IF NOT EXISTS idx_chat_events_session ON chat_events(session_id, id);
 
+CREATE TABLE IF NOT EXISTS terminal_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  env TEXT NOT NULL,
+  project_name TEXT,
+  title TEXT NOT NULL,
+  shell TEXT,
+  cwd TEXT,
+  cols INTEGER NOT NULL,
+  rows INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_active_at INTEGER NOT NULL,
+  closed_at INTEGER,
+  exit_code INTEGER,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_terminal_sessions_env ON terminal_sessions(env);
+CREATE INDEX IF NOT EXISTS idx_terminal_sessions_status ON terminal_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_terminal_sessions_updated ON terminal_sessions(updated_at);
+
+CREATE TABLE IF NOT EXISTS terminal_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  env TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  viewer_id TEXT,
+  data TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_terminal_audit_session ON terminal_audit(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_terminal_audit_env ON terminal_audit(env);
+CREATE INDEX IF NOT EXISTS idx_terminal_audit_created ON terminal_audit(created_at);
+
 CREATE TABLE IF NOT EXISTS exchanges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   env TEXT NOT NULL,
@@ -212,6 +254,17 @@ export function createDatabase(dbPath: string): {
   ensureColumn(sqlite, 'tickets', 'expires_at', 'INTEGER');
   ensureColumn(sqlite, 'agent_tasks', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(sqlite, 'agent_tasks', 'lease_at', 'INTEGER');
+  ensureColumn(sqlite, 'agents', 'protocol_version', 'INTEGER');
+  ensureColumn(sqlite, 'agents', 'capabilities', 'TEXT');
+  ensureColumn(sqlite, 'agents', 'device_stats', 'TEXT');
+  ensureColumn(sqlite, 'agents', 'transport', 'TEXT');
+  ensureColumn(sqlite, 'agents', 'connected_at', 'INTEGER');
+  ensureColumn(
+    sqlite,
+    'agents',
+    'terminal_enabled',
+    'INTEGER NOT NULL DEFAULT 1',
+  );
 
   const db = drizzle(sqlite, { schema });
   return { sqlite, db };

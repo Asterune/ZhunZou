@@ -79,6 +79,8 @@ export interface HubApi {
     input: Omit<ReportExchangeInput, 'env'>,
   ): Promise<Exchange>;
   resume(sinceMs?: number): Promise<ResumeResponse>;
+  /** Present on clients that hold a realtime socket. */
+  close?(): void;
 }
 
 const REQUEST_GRACE_MS = 10_000;

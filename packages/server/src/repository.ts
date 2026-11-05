@@ -27,8 +27,11 @@ import type {
   CreateAgentInput,
   CreateChatSessionInput,
   CreateTaskInput,
+  CreateTerminalInput,
   CreateTicketInput,
   DecisionTicket,
+  DeviceConnectionInput,
+  DeviceStats,
   EnvHeartbeat,
   Exchange,
   HeartbeatInput,
@@ -37,8 +40,10 @@ import type {
   ListChatSessionsQuery,
   ListExchangesQuery,
   ListRuleCandidatesQuery,
+  ListTerminalAuditQuery,
   ListTaskLogsQuery,
   ListTasksQuery,
+  ListTerminalsQuery,
   ListTicketsQuery,
   ListWorkspaceProjectsQuery,
   ReportExchangeInput,
@@ -47,6 +52,11 @@ import type {
   SendChatMessageInput,
   TaskLog,
   TaskLogListResponse,
+  TerminalAuditEntry,
+  TerminalAuditKind,
+  TerminalAuditListResponse,
+  TerminalSession,
+  TerminalSessionStatus,
   TicketStatus,
   UpdateAgentInput,
   WorkspaceProject,
@@ -64,6 +74,8 @@ import {
   exchanges,
   ruleCandidates,
   taskLogs,
+  terminalAudit,
+  terminalSessions,
   tickets,
   workspaceProjects,
   type AgentRow,
@@ -75,6 +87,8 @@ import {
   type HeartbeatRow,
   type RuleCandidateRow,
   type TaskLogRow,
+  type TerminalAuditRow,
+  type TerminalSessionRow,
   type TicketRow,
   type WorkspaceProjectRow,
 } from './db/schema.js';
@@ -134,7 +148,11 @@ function toAgent(
   heartbeat: HeartbeatRow | undefined,
   now: number,
 ): Agent {
-  const lastSeenAt = heartbeat?.lastSeenAt ?? row.lastSeenAt ?? undefined;
+  const heartbeatSeenAt = heartbeat?.lastSeenAt;
+  const lastSeenAt =
+    Math.max(row.lastSeenAt ?? 0, heartbeatSeenAt ?? 0) || undefined;
+  const wsConnected =
+    row.transport === 'ws' ? row.connectedAt !== null : undefined;
 
   return {
     env: row.env,
@@ -144,10 +162,18 @@ function toAgent(
     ...(row.version ? { version: row.version } : {}),
     ...(row.host ? { host: row.host } : {}),
     ...(row.os ? { os: row.os } : {}),
+    ...(row.protocolVersion ? { protocolVersion: row.protocolVersion } : {}),
+    ...(row.capabilities ? { capabilities: row.capabilities } : {}),
+    ...(row.deviceStats ? { deviceStats: row.deviceStats } : {}),
+    ...(row.transport ? { transport: row.transport } : {}),
+    ...(wsConnected !== undefined ? { connected: wsConnected } : {}),
+    terminalEnabled: row.terminalEnabled !== 0,
+    ...(row.connectedAt ? { connectedAt: row.connectedAt } : {}),
     ...(row.tokenPrefix ? { tokenPrefix: row.tokenPrefix } : {}),
     hasToken: Boolean(row.tokenHash),
     online:
       row.status === 'active' &&
+      wsConnected !== false &&
       lastSeenAt !== undefined &&
       now - lastSeenAt <= HEARTBEAT_ONLINE_WINDOW_MS,
     ...(lastSeenAt !== undefined ? { lastSeenAt } : {}),
@@ -222,6 +248,38 @@ function toChatEvent(row: ChatEventRow): ChatEvent {
     messageId: String(row.messageId),
     stream: row.stream,
     chunk: row.chunk,
+    createdAt: row.createdAt,
+  };
+}
+
+function toTerminalSession(row: TerminalSessionRow): TerminalSession {
+  return {
+    id: String(row.id),
+    env: row.env,
+    ...(row.projectName ? { projectName: row.projectName } : {}),
+    title: row.title,
+    ...(row.shell ? { shell: row.shell } : {}),
+    ...(row.cwd ? { cwd: row.cwd } : {}),
+    cols: row.cols,
+    rows: row.rows,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    lastActiveAt: row.lastActiveAt,
+    ...(row.closedAt !== null ? { closedAt: row.closedAt } : {}),
+    ...(row.exitCode !== null ? { exitCode: row.exitCode } : {}),
+    ...(row.error ? { error: row.error } : {}),
+  };
+}
+
+function toTerminalAudit(row: TerminalAuditRow): TerminalAuditEntry {
+  return {
+    id: String(row.id),
+    sessionId: String(row.sessionId),
+    env: row.env,
+    kind: row.kind,
+    ...(row.viewerId ? { viewerId: row.viewerId } : {}),
+    ...(row.data ? { data: row.data } : {}),
     createdAt: row.createdAt,
   };
 }
@@ -353,6 +411,16 @@ export interface TicketStore {
   ): Agent | null;
   clearAgentToken(env: string, now?: number): Agent | null;
   findAgentByTokenHash(tokenHash: string): Agent | null;
+  /** Persist the hello frame from a device daemon and mark it connected. */
+  recordDeviceConnection(input: DeviceConnectionInput, now?: number): Agent;
+  /** Persist a heartbeat snapshot without changing capabilities. */
+  recordDeviceHeartbeat(
+    env: string,
+    stats: DeviceStats | undefined,
+    now?: number,
+  ): Agent | null;
+  /** Mark the WS peer as gone without deleting its capability inventory. */
+  markDeviceDisconnected(env: string, now?: number): Agent | null;
   recordAgentPresence(
     env: string,
     meta: AgentMeta | undefined,
@@ -417,6 +485,7 @@ export interface TicketStore {
     query: ListChatEventsQuery,
   ): ChatEventListResponse;
   closeChatSession(sessionId: number, now?: number): ChatSession | null;
+  deleteChatSession(sessionId: number): boolean;
   failStaleChatMessages(
     onlineEnvs: Set<string>,
     cutoff: number,
@@ -427,6 +496,48 @@ export interface TicketStore {
     messageId: number,
     now?: number,
   ): ChatMessage | null;
+
+  /* Terminal sessions */
+  createTerminalSession(
+    input: CreateTerminalInput & { title: string },
+    now?: number,
+  ): TerminalSession;
+  getTerminalSession(id: number, now?: number): TerminalSession | null;
+  listTerminalSessions(
+    query: ListTerminalsQuery,
+    now?: number,
+  ): { sessions: TerminalSession[]; total: number };
+  listActiveTerminalSessions(
+    env?: string,
+    now?: number,
+  ): TerminalSession[];
+  countActiveTerminalSessions(env?: string): number;
+  updateTerminalSession(
+    id: number,
+    patch: {
+      status?: TerminalSessionStatus;
+      lastActiveAt?: number;
+      closedAt?: number | null;
+      exitCode?: number | null;
+      error?: string | null;
+    },
+    now?: number,
+  ): TerminalSession | null;
+  appendTerminalAudit(
+    input: {
+      sessionId: number;
+      env: string;
+      kind: TerminalAuditKind;
+      viewerId?: string;
+      data?: string;
+    },
+    now?: number,
+  ): TerminalAuditEntry;
+  listTerminalAudit(
+    sessionId: number,
+    query: ListTerminalAuditQuery,
+  ): TerminalAuditListResponse;
+
   /** Record the question/conclusion summary of one IDE conversation turn. */
   createExchange(
     env: string,
@@ -834,6 +945,9 @@ export class TicketRepository implements TicketStore {
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.kind !== undefined ? { kind: input.kind } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.terminalEnabled !== undefined
+          ? { terminalEnabled: input.terminalEnabled ? 1 : 0 }
+          : {}),
         updatedAt: now,
       })
       .where(eq(agents.env, env))
@@ -894,6 +1008,122 @@ export class TicketRepository implements TicketStore {
     return row ? toAgent(row, undefined, Date.now()) : null;
   }
 
+  recordDeviceConnection(
+    input: DeviceConnectionInput,
+    now = Date.now(),
+  ): Agent {
+    const os = `${input.capabilities.os}-${input.capabilities.arch}`;
+
+    this.db
+      .insert(agents)
+      .values({
+        env: input.env,
+        name: input.env,
+        kind: 'other',
+        status: 'active',
+        host: input.capabilities.hostname,
+        os,
+        protocolVersion: input.protocolVersion,
+        capabilities: input.capabilities,
+        deviceStats: input.stats ?? null,
+        transport: input.transport,
+        connectedAt: now,
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: agents.env,
+        set: {
+          host: input.capabilities.hostname,
+          os,
+          protocolVersion: input.protocolVersion,
+          capabilities: input.capabilities,
+          ...(input.stats ? { deviceStats: input.stats } : {}),
+          transport: input.transport,
+          connectedAt: now,
+          lastSeenAt: now,
+          updatedAt: now,
+        },
+      })
+      .run();
+
+    // Make the device visible in the top status strip as well as the agent
+    // registry. If an HTTP heartbeat already owns the status, only refresh the
+    // timestamp so a running task is not overwritten with "Idle".
+    this.db
+      .insert(envHeartbeats)
+      .values({
+        env: input.env,
+        status: 'Idle',
+        projectName: input.projectName ?? null,
+        currentTask: '反向长连已连接',
+        note: null,
+        lastSeenAt: now,
+      })
+      .onConflictDoUpdate({
+        target: envHeartbeats.env,
+        set: {
+          lastSeenAt: now,
+          ...(input.projectName ? { projectName: input.projectName } : {}),
+        },
+      })
+      .run();
+
+    if (input.projectName) {
+      this.bindWorkspaceProject(input.env, input.projectName, now);
+    }
+
+    return this.getAgent(input.env, now)!;
+  }
+
+  recordDeviceHeartbeat(
+    env: string,
+    stats: DeviceStats | undefined,
+    now = Date.now(),
+  ): Agent | null {
+    const row = this.db
+      .update(agents)
+      .set({
+        ...(stats ? { deviceStats: stats } : {}),
+        lastSeenAt: now,
+        updatedAt: now,
+      })
+      .where(eq(agents.env, env))
+      .returning()
+      .get();
+
+    this.db
+      .update(envHeartbeats)
+      .set({ lastSeenAt: now })
+      .where(eq(envHeartbeats.env, env))
+      .run();
+
+    return row ? this.getAgent(env, now) : null;
+  }
+
+  markDeviceDisconnected(env: string, now = Date.now()): Agent | null {
+    const row = this.db
+      .update(agents)
+      .set({
+        connectedAt: null,
+        updatedAt: now,
+      })
+      .where(eq(agents.env, env))
+      .returning()
+      .get();
+
+    // The WS connection is the presence signal; do not wait 90s for the
+    // heartbeat window before the status strip goes offline.
+    this.db
+      .update(envHeartbeats)
+      .set({ lastSeenAt: now - HEARTBEAT_ONLINE_WINDOW_MS - 1 })
+      .where(eq(envHeartbeats.env, env))
+      .run();
+
+    return row ? this.getAgent(env, now) : null;
+  }
+
   recordAgentPresence(
     env: string,
     meta: AgentMeta | undefined,
@@ -909,6 +1139,8 @@ export class TicketRepository implements TicketStore {
         ...(meta?.version ? { version: meta.version } : {}),
         ...(meta?.host ? { host: meta.host } : {}),
         ...(meta?.os ? { os: meta.os } : {}),
+        transport: 'http',
+        connectedAt: now,
         lastSeenAt: now,
         createdAt: now,
         updatedAt: now,
@@ -923,6 +1155,8 @@ export class TicketRepository implements TicketStore {
           ...(meta?.version ? { version: meta.version } : {}),
           ...(meta?.host ? { host: meta.host } : {}),
           ...(meta?.os ? { os: meta.os } : {}),
+          transport: 'http',
+          connectedAt: now,
           lastSeenAt: now,
           updatedAt: now,
         },
@@ -1327,6 +1561,22 @@ export class TicketRepository implements TicketStore {
   }
 
   /**
+   * Hard-delete a session together with its transcript and streamed output.
+   * The tables have no foreign keys, so children are removed first.
+   */
+  deleteChatSession(sessionId: number): boolean {
+    this.db.delete(chatEvents).where(eq(chatEvents.sessionId, sessionId)).run();
+    this.db
+      .delete(chatMessages)
+      .where(eq(chatMessages.sessionId, sessionId))
+      .run();
+    return (
+      this.db.delete(chatSessions).where(eq(chatSessions.id, sessionId)).run()
+        .changes > 0
+    );
+  }
+
+  /**
    * A runner that died mid-turn leaves the message RUNNING forever. Only fail
    * messages whose env stopped sending heartbeats, so a slow model on a live
    * runner is never interrupted.
@@ -1392,6 +1642,205 @@ export class TicketRepository implements TicketStore {
       .where(eq(chatSessions.id, sessionId))
       .run();
     return toChatMessage(row);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Terminal sessions                                                */
+  /* ---------------------------------------------------------------- */
+
+  createTerminalSession(
+    input: CreateTerminalInput & { title: string },
+    now = Date.now(),
+  ): TerminalSession {
+    const row = this.db
+      .insert(terminalSessions)
+      .values({
+        env: input.env,
+        projectName: input.projectName ?? null,
+        title: input.title,
+        shell: input.shell ?? null,
+        cwd: input.cwd ?? null,
+        cols: input.cols,
+        rows: input.rows,
+        status: 'STARTING',
+        createdAt: now,
+        updatedAt: now,
+        lastActiveAt: now,
+      })
+      .returning()
+      .get();
+
+    return toTerminalSession(row);
+  }
+
+  getTerminalSession(id: number, now = Date.now()): TerminalSession | null {
+    const row = this.db
+      .select()
+      .from(terminalSessions)
+      .where(eq(terminalSessions.id, id))
+      .get();
+    void now;
+    return row ? toTerminalSession(row) : null;
+  }
+
+  listTerminalSessions(
+    query: ListTerminalsQuery,
+    now = Date.now(),
+  ): { sessions: TerminalSession[]; total: number } {
+    void now;
+    const where = and(
+      query.env ? eq(terminalSessions.env, query.env) : undefined,
+      query.status ? eq(terminalSessions.status, query.status) : undefined,
+    );
+
+    const rows = this.db
+      .select()
+      .from(terminalSessions)
+      .where(where)
+      .orderBy(desc(terminalSessions.updatedAt))
+      .limit(query.limit)
+      .all();
+
+    const total =
+      this.db
+        .select({ value: count() })
+        .from(terminalSessions)
+        .where(where)
+        .get()?.value ?? 0;
+
+    return {
+      sessions: rows.map(toTerminalSession),
+      total: Number(total),
+    };
+  }
+
+  listActiveTerminalSessions(
+    env?: string,
+    now = Date.now(),
+  ): TerminalSession[] {
+    void now;
+    const activeStatuses: TerminalSessionStatus[] = [
+      'STARTING',
+      'ACTIVE',
+      'DETACHED',
+    ];
+    const rows = this.db
+      .select()
+      .from(terminalSessions)
+      .where(
+        and(
+          inArray(terminalSessions.status, activeStatuses),
+          env ? eq(terminalSessions.env, env) : undefined,
+        ),
+      )
+      .orderBy(desc(terminalSessions.updatedAt))
+      .all();
+
+    return rows.map(toTerminalSession);
+  }
+
+  countActiveTerminalSessions(env?: string): number {
+    const activeStatuses: TerminalSessionStatus[] = [
+      'STARTING',
+      'ACTIVE',
+      'DETACHED',
+    ];
+    const row = this.db
+      .select({ value: count() })
+      .from(terminalSessions)
+      .where(
+        and(
+          inArray(terminalSessions.status, activeStatuses),
+          env ? eq(terminalSessions.env, env) : undefined,
+        ),
+      )
+      .get();
+
+    return Number(row?.value ?? 0);
+  }
+
+  updateTerminalSession(
+    id: number,
+    patch: {
+      status?: TerminalSessionStatus;
+      lastActiveAt?: number;
+      closedAt?: number | null;
+      exitCode?: number | null;
+      error?: string | null;
+    },
+    now = Date.now(),
+  ): TerminalSession | null {
+    const row = this.db
+      .update(terminalSessions)
+      .set({
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.lastActiveAt !== undefined
+          ? { lastActiveAt: patch.lastActiveAt }
+          : {}),
+        ...(patch.closedAt !== undefined ? { closedAt: patch.closedAt } : {}),
+        ...(patch.exitCode !== undefined ? { exitCode: patch.exitCode } : {}),
+        ...(patch.error !== undefined ? { error: patch.error } : {}),
+        updatedAt: now,
+      })
+      .where(eq(terminalSessions.id, id))
+      .returning()
+      .get();
+
+    return row ? toTerminalSession(row) : null;
+  }
+
+  appendTerminalAudit(
+    input: {
+      sessionId: number;
+      env: string;
+      kind: TerminalAuditKind;
+      viewerId?: string;
+      data?: string;
+    },
+    now = Date.now(),
+  ): TerminalAuditEntry {
+    const row = this.db
+      .insert(terminalAudit)
+      .values({
+        sessionId: input.sessionId,
+        env: input.env,
+        kind: input.kind,
+        viewerId: input.viewerId ?? null,
+        data: input.data ?? null,
+        createdAt: now,
+      })
+      .returning()
+      .get();
+
+    return toTerminalAudit(row);
+  }
+
+  listTerminalAudit(
+    sessionId: number,
+    query: ListTerminalAuditQuery,
+  ): TerminalAuditListResponse {
+    const rows = this.db
+      .select()
+      .from(terminalAudit)
+      .where(
+        and(
+          eq(terminalAudit.sessionId, sessionId),
+          gt(terminalAudit.id, query.after),
+        ),
+      )
+      .orderBy(asc(terminalAudit.id))
+      .limit(query.limit + 1)
+      .all();
+
+    const truncated = rows.length > query.limit;
+    const entries = rows.slice(0, query.limit).map(toTerminalAudit);
+    const last = entries.at(-1);
+
+    return {
+      entries,
+      nextAfter: last ? Number(last.id) : query.after,
+      truncated,
+    };
   }
 
   createExchange(

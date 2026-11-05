@@ -1,0 +1,41 @@
+{
+  "name": "@zhunzou/device",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Reverse-connection device daemon for Zhunzou: presence, capabilities, PTY sessions",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "zhunzou-device": "./bin/device.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "scripts"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "postinstall": "node scripts/fix-pty-permissions.mjs",
+    "start": "node bin/device.js"
+  },
+  "dependencies": {
+    "@zhunzou/shared": "workspace:*",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  }
+}

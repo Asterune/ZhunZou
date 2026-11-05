@@ -11,6 +11,7 @@ import type {
   CreateAgentInput,
   CreateChatSessionInput,
   CreateTaskInput,
+  CreateTerminalInput,
   DecisionTicket,
   EnvHeartbeat,
   ExchangeListResponse,
@@ -20,10 +21,16 @@ import type {
   RuleCandidateListResponse,
   RuleCandidateStatus,
   RulesResponse,
+  RealtimeTicketResponse,
   SyncResponse,
   TaskListResponse,
   TaskLogListResponse,
   TaskResponse,
+  TerminalAuditListResponse,
+  TerminalEventListResponse,
+  TerminalListResponse,
+  TerminalResponse,
+  TerminalStatsResponse,
   TicketListResponse,
   TicketResponse,
   UpdateAgentInput,
@@ -99,6 +106,40 @@ export interface HubApi {
   ): Promise<RuleCandidateActionResponse>;
   listTasks(token: string, limit?: number): Promise<TaskListResponse>;
   sync(token: string, after?: number, timeout?: number): Promise<SyncResponse>;
+  createRealtimeTicket(token: string): Promise<RealtimeTicketResponse>;
+  listTerminals(
+    token: string,
+    env?: string,
+    limit?: number,
+  ): Promise<TerminalListResponse>;
+  createTerminal(
+    token: string,
+    input: CreateTerminalInput,
+  ): Promise<TerminalResponse>;
+  getTerminal(token: string, terminalId: string): Promise<TerminalResponse>;
+  closeTerminal(
+    token: string,
+    terminalId: string,
+    reason?: string,
+  ): Promise<TerminalResponse>;
+  getTerminalEvents(
+    token: string,
+    terminalId: string,
+    after?: number,
+    limit?: number,
+  ): Promise<TerminalEventListResponse>;
+  getTerminalAudit(
+    token: string,
+    terminalId: string,
+    after?: number,
+    limit?: number,
+  ): Promise<TerminalAuditListResponse>;
+  getTerminalStats(token: string): Promise<TerminalStatsResponse>;
+  exportTerminalAudit(
+    token: string,
+    terminalId: string,
+    format?: 'jsonl' | 'csv',
+  ): Promise<string>;
   getTaskLogs(
     token: string,
     taskId: string,
@@ -124,6 +165,10 @@ export interface HubApi {
     token: string,
     sessionId: string,
   ): Promise<ChatSessionResponse>;
+  deleteChatSession(
+    token: string,
+    sessionId: string,
+  ): Promise<{ deleted: boolean; id: string }>;
   retryChatMessage(
     token: string,
     sessionId: string,
@@ -304,6 +349,70 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
         `/api/sync?after=${after}&timeout=${timeout}`,
       ),
 
+    createRealtimeTicket: (token) =>
+      request<RealtimeTicketResponse>(token, '/api/realtime/ticket', {
+        method: 'POST',
+      }),
+
+    listTerminals: (token, env, limit = 50) => {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (env) params.set('env', env);
+      return request<TerminalListResponse>(
+        token,
+        `/api/terminals?${params.toString()}`,
+      );
+    },
+
+    createTerminal: (token, input) =>
+      request<TerminalResponse>(token, '/api/terminals', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    getTerminal: (token, terminalId) =>
+      request<TerminalResponse>(token, `/api/terminals/${terminalId}`),
+
+    closeTerminal: (token, terminalId, reason) =>
+      request<TerminalResponse>(token, `/api/terminals/${terminalId}/close`, {
+        method: 'POST',
+        ...(reason
+          ? { body: JSON.stringify({ reason }) }
+          : {}),
+      }),
+
+    getTerminalEvents: (token, terminalId, after = 0, limit = 200) =>
+      request<TerminalEventListResponse>(
+        token,
+        `/api/terminals/${terminalId}/events?after=${after}&limit=${limit}`,
+      ),
+
+    getTerminalAudit: (token, terminalId, after = 0, limit = 100) =>
+      request<TerminalAuditListResponse>(
+        token,
+        `/api/terminals/${terminalId}/audit?after=${after}&limit=${limit}`,
+      ),
+
+    getTerminalStats: (token) =>
+      request<TerminalStatsResponse>(token, '/api/terminals/stats'),
+
+    exportTerminalAudit: async (token, terminalId, format = 'jsonl') => {
+      const response = await fetchImpl(
+        `/api/terminals/${terminalId}/audit/export?format=${format}`,
+        { headers: { authorization: `Bearer ${token}` } },
+      );
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as
+          | { error?: { code?: string; message?: string } }
+          | null;
+        throw new ApiError(
+          response.status,
+          body?.error?.code ?? `HTTP_${response.status}`,
+          body?.error?.message ?? t('api.requestFailed', { status: response.status }),
+        );
+      }
+      return response.text();
+    },
+
     getTaskLogs: (token, taskId, after = 0, limit = 200) =>
       request<TaskLogListResponse>(
         token,
@@ -339,6 +448,13 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
       request<ChatSessionResponse>(token, `/api/sessions/${sessionId}/close`, {
         method: 'POST',
       }),
+
+    deleteChatSession: (token, sessionId) =>
+      request<{ deleted: boolean; id: string }>(
+        token,
+        `/api/sessions/${sessionId}`,
+        { method: 'DELETE' },
+      ),
 
     retryChatMessage: (token, sessionId, messageId) =>
       request<ChatSessionResponse>(

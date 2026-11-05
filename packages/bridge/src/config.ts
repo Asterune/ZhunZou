@@ -6,6 +6,7 @@ import type { AgentKind } from '@zhunzou/shared';
 import { AGENT_KINDS } from '@zhunzou/shared';
 
 export type FallbackStrategy = 'cli' | 'mcp';
+export type TransportMode = 'auto' | 'ws' | 'http';
 
 export interface BridgeConfig {
   /** Base URL of the Zhunzou server, without a trailing slash. */
@@ -29,6 +30,11 @@ export interface BridgeConfig {
   heartbeatIntervalMs: number;
   /** Local client type shown in the dashboard's agent registry. */
   agentKind: AgentKind;
+  /**
+   * Realtime transport for claims/waits. `auto` tries `/ws/bridge` and falls
+   * back to the existing HTTP long polls; `http` disables WS entirely.
+   */
+  transport: TransportMode;
 }
 
 const DEFAULT_HUB_URL = 'http://127.0.0.1:8787';
@@ -44,6 +50,11 @@ function readInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readTransport(raw: string | undefined): TransportMode {
+  const value = (raw ?? '').trim().toLowerCase();
+  return value === 'ws' || value === 'http' ? value : 'auto';
 }
 
 function readAgentKind(raw: string | undefined): AgentKind {
@@ -123,5 +134,6 @@ export function loadBridgeConfig(
       300_000,
     ),
     agentKind: readAgentKind(env.ZHUNZOU_AGENT_KIND),
+    transport: readTransport(env.ZHUNZOU_TRANSPORT),
   };
 }

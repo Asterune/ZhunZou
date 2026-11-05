@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Server,
   ShieldOff,
+  SquareTerminal,
   Trash2,
   UserRoundCheck,
   UserRoundX,
@@ -107,6 +108,24 @@ function kindLabel(agent: Agent): string {
     : KIND_LABELS[agent.kind] ?? agent.kind;
 }
 
+function formatBytes(bytes: number | undefined): string {
+  if (!bytes) return '—';
+  const gib = bytes / 1024 ** 3;
+  return `${gib.toFixed(1)} GiB`;
+}
+
+function visibleTools(agent: Agent) {
+  return agent.capabilities?.tools.slice(0, 10) ?? [];
+}
+
+function extraToolCount(agent: Agent): number {
+  return Math.max(0, (agent.capabilities?.tools.length ?? 0) - 10);
+}
+
+function hasDeviceInfo(agent: Agent): boolean {
+  return Boolean(agent.capabilities || agent.deviceStats || agent.transport === 'ws');
+}
+
 function openRegister(): void {
   editingEnv.value = '';
   form.env = '';
@@ -153,6 +172,12 @@ async function submitForm(): Promise<void> {
 async function toggleStatus(agent: Agent): Promise<void> {
   await store.updateAgent(agent.env, {
     status: agent.status === 'active' ? 'disabled' : 'active',
+  });
+}
+
+async function toggleTerminal(agent: Agent): Promise<void> {
+  await store.updateAgent(agent.env, {
+    terminalEnabled: agent.terminalEnabled === false,
   });
 }
 
@@ -382,6 +407,60 @@ async function copyToken(): Promise<void> {
           </div>
         </dl>
 
+        <div
+          v-if="hasDeviceInfo(agent)"
+          class="mt-2 rounded-md border border-outline-variant/25 bg-surface-container-lowest px-2 py-1.5 text-[11px]"
+        >
+          <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span
+              class="rounded px-1.5 py-0.5 text-[10px] font-medium"
+              :class="
+                agent.transport === 'ws'
+                  ? 'bg-secondary/10 text-secondary'
+                  : 'bg-surface-container-high text-on-surface-variant'
+              "
+            >
+              {{ agent.transport === 'ws' ? t('agents.realtime') : t('agents.httpHeartbeat') }}
+            </span>
+            <span v-if="agent.deviceStats?.cpuCount" class="text-on-surface-variant">
+              {{ t('agents.cpu') }} {{ agent.deviceStats.cpuCount }}
+            </span>
+            <span v-if="agent.deviceStats?.load1 !== undefined" class="text-on-surface-variant">
+              {{ t('agents.load') }} {{ agent.deviceStats?.load1?.toFixed(2) }}
+            </span>
+            <span v-if="agent.deviceStats?.totalMemBytes" class="text-on-surface-variant">
+              {{ t('agents.memory') }} {{ formatBytes(agent.deviceStats.totalMemBytes) }}
+            </span>
+            <span
+              v-if="agent.capabilities?.pty"
+              class="text-on-surface-variant"
+              :class="agent.capabilities.pty.available ? 'text-secondary' : ''"
+            >
+              {{ agent.capabilities.pty.available ? t('agents.ptyReady') : t('agents.ptyMissing') }}
+            </span>
+          </div>
+          <div
+            v-if="visibleTools(agent).length"
+            class="mt-1 flex flex-wrap items-center gap-1"
+          >
+            <span class="text-on-surface-variant/60">{{ t('agents.tools') }}</span>
+            <span
+              v-for="tool in visibleTools(agent)"
+              :key="tool.name"
+              class="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[10px] text-on-surface-variant"
+              :title="tool.version || tool.path"
+            >
+              {{ tool.name }}
+            </span>
+            <span
+              v-if="extraToolCount(agent)"
+              class="text-[10px] text-on-surface-variant/60"
+            >
+              {{ t('agents.moreTools', { count: extraToolCount(agent) }) }}
+            </span>
+          </div>
+        </div>
+
         <p
           v-if="agent.currentTask"
           class="mt-2 truncate rounded-md bg-surface-container px-2 py-1 text-[11px] text-on-surface-variant"
@@ -440,6 +519,7 @@ async function copyToken(): Promise<void> {
         </div>
 
         <div class="mt-3 flex items-center justify-between gap-2">
+          <div class="flex items-center gap-1">
           <button
             type="button"
             class="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition disabled:opacity-50"
@@ -457,6 +537,21 @@ async function copyToken(): Promise<void> {
             />
             {{ agent.status === 'active' ? t('agents.disable') : t('agents.enable') }}
           </button>
+          <button
+            type="button"
+            class="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition disabled:opacity-50"
+            :class="
+              agent.terminalEnabled === false
+                ? 'text-secondary hover:bg-secondary/10'
+                : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface'
+            "
+            :disabled="store.agentActionEnv === agent.env"
+            @click="toggleTerminal(agent)"
+          >
+            <SquareTerminal :size="13" />
+            {{ agent.terminalEnabled === false ? t('agents.enableTerminal') : t('agents.disableTerminal') }}
+          </button>
+          </div>
           <button
             type="button"
             class="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-on-surface-variant transition hover:bg-error/10 hover:text-error disabled:opacity-50"

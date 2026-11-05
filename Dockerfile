@@ -16,6 +16,8 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
 COPY packages/bridge/package.json packages/bridge/
 COPY packages/web/package.json packages/web/
+COPY packages/device/package.json packages/device/
+COPY packages/device/scripts packages/device/scripts
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
@@ -31,6 +33,8 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
 COPY packages/bridge/package.json packages/bridge/
 COPY packages/web/package.json packages/web/
+COPY packages/device/package.json packages/device/
+COPY packages/device/scripts packages/device/scripts
 RUN pnpm install --prod --frozen-lockfile
 
 # ---------------------------------------------------------------------------

@@ -79,6 +79,7 @@ No polling loops, no lost context, and no need to keep the editor in front of yo
 | Interactive sessions | Chat with any project's agent from the hub; each turn resumes the CLI session (`--session` / `--resume`) |
 | Resume | `agent_hub_resume` restores pending decisions and active tasks after a restart |
 | Plugins | Lifecycle hooks for audit logs, IM bots, metrics, custom integrations |
+| Realtime dashboard | `/ws/realtime` pushes snapshots and change frames; the legacy `/api/sync` long poll stays as an automatic fallback |
 | PWA | Installable dashboard (manifest + icons + service worker): network-first shell, cached assets, offline fallback page, and an in-app update prompt (update now / later) |
 
 ## Architecture
@@ -175,6 +176,68 @@ pm2 start "zhunzou-bridge fleet" --name zhunzou-fleet && pm2 save
 
 The "接入端" page groups agents by host, so one card shows how many projects that machine hosts and how many are online.
 
+### Reverse connection: device daemon (Phase 1)
+
+The MCP bridge above is pull-based. To give the hub a persistent reverse
+connection (and the foundation for the upcoming PTY console), run the device
+daemon on each machine:
+
+```bash
+pnpm --filter @zhunzou/device build
+
+node packages/device/bin/device.js run \
+  --hub https://hub.example.com \
+  --token zz_xxx \
+  --env home-mac
+
+# Inspect what this machine reports (OS, load, CLI inventory, PTY support)
+node packages/device/bin/device.js capabilities
+```
+
+The daemon opens `wss://<hub>/ws/device`, sends a `hello` with OS/arch,
+CPU/memory/load and a local CLI inventory (`claude`, `cursor-agent`,
+`opencode`, `git`, `node`, ...), then heartbeats every 30 seconds. The
+dashboard's 接入端 page shows the realtime badge, CPU/load/memory and available
+tools. Set `REALTIME_ENABLED=false` to keep using only the legacy HTTP
+heartbeat path.
+
+`node-pty` is an optional dependency: presence-only devices still run without
+it, and `capabilities` reports `pty: unavailable` until the native module is
+installed.
+
+### Interactive terminals (PTY)
+
+The device daemon can also host real PTY shells (macOS forkpty, Windows
+ConPTY). Install the optional native module once on each device:
+
+```bash
+pnpm --filter @zhunzou/device add node-pty
+```
+
+Then start the daemon as usual. The dashboard's **终端 / Terminal** tab lists
+live sessions, opens an xterm.js view, and streams input/output over
+`/ws/terminal`. Each session is routed to the device that owns it:
+
+```text
+browser xterm  ──/ws/terminal──▶ hub ──/ws/device──▶ node-pty (ConPTY/forkpty)
+```
+
+Sessions survive a browser refresh (scrollback replay by seq) and a device
+WebSocket reconnect (`pty.attach`). Server restarts rehydrate session metadata
+and ask the device to reattach; if the device process is gone the session is
+marked `LOST`.
+
+Safety limits: `TERMINAL_ENABLED`, `TERMINAL_MAX_SESSIONS`,
+`TERMINAL_MAX_SESSIONS_PER_DEVICE`, `TERMINAL_MAX_VIEWERS`,
+`TERMINAL_IDLE_TIMEOUT_MS`, `TERMINAL_DETACH_TTL_MS`,
+`TERMINAL_SCROLLBACK_BYTES`, `TERMINAL_INPUT_BYTES_PER_SEC` and
+`TERMINAL_ALLOWED_ENVS`. Only one viewer holds the input lease at a time;
+other viewers can click **Take control**. Input, resize, signal, claim and
+close events are written to `terminal_audit`, exposed at
+`/api/terminals/:id/audit`, and downloadable as CSV / JSONL. Each device also
+has a **terminal enabled** toggle in the 接入端 page; disabling it returns
+`TERMINAL_FORBIDDEN` for new sessions.
+
 Or configure manually:
 
 ```bash
@@ -214,6 +277,7 @@ Environment variables:
 | `ZHUNZOU_WAIT_TIMEOUT_MS` | no | `40000` | Single long-poll window |
 | `ZHUNZOU_CLI_COMMAND` | no | `npx zhunzou-bridge` | Command shown in CLI fallback |
 | `ZHUNZOU_HEARTBEAT_INTERVAL_MS` | no | `30000` | Heartbeat interval |
+| `ZHUNZOU_TRANSPORT` | no | `auto` | `auto` / `ws` / `http` for task/ticket/chat claims. `auto` uses `/ws/bridge` and falls back to HTTP |
 
 Templates live in [`packages/bridge/templates`](./packages/bridge/templates).
 
@@ -241,6 +305,7 @@ All `/api/*` routes require `Authorization: Bearer <HUB_SECRET_TOKEN>`. `/health
 | `GET` | `/api/tasks/:id/logs` | Incremental log tail (`?after=&limit=`) |
 | `POST` | `/api/sessions` | Create a chat session |
 | `GET` | `/api/sessions` | List sessions |
+| `DELETE` | `/api/sessions/:id` | Delete a session with its transcript and output |
 | `POST` | `/api/sessions/:id/messages` | Send a user message |
 | `GET` | `/api/sessions/next?env=...` | Runner claims the next message |
 | `POST` | `/api/sessions/:id/messages/:messageId/events` | Append streamed output |
@@ -248,6 +313,16 @@ All `/api/*` routes require `Authorization: Bearer <HUB_SECRET_TOKEN>`. `/health
 | `POST` | `/api/sessions/:id/messages/:messageId/retry` | Requeue a failed turn |
 | `POST` | `/api/status/heartbeat` | Bridge heartbeat |
 | `GET` | `/api/status` | Online environments |
+| `POST` | `/api/realtime/ticket` | Exchange the admin token for a short-lived dashboard WebSocket ticket |
+| `GET` | `/api/realtime/status` | Realtime gateway status (devices / dashboards / bridges) |
+| `POST` | `/api/terminals` | Create a PTY terminal on an online device |
+| `GET` | `/api/terminals` | List terminal sessions (`env`, `status`, `limit`) |
+| `GET` | `/api/terminals/:id` | Get one terminal session |
+| `POST` | `/api/terminals/:id/close` | Close a terminal and terminate its shell |
+| `GET` | `/api/terminals/:id/events?after=` | Bounded scrollback replay |
+| `GET` | `/api/terminals/:id/audit?after=` | Terminal audit trail (input/claim/resize/signal/close) |
+| `GET` | `/api/terminals/:id/audit/export?format=csv` | Download the audit trail as CSV or JSONL |
+| `GET` | `/api/terminals/stats` | Terminal metrics (active/viewers/bytes) |
 | `GET` | `/api/resume?env=...` | Pending/recent tickets + active tasks |
 | `GET/PUT` | `/api/rules` | Read/update `GLOBAL_RULES.md` |
 | `GET` | `/api/rules/candidates` | Distilled rule candidates |
@@ -276,6 +351,19 @@ Copy `.env.example` to `.env`. Common variables:
 | `PUBLIC_BASE_URL` | empty | Origin used in signed approval links |
 | `APPROVAL_LINK_SECRET` | `HUB_SECRET_TOKEN` | HMAC key for approval links |
 | `APPROVAL_LINK_TTL_MS` | `1800000` | Approval link lifetime |
+| `REALTIME_ENABLED` | `true` | Enable the device/dashboard WebSocket gateway |
+| `REALTIME_TICKET_TTL_MS` | `60000` | Browser WebSocket ticket lifetime |
+| `REALTIME_HEARTBEAT_MS` | `30000` | Device heartbeat interval |
+| `REALTIME_HEARTBEAT_TIMEOUT_MS` | `90000` | Close a device socket after silence |
+| `TERMINAL_ENABLED` | `true` | Enable interactive PTY terminals |
+| `TERMINAL_MAX_SESSIONS` | `32` | Global active terminal cap |
+| `TERMINAL_MAX_SESSIONS_PER_DEVICE` | `4` | Per-device active terminal cap |
+| `TERMINAL_IDLE_TIMEOUT_MS` | `1800000` | Close an idle terminal |
+| `TERMINAL_DETACH_TTL_MS` | `300000` | Keep a detached session while the device reconnects |
+| `TERMINAL_SCROLLBACK_BYTES` | `1048576` | In-memory replay buffer per terminal |
+| `TERMINAL_MAX_VIEWERS` | `8` | Concurrent browser viewers per terminal |
+| `TERMINAL_INPUT_BYTES_PER_SEC` | `65536` | Per-terminal input rate limit |
+| `TERMINAL_ALLOWED_ENVS` | empty | Device env allowlist; empty = all |
 | `TASK_CLAIM_TIMEOUT_MS` | `1800000` | Requeue an offline `CLAIMED` task |
 | `TASK_HARD_TIMEOUT_MS` | `21600000` | Fail a `CLAIMED` task regardless of heartbeat |
 | `TASK_MAX_ATTEMPTS` | `3` | Max claims before failing |
@@ -291,7 +379,7 @@ Copy `.env.example` to `.env`. Common variables:
 ## Development
 
 ```bash
-pnpm test          # 28 shared + 149 server + 85 bridge + 28 web
+pnpm test          # 28 shared + 191 server + 113 bridge + 9 device + 39 web
 pnpm typecheck
 pnpm build
 pnpm smoke         # real HTTP long-poll smoke test

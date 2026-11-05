@@ -6,10 +6,15 @@ import type {
   ChatMessageStatus,
   ChatRole,
   ChatSessionStatus,
+  DeviceCapabilities,
+  DeviceStats,
+  DeviceTransport,
   EnvStatus,
   RuleCandidateStatus,
   TaskLogStream,
   TaskStatus,
+  TerminalAuditKind,
+  TerminalSessionStatus,
   TicketOption,
   TicketStatus,
 } from '@zhunzou/shared';
@@ -77,6 +82,20 @@ export const agents = sqliteTable(
     version: text('version'),
     host: text('host'),
     os: text('os'),
+
+    /** Realtime device protocol version (null for legacy HTTP bridges). */
+    protocolVersion: integer('protocol_version'),
+    /** JSON inventory: OS/arch, PTY capability, local CLI tools. */
+    capabilities: text('capabilities', { mode: 'json' }).$type<DeviceCapabilities>(),
+    /** JSON CPU / memory / load snapshot. */
+    deviceStats: text('device_stats', { mode: 'json' }).$type<DeviceStats>(),
+    /** ws while a device daemon is attached, http for legacy heartbeat-only bridges. */
+    transport: text('transport').$type<DeviceTransport>(),
+    /** Start of the current WS connection. */
+    connectedAt: integer('connected_at'),
+
+    /** Per-device policy: allow interactive terminals. */
+    terminalEnabled: integer('terminal_enabled').notNull().default(1),
 
     /** sha256(token); the plaintext is returned once at issuance. */
     tokenHash: text('token_hash'),
@@ -189,6 +208,52 @@ export const chatEvents = sqliteTable(
   ],
 );
 
+/** Terminal sessions are the PTY equivalent of chat sessions. */
+export const terminalSessions = sqliteTable(
+  'terminal_sessions',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    env: text('env').notNull(),
+    projectName: text('project_name'),
+    title: text('title').notNull(),
+    shell: text('shell'),
+    cwd: text('cwd'),
+    cols: integer('cols').notNull(),
+    rows: integer('rows').notNull(),
+    status: text('status').$type<TerminalSessionStatus>().notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    lastActiveAt: integer('last_active_at').notNull(),
+    closedAt: integer('closed_at'),
+    exitCode: integer('exit_code'),
+    error: text('error'),
+  },
+  (table) => [
+    index('idx_terminal_sessions_env').on(table.env),
+    index('idx_terminal_sessions_status').on(table.status),
+    index('idx_terminal_sessions_updated').on(table.updatedAt),
+  ],
+);
+
+/** Audited actions on terminal sessions (input, claim, resize, close). */
+export const terminalAudit = sqliteTable(
+  'terminal_audit',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    sessionId: integer('session_id').notNull(),
+    env: text('env').notNull(),
+    kind: text('kind').$type<TerminalAuditKind>().notNull(),
+    viewerId: text('viewer_id'),
+    data: text('data'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    index('idx_terminal_audit_session').on(table.sessionId, table.id),
+    index('idx_terminal_audit_env').on(table.env),
+    index('idx_terminal_audit_created').on(table.createdAt),
+  ],
+);
+
 export const exchanges = sqliteTable(
   'exchanges',
   {
@@ -257,5 +322,9 @@ export type ChatMessageRow = typeof chatMessages.$inferSelect;
 export type ChatEventRow = typeof chatEvents.$inferSelect;
 export type ExchangeRow = typeof exchanges.$inferSelect;
 export type ExchangeInsert = typeof exchanges.$inferInsert;
+export type TerminalSessionRow = typeof terminalSessions.$inferSelect;
+export type TerminalSessionInsert = typeof terminalSessions.$inferInsert;
+export type TerminalAuditRow = typeof terminalAudit.$inferSelect;
+export type TerminalAuditInsert = typeof terminalAudit.$inferInsert;
 export type WorkspaceProjectRow = typeof workspaceProjects.$inferSelect;
 export type WorkspaceProjectInsert = typeof workspaceProjects.$inferInsert;

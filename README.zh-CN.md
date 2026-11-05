@@ -172,9 +172,64 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 - **批复沉淀**：每次人工审批后自动提炼一条候选规则；在规则页一键采纳后并入 `GLOBAL_RULES.md`，也可忽略。没有配置 LLM 时使用确定性模板，功能仍可用。
 - **决策记忆**：Meta-Agent 预审时会参考同项目最近的历史判例，优先保持决策一致性，并在理由中注明「沿用 #编号」。
 - **可安装 PWA**：带 `manifest.webmanifest` 与 Service Worker，可在桌面 / 手机浏览器「添加到主屏幕」后以独立窗口运行；页面导航走 network-first，构建产物走 stale-while-revalidate，断网时展示离线提示页（`/offline.html`）。新版本会在应用内弹窗提示，可选择「立即更新」或「之后更新」；Service Worker 仅在构建产物中注册，开发模式不受影响。
-- **自动同步**：每 5 秒轮询一次；页面隐藏时暂停，切回前台立即刷新；断网时展示可重试的错误条。
+- **实时同步**：`/ws/realtime` 推送 `sync.snapshot` / `sync.changed`，WS 在线时暂停 HTTP 长轮询；断线自动回退到 `/api/sync`，页面隐藏/恢复仍生效。
 
 前端源码位于 `packages/web`，使用 `createHubStore` 组合式状态管理（未引入 Pinia），TailwindCSS 4 + Vite 8 构建。
+
+---
+
+## 跨设备反向长连（Phase 1）
+
+MCP bridge 仍是 HTTP 长轮询；如果希望中心主动保持到每台机器的反向连接，在端侧额外运行 device daemon：
+
+```bash
+pnpm --filter @zhunzou/device build
+
+node packages/device/bin/device.js run \
+  --hub https://hub.example.com \
+  --token zz_xxx \
+  --env home-mac
+
+# 查看本机能力：OS、负载、CLI 清单、PTY 支持
+node packages/device/bin/device.js capabilities
+```
+
+daemon 主动连接 `wss://<hub>/ws/device`，发送 `hello` 上报 OS/架构、CPU/内存/负载和本地 CLI 清单（claude、cursor-agent、opencode、git、node 等），之后每 30 秒心跳。看板「接入端」页会显示反向长连徽标、CPU/负载/内存与可用 CLI；断开后立即标记离线。
+
+- 设备端使用专属 Agent Token（`zz_...`）或管理员 Token；浏览器看板先调用 `POST /api/realtime/ticket` 换取 60 秒短期 ticket，再连接 `/ws/realtime`。
+- `REALTIME_ENABLED=false` 可关闭 WS 网关，完全回退到原有 HTTP 心跳 / 长轮询。
+- 本阶段**不安装 `node-pty`**，`capabilities` 会显示 `pty: unavailable`；PTY Runner 与终端控制台在下一阶段接入。
+
+---
+
+## 远程交互式终端（PTY）
+
+device daemon 也可以托管真正的 PTY shell（macOS forkpty、Windows ConPTY）。`node-pty` 是可选依赖，按需安装：
+
+```bash
+pnpm --filter @zhunzou/device add node-pty
+```
+
+启动 daemon 后，看板「终端」页可以：
+
+- 选择在线设备、项目、shell，新建终端；
+- 使用 xterm.js 直接输入/输出，ANSI 颜色与光标行为完整；
+- 浏览器刷新后按 seq 重放最近 scrollback；
+- 设备 WS 断线后 `pty.attach` 重挂同一 shell；
+- 服务端重启后从 SQLite 恢复会话元数据，设备进程还在则自动重挂，否则标记 `LOST`。
+
+```text
+浏览器 xterm ──/ws/terminal──▶ 中心 ──/ws/device──▶ node-pty (ConPTY/forkpty)
+```
+
+安全与限额：`TERMINAL_ENABLED`、`TERMINAL_MAX_SESSIONS`、
+`TERMINAL_MAX_SESSIONS_PER_DEVICE`、`TERMINAL_MAX_VIEWERS`、
+`TERMINAL_IDLE_TIMEOUT_MS`、`TERMINAL_DETACH_TTL_MS`、
+`TERMINAL_SCROLLBACK_BYTES`、`TERMINAL_INPUT_BYTES_PER_SEC`、
+`TERMINAL_ALLOWED_ENVS`。同一终端同一时刻只有一个窗口持有输入权，其他窗口显示
+「只读」并可点「接管输入」；输入、resize、信号、接管与关闭都会写入
+`terminal_audit`，可通过 `/api/terminals/:id/audit` 查看，并支持导出 CSV / JSONL。
+接入端页还可以单独「禁用终端」，禁用后新终端请求返回 `TERMINAL_FORBIDDEN`。
 
 ---
 
@@ -209,6 +264,7 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/api/sessions/:id` | 会话详情与消息 |
 | `POST` | `/api/sessions/:id/messages` | 发送用户消息 `{ content }` |
 | `POST` | `/api/sessions/:id/close` | 关闭会话 |
+| `DELETE` | `/api/sessions/:id` | 删除会话（连带消息与输出记录，不可恢复） |
 | `GET` | `/api/sessions/next?env=...&timeout=40000` | 端侧长轮询领取待处理消息 |
 | `POST` | `/api/sessions/:id/messages/:messageId/events` | Agent 追加输出 `{ stream, chunk }` |
 | `GET` | `/api/sessions/:id/events` | 增量读取会话输出 `?after=&messageId=` |
@@ -220,6 +276,16 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `DELETE` | `/api/workspace-projects/:id` | 解除一条工作区项目绑定 |
 | `POST` | `/api/status/heartbeat` | 端侧上报 `{ env, status, projectName?, currentTask?, agent? }`，同时续租该端执行中的任务 |
 | `GET` | `/api/status` | 各接入端在线状态（90s 内有心跳视为在线） |
+| `POST` | `/api/realtime/ticket` | 管理员 Token 换取短期看板 WebSocket ticket |
+| `GET` | `/api/realtime/status` | 实时网关状态（设备 / 看板 / bridge 连接数） |
+| `POST` | `/api/terminals` | 在在线设备上创建 PTY 终端 |
+| `GET` | `/api/terminals` | 终端会话列表（`env`、`status`、`limit`） |
+| `GET` | `/api/terminals/:id` | 单个终端会话 |
+| `POST` | `/api/terminals/:id/close` | 关闭终端并终止 shell |
+| `GET` | `/api/terminals/:id/events?after=` | 有界 scrollback 回放 |
+| `GET` | `/api/terminals/:id/audit?after=` | 终端审计（输入/接管/resize/信号/关闭） |
+| `GET` | `/api/terminals/:id/audit/export?format=csv` | 导出审计为 CSV / JSONL |
+| `GET` | `/api/terminals/stats` | 终端指标（活跃数/窗口数/字节数） |
 | `GET` | `/api/agents` | 接入端列表，支持 `?status=active\|disabled` |
 | `POST` | `/api/agents` | 手动登记接入端 `{ env, name?, kind? }` |
 | `PATCH` | `/api/agents/:env` | 改名 / 改类型 / 停用 `{ name?, kind?, status? }` |
@@ -366,6 +432,19 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 | `PUBLIC_BASE_URL` | 空 | 通知里签名审批链接的公开地址，如 `https://hub.example.com` |
 | `APPROVAL_LINK_SECRET` | `HUB_SECRET_TOKEN` | 审批链接 HMAC 密钥 |
 | `APPROVAL_LINK_TTL_MS` | `1800000` | 审批链接有效期 |
+| `REALTIME_ENABLED` | `true` | 是否启用设备 / 看板 WebSocket 网关 |
+| `REALTIME_TICKET_TTL_MS` | `60000` | 浏览器 WebSocket ticket 有效期 |
+| `REALTIME_HEARTBEAT_MS` | `30000` | 设备心跳间隔 |
+| `REALTIME_HEARTBEAT_TIMEOUT_MS` | `90000` | 设备静默多久后关闭连接 |
+| `TERMINAL_ENABLED` | `true` | 是否启用交互式 PTY 终端 |
+| `TERMINAL_MAX_SESSIONS` | `32` | 全局终端会话上限 |
+| `TERMINAL_MAX_SESSIONS_PER_DEVICE` | `4` | 每台设备的终端会话上限 |
+| `TERMINAL_IDLE_TIMEOUT_MS` | `1800000` | 终端空闲多久后自动关闭 |
+| `TERMINAL_DETACH_TTL_MS` | `300000` | 设备断线后保留会话的时长 |
+| `TERMINAL_SCROLLBACK_BYTES` | `1048576` | 每个终端的回放缓冲大小 |
+| `TERMINAL_MAX_VIEWERS` | `8` | 单个终端的并发浏览器窗口上限 |
+| `TERMINAL_INPUT_BYTES_PER_SEC` | `65536` | 单个终端的输入速率上限 |
+| `TERMINAL_ALLOWED_ENVS` | 空 | 允许开终端的设备 env；空表示全部 |
 | `SERVE_WEB` | `true` | 是否由 Fastify 托管 `packages/web/dist` |
 | `WEB_DIST_PATH` | `./packages/web/dist` | 前端构建产物目录 |
 
@@ -607,6 +686,7 @@ pm2 save
 | `ZHUNZOU_FALLBACK`（旧名 `AGENT_HUB_FALLBACK`） | 否 | `cli` | `cli` 或 `mcp` |
 | `ZHUNZOU_WAIT_TIMEOUT_MS`（旧名 `AGENT_HUB_WAIT_TIMEOUT_MS`） | 否 | `40000` | 单次长轮询窗口（1s ~ 55s） |
 | `ZHUNZOU_CLI_COMMAND` | 否 | `npx zhunzou-bridge` | `cli` 策略下提示模型执行的命令；直接运行 `bin/mcp.js` 时自动指向同目录 `cli.js` / `cli.mjs` |
+| `ZHUNZOU_TRANSPORT` | 否 | `auto` | 任务/工单/会话领取传输：`auto` / `ws` / `http`，`auto` 优先 `/ws/bridge` 并自动回退 |
 | `ZHUNZOU_HEARTBEAT_INTERVAL_MS` | 否 | `30000` | 在线心跳间隔（5s ~ 5min） |
 | `ZHUNZOU_WAKE_ADAPTER` | 否 | `auto` | `wake` 守护进程的适配器：`auto` / `opencode` / `claude` / `codex` / `command` / `notify` 等 |
 | `ZHUNZOU_WAKE_COMMAND` | 否 | 空 | `command` 适配器的命令模板，如 `claude -p {prompt}` |
@@ -651,7 +731,7 @@ bash deploy/deploy.sh        # 随仓库上传到 hub
 ## 测试
 
 ```bash
-pnpm test          # shared 28 + server 149 + bridge 85 + web 28 = 290 个测试
+pnpm test          # shared 28 + server 191 + bridge 113 + device 9 + web 39 = 380 个测试
 pnpm typecheck     # 全量类型检查
 pnpm build         # 全量构建（含 Vue 看板）
 pnpm smoke         # 构建、启动真实服务、HTTP 长轮询冒烟测试

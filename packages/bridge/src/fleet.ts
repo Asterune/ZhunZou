@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import type { BridgeConfig } from './config.js';
 import { HubClient } from './hub-client.js';
+import { createHubApi } from './hub.js';
 import { createPresenceReporter } from './presence.js';
 import { runSessionDaemon, supportsChat } from './session.js';
 import { agentKindForAdapter } from './wake/adapters.js';
@@ -384,6 +385,12 @@ export function buildFleetRuntimes(
       cliCommand: 'npx zhunzou-bridge',
       heartbeatIntervalMs: 30_000,
       agentKind: agentKindForAdapter(adapter),
+      transport:
+        process.env.ZHUNZOU_TRANSPORT === 'http'
+          ? 'http'
+          : process.env.ZHUNZOU_TRANSPORT === 'ws'
+            ? 'ws'
+            : 'auto',
     };
 
     const wake = loadWakeConfig(
@@ -462,8 +469,10 @@ export async function runFleet(
     }
   };
 
+  const clients: Array<ReturnType<typeof createHubApi>> = [];
   const tasks = runtimes.flatMap((runtime) => {
-    const client = new HubClient(runtime.hub);
+    const client = createHubApi(runtime.hub);
+    clients.push(client);
     const presence = presences.get(runtime.project.env);
     const taskLoop = supervise(runtime, '', () =>
       runWakeDaemon({
@@ -498,6 +507,7 @@ export async function runFleet(
   });
 
   await Promise.allSettled(tasks);
+  for (const client of clients) client.close?.();
   for (const presence of presences.values()) presence.stop();
   return 0;
 }

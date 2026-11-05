@@ -40,9 +40,13 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@types/ws": "^8.18.2",
     "@zhunzou/shared": "workspace:*",
     "commander": "^14.0.2",
     "esbuild": "^0.24.2",
     "zod": "^3.25.76"
+  },
+  "dependencies": {
+    "ws": "^8.22.1"
   }
 }

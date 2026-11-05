@@ -31,6 +31,8 @@ const LEGACY_TOKEN_KEY = 'agent-hub.token';
 const SYNC_TIMEOUT_MS = 25_000;
 /** Backoff after a network/5xx error before re-arming the long poll. */
 const SYNC_RETRY_MS = 4_000;
+/** Backoff before asking for a fresh realtime ticket and reconnecting. */
+const REALTIME_RETRY_MS = 4_000;
 
 function loadStoredToken(): string {
   try {
@@ -99,11 +101,14 @@ export function createHubStore(api: HubApi = hubApi) {
   const agentActionEnv = ref('');
   const agentsLoading = ref(false);
   const connection = ref<'idle' | 'online' | 'offline'>('idle');
+  const realtimeState = ref<'idle' | 'connecting' | 'online' | 'offline'>('idle');
   const lastSyncAt = ref(0);
   const lastError = ref('');
   const authError = ref('');
 
   let syncGeneration = 0;
+  let realtimeGeneration = 0;
+  let realtimeSocket: WebSocket | null = null;
 
   const pendingTickets = computed(() =>
     tickets.value
@@ -236,6 +241,12 @@ export function createHubStore(api: HubApi = hubApi) {
    */
   async function runSyncLoop(generation: number): Promise<void> {
     while (generation === syncGeneration && token.value) {
+      // The realtime gateway pushes snapshots; keep the long poll as a
+      // fallback only while the socket is not healthy.
+      if (realtimeState.value === 'online') {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        continue;
+      }
       try {
         const response = await api.sync(
           token.value,
@@ -264,6 +275,104 @@ export function createHubStore(api: HubApi = hubApi) {
           setTimeout(resolve, SYNC_RETRY_MS),
         );
       }
+    }
+  }
+
+  /**
+   * Optional realtime presence channel.
+   *
+   * The dashboard already has a reliable `/api/sync` long poll; this socket
+   * makes device online/offline and capability changes appear immediately.
+   * If the gateway is disabled or the ticket expires, the long poll keeps the
+   * UI correct, so this loop is deliberately best-effort.
+   */
+  async function runRealtimeLoop(generation: number): Promise<void> {
+    const SocketCtor = globalThis.WebSocket;
+    if (!SocketCtor) {
+      realtimeState.value = 'idle';
+      return;
+    }
+
+    while (generation === realtimeGeneration && token.value) {
+      let ticket: string;
+      try {
+        const response = await api.createRealtimeTicket(token.value);
+        ticket = response.ticket;
+      } catch (error) {
+        if (generation !== realtimeGeneration) return;
+        if (error instanceof ApiError && error.status === 401) {
+          logout(t('store.sessionExpired'));
+          return;
+        }
+        if (error instanceof ApiError && error.code === 'REALTIME_DISABLED') {
+          realtimeState.value = 'idle';
+          return;
+        }
+        realtimeState.value = 'offline';
+        await new Promise((resolve) => setTimeout(resolve, REALTIME_RETRY_MS));
+        continue;
+      }
+
+      if (generation !== realtimeGeneration || !token.value) return;
+
+      const protocol =
+        globalThis.location?.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = globalThis.location?.host ?? '127.0.0.1:8787';
+      const socket = new SocketCtor(
+        `${protocol}//${host}/ws/realtime?ticket=${encodeURIComponent(ticket)}`,
+      );
+      realtimeSocket = socket;
+      realtimeState.value = 'connecting';
+
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+
+        socket.addEventListener('open', () => {
+          if (generation !== realtimeGeneration) return;
+          realtimeState.value = 'online';
+          socket.send(JSON.stringify({ type: 'sync.request' }));
+        });
+        socket.addEventListener('message', (event) => {
+          try {
+            const frame = JSON.parse(String(event.data)) as {
+              type?: string;
+              rev?: number;
+              state?: SyncState;
+            };
+            if (frame.type === 'sync.snapshot' && frame.state) {
+              applySnapshot(frame.state);
+              rev.value = frame.rev ?? rev.value;
+              lastSyncAt.value = Date.now();
+              lastError.value = '';
+              connection.value = 'online';
+              return;
+            }
+            if (frame.type === 'sync.changed') {
+              lastSyncAt.value = Date.now();
+              connection.value = 'online';
+              socket.send(JSON.stringify({ type: 'sync.request' }));
+              return;
+            }
+            if (frame.type === 'device.updated' || frame.type === 'device.offline') {
+              void refresh();
+            }
+          } catch {
+            // Ignore malformed frames; the long poll is still authoritative.
+          }
+        });
+        socket.addEventListener('close', finish);
+        socket.addEventListener('error', finish);
+      });
+
+      if (realtimeSocket === socket) realtimeSocket = null;
+      if (generation !== realtimeGeneration) return;
+      realtimeState.value = 'offline';
+      await new Promise((resolve) => setTimeout(resolve, REALTIME_RETRY_MS));
     }
   }
 
@@ -321,10 +430,15 @@ export function createHubStore(api: HubApi = hubApi) {
     stop();
     if (!token.value) return;
     void runSyncLoop(syncGeneration);
+    void runRealtimeLoop(realtimeGeneration);
   }
 
   function stop(): void {
     syncGeneration += 1;
+    realtimeGeneration += 1;
+    realtimeSocket?.close();
+    realtimeSocket = null;
+    realtimeState.value = 'idle';
   }
 
   function fail(error: unknown, fallback: string): void {
@@ -743,6 +857,7 @@ export function createHubStore(api: HubApi = hubApi) {
     agentActionEnv,
     agentsLoading,
     connection,
+    realtimeState,
     rev,
     lastSyncAt,
     lastError,

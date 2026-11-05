@@ -185,5 +185,10 @@ export interface DecisionTicket {
 | M6 决策记忆 + 规则沉淀 | ✅ 完成 | 同项目历史判例注入 Meta-Agent；零依赖字符 bigram 召回；人工批复后自动提炼候选规则；规则页一键采纳/忽略；待批卡片展示总管转人工理由 |
 | M7 超时裁决 + 批量审批 + 陈旧任务治理 | ✅ 完成 | `expiresAt` SLA 与后台 sweeper；卡片倒计时与暂缓 10 分钟；批量准奏 + 3 秒撤销；`risk` 高风险二次确认；CLAIMED 任务离线重排/硬超时；`/api/resume` 与 `agent_hub_resume` |
 | M8 通知一键批复 + 接入向导 + 英文文档 | ✅ 完成 | HMAC 签名审批页 `/a/:token`；通知带选项与审批链接；`zhunzou-bridge init` 自动写 Cursor/OpenCode/Claude 配置；英文 README |
+| M9 反向长连 + 设备能力 | ✅ 完成 | 新增 `packages/device`：设备主动连接 `/ws/device`，上报 OS/CPU/内存/负载/CLI 清单并 30s 心跳；服务端 WS 网关、短期 ticket、在线池与能力持久化；看板显示反向长连徽标与设备能力 |
+| M10 PTY 终端 + 控制台 | ✅ 完成 | `node-pty`（forkpty/ConPTY）设备端 Runner；`terminal_sessions` 持久化、`/ws/terminal` 多端推流、scrollback seq 重放、断线 `pty.attach`、空闲/断线超时；看板新增「终端」页 xterm.js |
+| M11 终端治理 + 多窗口控制 | ✅ 完成 | 单 writer 输入租约与「接管输入」、每会话 viewer/输入速率上限、env 白名单、`terminal_audit` 审计与查询、`/api/terminals/stats` 指标、移动端特殊键工具条 |
+| M12 实时看板 + 设备级策略 + 审计导出 | ✅ 完成 | `/ws/realtime` 推送 `sync.snapshot` / `sync.changed`，WS 在线时暂停 HTTP 长轮询；接入端级「禁用终端」；审计 CSV/JSONL 导出与终端指标展示 |
+| M13 Bridge WS claim + 混合传输 | ✅ 完成 | 新增 `/ws/bridge`；`task.claim` / `ticket.wait` / `chat.claim` 及完成/日志/事件帧；bridge `ZHUNZOU_TRANSPORT=auto` 优先 WS，失败自动回退 HTTP；MCP / wait / wake / fleet 接入 |
 
 > 与原始计划的偏差：Meta-Agent 使用 Node 内置 `fetch` 直连 OpenAI 兼容接口（DeepSeek/OpenAI），未引入 `openai` SDK，减少依赖并保持跨平台零原生编译；接口协议完全兼容。开源化阶段进一步把模型、通知与业务扩展做成配置/插件接口，核心协议保持稳定。

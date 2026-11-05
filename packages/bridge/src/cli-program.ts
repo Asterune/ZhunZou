@@ -12,7 +12,7 @@ import {
   loadFleetConfig,
   runFleet,
 } from './fleet.js';
-import { HubClient } from './hub-client.js';
+import { createHubApi } from './hub.js';
 import { runInit } from './init.js';
 import { runSessionDaemon, supportsChat } from './session.js';
 import { BRIDGE_VERSION } from './version.js';
@@ -124,13 +124,14 @@ export function createProgram(): Command {
     )
     .action(async (options: { ticket: string; interval: string }) => {
       const config = loadBridgeConfig();
-      const client = new HubClient(config);
+      const client = createHubApi(config);
 
       process.exitCode = await waitForDecision({
         client,
         ticketId: options.ticket,
         intervalMs: clampInterval(options.interval),
       });
+      client.close?.();
     });
 
   program
@@ -246,7 +247,7 @@ export function createProgram(): Command {
           wake.adapter = options.adapter as WakeAdapterName;
         }
 
-        const client = new HubClient(hub);
+        const client = createHubApi(hub);
         const loops: Array<Promise<number>> = [
           runWakeDaemon({
             client,
@@ -273,6 +274,7 @@ export function createProgram(): Command {
         }
 
         const codes = await Promise.all(loops);
+        client.close?.();
         process.exitCode = codes.find((code) => code !== 0) ?? 0;
       },
     );
