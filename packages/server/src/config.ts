@@ -6,6 +6,9 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..
 
 export type MetaAgentProvider = 'openai' | 'http' | 'none';
 
+/** Kept in sync with `DECISION_MODES` in @zhunzou/shared. */
+export type DecisionMode = 'off' | 'reply' | 'all';
+
 export interface MetaAgentConfig {
   provider: MetaAgentProvider;
   /** Derived: provider !== 'none'. Kept for logs/backward compatibility. */
@@ -52,6 +55,11 @@ export interface ServerConfig {
    */
   bridgeReleasesPath: string;
   metaAgent: MetaAgentConfig;
+  /**
+   * How much judgment the hub takes over: `off` asks a human about everything,
+   * `reply` auto-adopts chat replies only, `all` also rules on next steps.
+   */
+  decisionPolicy: DecisionMode;
   notifications: NotificationChannelConfig[];
   /** Optional JS modules loaded at boot; see docs/PLUGINS.md. */
   plugins: string[];
@@ -131,6 +139,12 @@ function readList(raw: string | undefined): string[] {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function readDecisionPolicy(raw: string | undefined): DecisionMode {
+  const value = (raw ?? '').trim().toLowerCase();
+  if (value === 'off' || value === 'all') return value;
+  return 'reply';
 }
 
 function resolvePath(value: string): string {
@@ -308,6 +322,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       env.BRIDGE_RELEASES_PATH ?? './release/bridge',
     ),
     metaAgent: parseMetaAgent(env),
+    decisionPolicy: readDecisionPolicy(env.DECISION_POLICY),
     notifications: parseNotificationChannels(env),
     plugins: readList(env.HUB_PLUGINS),
     autoResolveTimeoutMs: readInt(env.AUTO_RESOLVE_TIMEOUT_MS, 0, {

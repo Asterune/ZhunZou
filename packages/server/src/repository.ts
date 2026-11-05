@@ -20,6 +20,7 @@ import type {
   ChatEvent,
   ChatEventListResponse,
   ChatMessage,
+  ChatMessageDecision,
   ChatMessageResponse,
   ChatMessageStatus,
   ChatSession,
@@ -250,6 +251,7 @@ function toChatMessage(row: ChatMessageRow): ChatMessage {
     status: row.status,
     origin: row.origin,
     ...(row.rationale ? { rationale: row.rationale } : {}),
+    ...(row.decision ? { decision: row.decision } : {}),
     ...(row.error ? { error: row.error } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -483,6 +485,15 @@ export interface TicketStore {
   createChatProposal(
     sessionId: number,
     input: { content: string; rationale?: string },
+    now?: number,
+  ): ChatMessage;
+  queueChatReply(
+    sessionId: number,
+    input: {
+      content: string;
+      rationale?: string;
+      decision?: ChatMessageDecision;
+    },
     now?: number,
   ): ChatMessage;
   adoptChatProposal(
@@ -1485,6 +1496,44 @@ export class TicketRepository implements TicketStore {
     return toChatMessage(row);
   }
 
+  /**
+   * Queue an agent-authored reply directly. Only the hub's decision policy may
+   * call this: it is the `AUTO` path where no human reviewed the text first.
+   */
+  queueChatReply(
+    sessionId: number,
+    input: {
+      content: string;
+      rationale?: string;
+      decision?: ChatMessageDecision;
+    },
+    now = Date.now(),
+  ): ChatMessage {
+    const row = this.db
+      .insert(chatMessages)
+      .values({
+        sessionId,
+        role: 'user',
+        content: input.content,
+        status: 'PENDING',
+        origin: 'agent',
+        decision: input.decision ?? 'AUTO',
+        rationale: input.rationale ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+
+    this.db
+      .update(chatSessions)
+      .set({ updatedAt: now, lastMessageAt: now })
+      .where(eq(chatSessions.id, sessionId))
+      .run();
+
+    return toChatMessage(row);
+  }
+
   /** Turn a draft into a real queued user message (optionally human-edited). */
   adoptChatProposal(
     sessionId: number,
@@ -1510,6 +1559,7 @@ export class TicketRepository implements TicketStore {
       .set({
         status: 'PENDING',
         content: input.content ?? current.content,
+        decision: 'HUMAN',
         updatedAt: now,
       })
       .where(

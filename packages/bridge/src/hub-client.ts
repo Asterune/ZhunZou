@@ -9,6 +9,8 @@ import type {
   CompleteChatMessageInput,
   CompleteTaskInput,
   CreateTicketInput,
+  DecisionRequest,
+  DecisionResponse,
   DecisionTicket,
   EnvHeartbeat,
   Exchange,
@@ -30,6 +32,7 @@ import {
   completeChatMessageSchema,
   completeTaskSchema,
   createTicketSchema,
+  decisionRequestSchema,
   heartbeatSchema,
   proposeChatReplySchema,
   releaseTaskSchema,
@@ -59,6 +62,15 @@ export class HubApiError extends Error {
 
 export interface HubApi {
   createTicket(input: Omit<CreateTicketInput, 'env'>): Promise<DecisionTicket>;
+  /**
+   * `projectName` is optional here: the bridge fills it from the workspace
+   * config so the MCP tool does not have to know it.
+   */
+  decide(
+    input: Omit<DecisionRequest, 'env' | 'projectName'> & {
+      projectName?: string;
+    },
+  ): Promise<DecisionResponse>;
   wait(ticketId: string, timeoutMs?: number): Promise<WaitResponse>;
   heartbeat(input: Omit<HeartbeatInput, 'env'>): Promise<EnvHeartbeat>;
   nextTask(timeoutMs?: number): Promise<NextTaskResponse>;
@@ -164,6 +176,33 @@ export class HubClient implements HubApi {
     );
 
     return body.ticket;
+  }
+
+  /**
+   * Ask the hub to rule on the next move. This replaces the agent's own
+   * "should I ask a human?" judgment: the answer is either a permit or a
+   * ticket that a human will decide.
+   */
+  async decide(
+    input: Omit<DecisionRequest, 'env' | 'projectName'> & {
+      projectName?: string;
+    },
+  ): Promise<DecisionResponse> {
+    const payload = decisionRequestSchema.parse({
+      env: this.config.agentEnv,
+      ...input,
+      projectName:
+        input.projectName ?? this.config.projectName ?? this.config.agentEnv,
+      ...(this.config.chatSessionId && !input.sessionId
+        ? { sessionId: this.config.chatSessionId }
+        : {}),
+    });
+
+    return this.request<DecisionResponse>(
+      '/api/decisions',
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS + 15_000,
+    );
   }
 
   async wait(ticketId: string, timeoutMs = this.config.waitTimeoutMs): Promise<WaitResponse> {

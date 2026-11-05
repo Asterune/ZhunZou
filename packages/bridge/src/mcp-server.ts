@@ -140,6 +140,53 @@ const reportTaskInput = {
     .describe('Current env status; defaults to Running'),
 };
 
+const decideInput = {
+  kind: z
+    .enum(['reply', 'next_step', 'action'])
+    .describe(
+      'What you are asking about: a chat reply, the next development step, or a concrete action',
+    ),
+  proposal: z
+    .string()
+    .trim()
+    .min(1)
+    .max(32000)
+    .describe(
+      'The exact reply text, next step, or command you want to take. The hub rules on this verbatim.',
+    ),
+  rationale: z
+    .string()
+    .trim()
+    .max(2000)
+    .optional()
+    .describe('One line on why this is the right move'),
+  context: z
+    .string()
+    .trim()
+    .max(8000)
+    .optional()
+    .describe('Facts the hub should weigh: test output, diff summary, constraints'),
+  risk: z
+    .enum(['safe', 'caution', 'destructive'])
+    .optional()
+    .describe('Mark destructive for irreversible actions; those always go to a human'),
+  options: z
+    .array(ticketOptionSchema)
+    .min(2)
+    .max(6)
+    .optional()
+    .describe('Only when the choice is a genuine fork you cannot resolve'),
+  recommendedOption: z
+    .string()
+    .trim()
+    .min(1)
+    .max(8)
+    .optional()
+    .describe('Key of the option you recommend; required when options are passed'),
+  doneSummary: z.string().trim().max(2000).optional(),
+  nextStepPlan: z.string().trim().max(2000).optional(),
+};
+
 const proposeReplyInput = {
   content: z
     .string()
@@ -489,6 +536,91 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
           `Zhunzou status updated: ${heartbeat.env} is now ${heartbeat.status}.`,
         );
       } catch (error) {
+        return renderToolError(errorText(error));
+      }
+    },
+  );
+
+  server.registerTool(
+    'agent_hub_decide',
+    {
+      title: 'Ask the hub to rule on the next move',
+      description:
+        'Call this before any non-trivial action or chat reply. Do not decide on your own whether to act or to ask a ' +
+        'human — the hub holds the policy, rules and precedents. Submit the exact reply/step/command you want to take ' +
+        'plus the facts (test output, diff summary, constraints). It returns either "[DECISION: APPROVED]" (proceed) ' +
+        'or a ticket waiting for a human, in which case keep waiting with agent_hub_wait.',
+      inputSchema: decideInput,
+    },
+    async (args) => {
+      try {
+        const outcome = await client.decide({
+          kind: args.kind,
+          proposal: args.proposal,
+          ...(args.rationale ? { rationale: args.rationale } : {}),
+          ...(args.context ? { context: args.context } : {}),
+          ...(args.risk ? { risk: args.risk } : {}),
+          ...(args.options ? { options: args.options } : {}),
+          ...(args.recommendedOption
+            ? { recommendedOption: args.recommendedOption }
+            : {}),
+          ...(args.doneSummary ? { doneSummary: args.doneSummary } : {}),
+          ...(args.nextStepPlan ? { nextStepPlan: args.nextStepPlan } : {}),
+        });
+
+        if (outcome.verdict === 'APPROVED') {
+          return renderToolResult(
+            [
+              '[DECISION: APPROVED]',
+              `Reason: ${outcome.reason}`,
+              ...(outcome.selectedOption
+                ? [`Selected option: ${outcome.selectedOption}`]
+                : []),
+              'Proceed now. Do not ask the human again for this step.',
+            ].join('\n'),
+          );
+        }
+
+        const ticket = outcome.ticket;
+        if (!ticket) {
+          return renderToolResult(
+            `[DECISION: PENDING] ${outcome.reason}\n等待人工裁决后再继续。`,
+          );
+        }
+
+        presence.pause();
+        void presence
+          .beat({
+            status: 'Blocked',
+            currentTask: args.proposal.slice(0, 300),
+          })
+          .catch(() => undefined);
+
+        log(
+          `[zhunzou] decision escalated to ticket #${ticket.id} for ${config.agentEnv}`,
+        );
+        const waited = await client.wait(ticket.id, config.waitTimeoutMs);
+        presence.resume();
+
+        if (waited.resolved) {
+          void presence
+            .beat({ status: 'Running', currentTask: '已获裁决，恢复执行' })
+            .catch(() => undefined);
+          return renderToolResult(formatApproved(waited.ticket));
+        }
+        if (waited.ticket.status === 'CANCELLED') {
+          void presence
+            .beat({ status: 'Idle', currentTask: '工单已取消，等待新指令' })
+            .catch(() => undefined);
+          return renderToolResult(formatCancelled(waited.ticket));
+        }
+
+        return renderToolResult(
+          formatWaiting(waited.ticket, config.fallback, config.cliCommand),
+        );
+      } catch (error) {
+        presence.resume();
+        log(`[zhunzou] decide failed: ${(error as Error).message}`);
         return renderToolError(errorText(error));
       }
     },

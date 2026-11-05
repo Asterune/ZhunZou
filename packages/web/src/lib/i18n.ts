@@ -311,6 +311,7 @@ const zh: Record<string, string> = {
   'chat.proposalDiscard': '丢弃',
   'chat.proposalAdopted': '已采纳，端侧会立刻领取',
   'chat.proposalDiscarded': '草稿已丢弃',
+  'chat.autoAdopted': 'hub 自动采纳：{reason}',
   'chat.inputPlaceholder': '给这个项目的 Agent 发消息…（Enter 发送，Shift+Enter 换行）',
   'chat.send': '发送',
   'chat.runnerHintBefore': '会话由端侧 runner 执行；本机需要常驻',
@@ -802,6 +803,7 @@ const en: Record<string, string> = {
   'chat.proposalDiscard': 'Discard',
   'chat.proposalAdopted': 'Adopted — the runner will pick it up now',
   'chat.proposalDiscarded': 'Draft discarded',
+  'chat.autoAdopted': 'Auto-adopted by the hub: {reason}',
   'chat.inputPlaceholder':
     'Message this project’s agent… (Enter to send, Shift+Enter for a new line)',
   'chat.send': 'Send',

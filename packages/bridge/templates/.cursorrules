@@ -16,7 +16,15 @@
 新会话、重启或断线重连后，先调用 `agent_hub_resume`：它会返回本环境未决/近期的奏折和仍在执行的任务。
 如果有 `PENDING` 工单，立即用 `agent_hub_wait(ticketId)` 继续等待；如果有 `CLAIMED` 任务，继续执行并按约定回报。
 
-## 何时升级
+## 决策权在 hub：先问，再动
+
+- 任何非平凡动作（改代码、跑命令、提交、对外回复、选方案）之前，先调用 `agent_hub_decide`，
+  提交 `kind`（`reply` / `next_step` / `action`）、`proposal`（你打算原样执行的句子/命令）、
+  `rationale`、`context`（测试输出、diff 摘要、约束）与必要的 `risk`。
+- 返回 `[DECISION: APPROVED]`：照做，不要再问一遍；返回待批奏折：按等待规则轮询。
+- 只有确实需要人类多选一时，才传 `options` + `recommendedOption`。
+
+## 何时升级（低层工具）
 
 出现以下任一情况时，调用 `agent_hub_escalate`：
 

@@ -24,6 +24,7 @@ import {
   createTaskSchema,
   createTerminalSchema,
   createTicketSchema,
+  decisionRequestSchema,
   extendTicketSchema,
   formatTicketId,
   heartbeatSchema,
@@ -68,6 +69,10 @@ import {
 import { createAuthHook, hashToken, requireAdmin, requireEnvAccess } from './auth.js';
 import type { ServerConfig } from './config.js';
 import { createDatabase } from './db/client.js';
+import {
+  evaluateDecision,
+  syntheticTicket,
+} from './decision-policy.js';
 import {
   ApiError,
   BadRequestError,
@@ -1252,6 +1257,122 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         });
         sessionBus.publish(session);
         return reply.code(201).send({ session, message });
+      });
+
+      // -----------------------------------------------------------------
+      // Hub-side judgment: one entry for every non-trivial agent move.
+      //
+      // Agents no longer choose between acting and asking. They submit the
+      // exact thing they want to do plus the facts, and the hub answers
+      // APPROVED (go ahead) or opens a ticket for a human. The same rules,
+      // precedents and destructive guardrails back tickets and replies.
+      // -----------------------------------------------------------------
+      api.post('/decisions', async (request, reply) => {
+        const input = decisionRequestSchema.parse(request.body);
+        requireEnvAccess(request, input.env);
+
+        const outcome = await evaluateDecision(input, {
+          mode: config.decisionPolicy,
+          metaAgent,
+          readRules: () => rulesStore.read().content,
+          precedentsFor: (req) => {
+            const ticket = syntheticTicket(req);
+            return repo.findSimilarTickets({
+              projectName: req.projectName,
+              blockerQuestion: ticket.blockerQuestion,
+              limit: 5,
+            });
+          },
+        });
+
+        if (outcome.verdict === 'APPROVED') {
+          // Only replies have a delivery target; other kinds are a permit, and
+          // get an AUTO_RESOLVED ticket so the ruling stays auditable.
+          if (input.kind !== 'reply') {
+            const now = Date.now();
+            const expiresAt = autoResolveEligible(input.projectName)
+              ? now + config.autoResolveTimeoutMs
+              : undefined;
+            const created = repo.create(syntheticTicket(input), now, expiresAt);
+            const resolved =
+              repo.markAutoResolved(
+                Number(created.id),
+                outcome.selectedOption ?? created.recommendedOption,
+                outcome.reason,
+              ) ?? created;
+            bus.publish(resolved);
+            emitPluginEvent(plugins, 'onTicketResolved', resolved, app.log);
+            return {
+              verdict: outcome.verdict,
+              reason: outcome.reason,
+              ...(outcome.selectedOption
+                ? { selectedOption: outcome.selectedOption }
+                : {}),
+              ticket: resolved,
+            };
+          }
+
+          const session = input.sessionId
+            ? repo.getChatSession(parseTicketId(input.sessionId))
+            : repo.findLatestActiveChatSession(input.env);
+          if (!session) {
+            throw new NotFoundError(`no active session for env ${input.env}`);
+          }
+          if (session.env !== input.env) {
+            throw new BadRequestError(
+              `session ${formatTicketId(session.id)} belongs to ${session.env}`,
+              'SESSION_ENV_MISMATCH',
+            );
+          }
+          if (session.status !== 'ACTIVE') {
+            throw new ConflictError(
+              `session ${formatTicketId(session.id)} is ${session.status}`,
+              'SESSION_CLOSED',
+            );
+          }
+
+          const message = repo.queueChatReply(Number(session.id), {
+            content: input.proposal,
+            rationale: input.rationale ?? outcome.reason,
+            decision: 'AUTO',
+          });
+          sessionBus.publish(session);
+          app.log.info(
+            { session: formatTicketId(session.id), message: formatTicketId(message.id) },
+            'hub auto-adopted agent reply',
+          );
+          return reply.code(201).send({
+            verdict: outcome.verdict,
+            reason: outcome.reason,
+            session,
+            message,
+          });
+        }
+
+        // PENDING: the same submission becomes a ticket on the dashboard.
+        const now = Date.now();
+        const expiresAt = autoResolveEligible(input.projectName)
+          ? now + config.autoResolveTimeoutMs
+          : undefined;
+        const created = repo.create(syntheticTicket(input), now, expiresAt);
+        emitPluginEvent(plugins, 'onTicketCreated', created, app.log);
+
+        const pending =
+          repo.markPendingHuman(Number(created.id), outcome.reason) ?? created;
+        bus.publish(pending);
+        notifyTicketPendingHuman(
+          notifiers,
+          pending,
+          app.log,
+          approvalUrlFor(pending),
+        );
+        emitPluginEvent(plugins, 'onTicketPendingHuman', pending, app.log);
+
+        return reply.code(201).send({
+          verdict: outcome.verdict,
+          reason: outcome.reason,
+          ticket: pending,
+        });
       });
 
       api.get('/sessions', async (request) => {

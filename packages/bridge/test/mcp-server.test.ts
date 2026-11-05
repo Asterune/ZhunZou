@@ -52,6 +52,11 @@ function heartbeat(status: EnvHeartbeat['status'] = 'Idle'): EnvHeartbeat {
 function fakeHub(overrides: Partial<HubApi> = {}): HubApi {
   return {
     createTicket: vi.fn(async () => makeTicket({ status: 'PENDING_META' })),
+    decide: vi.fn(async () => ({
+      verdict: 'APPROVED' as const,
+      reason: '符合规范，自动放行',
+      selectedOption: 'A',
+    })),
     wait: vi.fn(async () => ({
       resolved: true,
       timedOut: false,
@@ -126,6 +131,7 @@ describe('MCP tool registration', () => {
       const { tools } = await mcpClient.listTools();
       expect(tools.map((tool) => tool.name).sort()).toEqual([
         'agent_hub_complete_task',
+        'agent_hub_decide',
         'agent_hub_escalate',
         'agent_hub_next_task',
         'agent_hub_notify_done',
@@ -443,6 +449,63 @@ describe('agent_hub_report_task', () => {
         projectName: 'yikuaomed-erp',
         currentTask: '修复登录页校验',
       });
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe('agent_hub_decide', () => {
+  it('proceeds when the hub approves the submitted step', async () => {
+    const client = fakeHub();
+    const { mcpClient, close } = await connect(client);
+
+    try {
+      const result = await mcpClient.callTool({
+        name: 'agent_hub_decide',
+        arguments: {
+          kind: 'next_step',
+          proposal: '补充会话模块的单元测试',
+          context: 'pnpm test 全绿',
+        },
+      });
+
+      expect((result as ToolResult).isError).toBeFalsy();
+      expect(textOf(result)).toContain('[DECISION: APPROVED]');
+      expect(textOf(result)).toContain('符合规范，自动放行');
+      expect(client.decide).toHaveBeenCalledWith({
+        kind: 'next_step',
+        proposal: '补充会话模块的单元测试',
+        context: 'pnpm test 全绿',
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it('keeps waiting when the hub hands the decision to a human', async () => {
+    const client = fakeHub({
+      decide: vi.fn(async () => ({
+        verdict: 'PENDING' as const,
+        reason: '规范未覆盖',
+        ticket: makeTicket(),
+      })),
+      wait: vi.fn(async () => ({
+        resolved: false,
+        timedOut: true,
+        ticket: makeTicket(),
+      })),
+    });
+    const { mcpClient, close } = await connect(client);
+
+    try {
+      const result = await mcpClient.callTool({
+        name: 'agent_hub_decide',
+        arguments: { kind: 'reply', proposal: '改成免登录' },
+      });
+
+      expect(textOf(result)).toMatch(/STILL_WAITING|wait/);
+      expect(client.wait).toHaveBeenCalledWith('104', 40_000);
     } finally {
       await close();
     }

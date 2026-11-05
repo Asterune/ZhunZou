@@ -85,7 +85,8 @@ C:\Users\你的用户名\.cursor\mcp.json
 - `agent_hub_next_task`：领取看板下发的任务（长轮询）
 - `agent_hub_complete_task`：回报下发任务完成 / 失败
 - `agent_hub_report_task`：上报当前正在做的任务
-- `agent_hub_escalate`：遇到需要拍板的卡点时上奏
+- `agent_hub_decide`：统一裁决入口，提交提案由 hub 决定放行还是转人工
+- `agent_hub_escalate`：遇到需要拍板的卡点时上奏（低层工具）
 - `agent_hub_wait`：继续等待审批结果
 - `agent_hub_notify_done`：普通任务完成或进入空闲
 

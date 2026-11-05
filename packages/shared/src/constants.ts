@@ -92,6 +92,29 @@ export type ChatMessageStatus = (typeof CHAT_MESSAGE_STATUSES)[number];
 export const CHAT_MESSAGE_ORIGINS = ['human', 'agent'] as const;
 export type ChatMessageOrigin = (typeof CHAT_MESSAGE_ORIGINS)[number];
 
+/**
+ * How an agent-authored reply reached the queue: the hub may adopt it on its
+ * own (`AUTO`) or a human may adopt it after review (`HUMAN`).
+ */
+export const CHAT_MESSAGE_DECISIONS = ['AUTO', 'HUMAN'] as const;
+export type ChatMessageDecision = (typeof CHAT_MESSAGE_DECISIONS)[number];
+
+/* ------------------------------------------------------------------ */
+/* Hub-side judgment                                                   */
+/* ------------------------------------------------------------------ */
+
+/** What the agent is asking the hub to rule on. */
+export const DECISION_KINDS = ['reply', 'next_step', 'action'] as const;
+export type DecisionKind = (typeof DECISION_KINDS)[number];
+
+/** `APPROVED` = go ahead, `PENDING` = a ticket is waiting for a human. */
+export const DECISION_VERDICTS = ['APPROVED', 'PENDING'] as const;
+export type DecisionVerdict = (typeof DECISION_VERDICTS)[number];
+
+/** How aggressively the hub decides on its own. */
+export const DECISION_MODES = ['off', 'reply', 'all'] as const;
+export type DecisionMode = (typeof DECISION_MODES)[number];
+
 export const CHAT_SESSION_STATUSES = ['ACTIVE', 'CLOSED'] as const;
 export type ChatSessionStatus = (typeof CHAT_SESSION_STATUSES)[number];
 

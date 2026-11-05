@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   status TEXT NOT NULL,
   origin TEXT NOT NULL DEFAULT 'human',
   rationale TEXT,
+  decision TEXT,
   error TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -269,6 +270,7 @@ export function createDatabase(dbPath: string): {
   );
   ensureColumn(sqlite, 'chat_messages', 'origin', "TEXT NOT NULL DEFAULT 'human'");
   ensureColumn(sqlite, 'chat_messages', 'rationale', 'TEXT');
+  ensureColumn(sqlite, 'chat_messages', 'decision', 'TEXT');
 
   const db = drizzle(sqlite, { schema });
   return { sqlite, db };

@@ -8,10 +8,13 @@ import {
   AGENT_KINDS,
   AGENT_STATUSES,
   RULE_CANDIDATE_STATUSES,
+  CHAT_MESSAGE_DECISIONS,
   CHAT_MESSAGE_ORIGINS,
   CHAT_MESSAGE_STATUSES,
   CHAT_ROLES,
   CHAT_SESSION_STATUSES,
+  DECISION_KINDS,
+  DECISION_VERDICTS,
   TASK_LOG_STREAMS,
   TASK_STATUSES,
   TICKET_STATUSES,
@@ -389,6 +392,8 @@ export const chatMessageSchema = z.object({
   status: z.enum(CHAT_MESSAGE_STATUSES),
   /** `agent` when this is a draft the hub wrote for the human to adopt. */
   origin: z.enum(CHAT_MESSAGE_ORIGINS),
+  /** How the reply got queued; absent for human-typed messages. */
+  decision: z.enum(CHAT_MESSAGE_DECISIONS).optional(),
   /** Why the agent proposed this reply; shown next to the draft. */
   rationale: z.string().max(2_000).optional(),
   error: z.string().max(2_000).optional(),
@@ -433,6 +438,48 @@ export const proposeChatReplySchema = z.object({
 export const adoptChatProposalSchema = z.object({
   /** Human edit applied while adopting; omitted means send as drafted. */
   content: z.string().trim().min(1).max(32_000).optional(),
+});
+
+/**
+ * One submission to the hub's judgment layer.
+ *
+ * Under the "hub decides" model an agent never chooses between acting and
+ * asking: it describes the exact action it wants to take, and the hub answers
+ * `APPROVED` (proceed) or `PENDING` (a ticket now waits for a human).
+ */
+export const decisionRequestSchema = z.object({
+  env: envSchema,
+  projectName: projectNameSchema,
+  kind: z.enum(DECISION_KINDS),
+  /** The exact reply or next action the agent would take. */
+  proposal: z.string().trim().min(1).max(32_000),
+  /** One-line why, shown on the ticket and the transcript. */
+  rationale: z.string().trim().max(2_000).optional(),
+  /** Facts the hub should weigh: diff summary, test output, constraints. */
+  context: z.string().trim().max(8_000).optional(),
+  risk: z.enum(OPTION_RISKS).optional(),
+  /** Chat session for `kind: "reply"`; omitted means newest active session. */
+  sessionId: ticketIdSchema.optional(),
+  /** A real fork the agent cannot resolve; hub may pick one instead of asking. */
+  options: z.array(ticketOptionSchema).min(2).max(6).optional(),
+  recommendedOption: z.string().trim().min(1).max(8).optional(),
+  doneSummary: z.string().trim().max(2_000).optional(),
+  nextStepPlan: z.string().trim().max(2_000).optional(),
+});
+
+export const decisionResponseSchema = z.object({
+  verdict: z.enum(DECISION_VERDICTS),
+  reason: z.string().max(2_000),
+  /** Present when the hub approved a submission with a real fork. */
+  selectedOption: z.string().max(8).optional(),
+  /**
+   * Present when `verdict` is `PENDING` (waiting for a human), and for an
+   * approved non-reply step (the AUTO_RESOLVED audit record).
+   */
+  ticket: decisionTicketSchema.optional(),
+  /** Present when an approved reply was queued for the agent. */
+  session: chatSessionSchema.optional(),
+  message: chatMessageSchema.optional(),
 });
 
 export const completeChatMessageSchema = z.object({
@@ -822,6 +869,8 @@ export type CreateChatSessionInput = z.infer<typeof createChatSessionSchema>;
 export type SendChatMessageInput = z.infer<typeof sendChatMessageSchema>;
 export type ProposeChatReplyInput = z.infer<typeof proposeChatReplySchema>;
 export type AdoptChatProposalInput = z.infer<typeof adoptChatProposalSchema>;
+export type DecisionRequest = z.infer<typeof decisionRequestSchema>;
+export type DecisionResponse = z.infer<typeof decisionResponseSchema>;
 export type CompleteChatMessageInput = z.infer<
   typeof completeChatMessageSchema
 >;

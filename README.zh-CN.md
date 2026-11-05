@@ -246,6 +246,7 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/a/:token` | 签名审批页（免 Bearer，链接自带能力与有效期） |
 | `POST` | `/a/:token/resolve` | 从签名审批页提交决定 |
 | `POST` | `/api/tickets` | 创建工单，返回 `201`，随后异步触发 Meta-Agent 预审 |
+| `POST` | `/api/decisions` | 统一裁决入口：`{ kind, proposal, context?, risk?, options? }` → `APPROVED` 或 `PENDING` 工单 |
 | `GET` | `/api/tickets/:id` | 查询单个工单 |
 | `GET` | `/api/tickets` | 列表，支持 `?status=&projectName=&env=&limit=` |
 | `GET` | `/api/tickets/:id/wait?timeout=40000` | 长轮询；返回 `{ resolved, timedOut, ticket }` |
@@ -377,6 +378,28 @@ OpenAI 兼容模式的流程：
 - 数据库 schema / API 契约变更必须人工确认；
 - 前端状态管理统一 Pinia。
 
+### 统一裁决入口：决策权在 hub
+
+`POST /api/decisions`（MCP 工具 `agent_hub_decide`）是唯一入口。Agent 不再自己判断
+「这件事该不该问人」，而是提交**它打算原样执行的提案**加事实，由 hub 用同一套
+`GLOBAL_RULES` + 历史判例 + destructive 硬拦截来裁决：
+
+| 输入 | 说明 |
+| --- | --- |
+| `kind` | `reply`（会话回复）/ `next_step`（下一步动作）/ `action`（具体操作） |
+| `proposal` | 原样要执行的回复文本或动作，hub 就按这句裁决 |
+| `context` | 事实：测试输出、diff 摘要、约束条件 |
+| `risk` | `safe` / `caution` / `destructive`；`destructive` 永远转人工 |
+| `options` + `recommendedOption` | 仅在确实需要人多选一时提供 |
+
+返回只有两种结果：
+
+- `APPROVED`：放行；`kind=reply` 时回复已自动排队，端侧立刻领取；
+- `PENDING`：同一份提案变成待批奏折，Agent 继续长轮询等人类拍板。
+
+`DECISION_POLICY` 控制 hub 的权限边界：`off` 全问人、`reply` 只自动裁决会话回复、
+`all` 连下一步动作也裁决。默认 `reply`，即「说话可以自动、动代码必须问人」。
+
 ### 通知渠道
 
 `NOTIFY_CHANNELS` 逗号分隔、并行 fan-out；不配置时保持旧行为（有 `WEBHOOK_URL` 就用通用 Webhook）：
@@ -419,6 +442,7 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 | `OPENAI_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI 兼容接口 |
 | `OPENAI_API_KEY` | 空 | 为空时跳过自动预审 |
 | `META_AGENT_MODEL` | `deepseek-chat` | 预审模型 |
+| `DECISION_POLICY` | `reply` | 裁决权归属：`off` 全部问人 / `reply` 只自动裁决会话回复 / `all` 连下一步动作也由 hub 裁决（destructive 永远问人） |
 | `META_AGENT_ENDPOINT` | 空 | `provider=http` 时的决策服务地址 |
 | `META_AGENT_HEADERS` | 空 | 额外请求头（JSON） |
 | `META_AGENT_TIMEOUT_MS` | `15000` | LLM 请求超时 |
@@ -530,6 +554,7 @@ npx zhunzou-bridge init
 | `agent_hub_report_task` | 上报当前正在做的普通任务，避免看板一直显示「MCP 已连接」 |
 | `agent_hub_propose_reply` | 替人起草下一句回复（草稿模式）：人类采纳前不会真的发给 Agent |
 | `agent_hub_escalate` | 创建工单 → 长轮询 40s → 返回最终决策或超时引导 |
+| `agent_hub_decide` | 统一裁决入口：提交提案，hub 返回放行或开票转人工（agent 不再自行判断该不该问人） |
 | `agent_hub_wait` | 继续等待已有工单（策略 2 接力轮询） |
 | `agent_hub_notify_done` | 上报 `Idle`，更新看板状态灯 |
 

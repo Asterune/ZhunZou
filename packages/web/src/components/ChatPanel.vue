@@ -888,6 +888,12 @@ onBeforeUnmount(() => {
                 </button>
               </p>
               <p
+                v-if="message.role === 'user' && message.decision === 'AUTO'"
+                class="mt-1 text-[10px] text-on-primary/70"
+              >
+                {{ t('chat.autoAdopted', { reason: message.rationale ?? '' }) }}
+              </p>
+              <p
                 v-if="message.role === 'user' && message.status === 'PENDING'"
                 class="mt-1 text-[10px] text-on-primary/70"
               >

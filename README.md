@@ -257,6 +257,7 @@ node packages/bridge/bin/cli.js init
 | Tool | Purpose |
 | --- | --- |
 | `agent_hub_escalate` | Create a ticket, long-poll, return the decision or a waiting instruction |
+| `agent_hub_decide` | Ask the hub to rule on the next reply/step/action; returns a permit or opens a ticket |
 | `agent_hub_wait` | Continue waiting for an existing ticket |
 | `agent_hub_resume` | Recover pending decisions and active tasks after a restart |
 | `agent_hub_next_task` | Claim a task dispatched from the dashboard |
@@ -292,6 +293,7 @@ All `/api/*` routes require `Authorization: Bearer <HUB_SECRET_TOKEN>`. `/health
 | `GET` | `/a/:token` | Signed mobile approval page |
 | `POST` | `/a/:token/resolve` | Submit a decision from the page |
 | `POST` | `/api/tickets` | Create a ticket |
+| `POST` | `/api/decisions` | Hub-side judgment: `{ kind, proposal, context?, risk?, options? }` → `APPROVED` or a `PENDING` ticket |
 | `GET` | `/api/tickets` | List tickets (`status`, `projectName`, `limit`) |
 | `GET` | `/api/tickets/:id` | Get one ticket |
 | `GET` | `/api/tickets/:id/wait?timeout=40000` | Long-poll for a decision |
@@ -350,6 +352,7 @@ Copy `.env.example` to `.env`. Common variables:
 | `OPENAI_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI-compatible endpoint |
 | `OPENAI_API_KEY` | empty | Empty = skip auto-review |
 | `META_AGENT_MODEL` | `deepseek-chat` | Review model |
+| `DECISION_POLICY` | `reply` | Who decides: `off` (always ask), `reply` (hub auto-sends chat replies only), `all` (hub also rules on next steps; destructive always asks) |
 | `AUTO_RESOLVE_TIMEOUT_MS` | `0` | Timeout SLA; `0` disables |
 | `AUTO_RESOLVE_PROJECTS` | empty | Project allowlist; empty = all |
 | `PUBLIC_BASE_URL` | empty | Origin used in signed approval links |

@@ -5,6 +5,7 @@ import type {
   AgentStatus,
   ChatMessageStatus,
   ChatMessageOrigin,
+  ChatMessageDecision,
   ChatRole,
   ChatSessionStatus,
   DeviceCapabilities,
@@ -187,6 +188,8 @@ export const chatMessages = sqliteTable(
     origin: text('origin').$type<ChatMessageOrigin>().notNull().default('human'),
     /** Why the agent drafted this reply; null for human messages. */
     rationale: text('rationale'),
+    /** `AUTO` when the hub adopted it, `HUMAN` when a person did. */
+    decision: text('decision').$type<ChatMessageDecision>(),
     error: text('error'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
