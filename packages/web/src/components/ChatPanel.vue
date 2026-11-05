@@ -4,6 +4,7 @@ import {
   MessageSquarePlus,
   PanelLeft,
   Plus,
+  RefreshCw,
   Sparkles,
   X,
   XCircle,
@@ -65,6 +66,8 @@ const form = reactive({
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let slowTimer: ReturnType<typeof setInterval> | null = null;
 let listInFlight = false;
+/** Sequence number of the newest `refreshSession` request. */
+let sessionRequest = 0;
 
 const envOptions = computed(() => {
   const agents = store.agents.filter((agent) => agent.status === 'active');
@@ -199,18 +202,29 @@ async function loadSessions(
   }
 }
 
-async function refreshSession(): Promise<void> {
-  if (!activeId.value || loadingSession.value) return;
+async function refreshSession(
+  options: { force?: boolean } = {},
+): Promise<void> {
+  const id = activeId.value;
+  if (!id) return;
+  // Background polls must not pile up on the same session, but an explicit
+  // switch has to go through: otherwise a poll already in flight makes the
+  // tap a no-op and its response paints the *old* session back over the new
+  // one. `request` lets the newest call win regardless of arrival order.
+  if (loadingSession.value && !options.force) return;
+  const request = ++sessionRequest;
   loadingSession.value = true;
   try {
-    const response = await hubApi.getChatSession(store.token, activeId.value);
+    const response = await hubApi.getChatSession(store.token, id);
+    if (request !== sessionRequest || activeId.value !== id) return;
     session.value = response.session;
     messages.value = response.messages ?? [];
     error.value = '';
   } catch (cause) {
+    if (request !== sessionRequest || activeId.value !== id) return;
     error.value = describe(cause);
   } finally {
-    loadingSession.value = false;
+    if (request === sessionRequest) loadingSession.value = false;
   }
 }
 
@@ -220,7 +234,7 @@ async function openSession(id: string): Promise<void> {
   session.value = null;
   messages.value = [];
   cancelEditProposal();
-  await refreshSession();
+  await refreshSession({ force: true });
   stickToBottom = true;
   void nextTick(() => scrollToBottom(true));
   if (typeof window !== 'undefined') {
@@ -932,16 +946,25 @@ onBeforeUnmount(() => {
         class="flex min-h-[320px] items-center justify-center rounded-xl border border-dashed border-outline-variant bg-surface-container-low/60 p-6 text-center text-[12px] text-on-surface-variant"
       >
         <div>
-          <Plus :size="22" class="mx-auto mb-2 text-on-surface-variant/50" />
-          {{ t('chat.selectOrCreate') }}
-          <button
-            type="button"
-            class="mt-3 flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container lg:hidden"
-            @click="openSessionList"
-          >
-            <PanelLeft :size="14" />
-            {{ t('chat.openList') }}
-          </button>
+          <template v-if="loadingSession">
+            <RefreshCw
+              :size="22"
+              class="mx-auto mb-2 animate-spin text-on-surface-variant/50"
+            />
+            {{ t('chat.loadingSession') }}
+          </template>
+          <template v-else>
+            <Plus :size="22" class="mx-auto mb-2 text-on-surface-variant/50" />
+            {{ t('chat.selectOrCreate') }}
+            <button
+              type="button"
+              class="mt-3 flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container lg:hidden"
+              @click="openSessionList"
+            >
+              <PanelLeft :size="14" />
+              {{ t('chat.openList') }}
+            </button>
+          </template>
         </div>
       </div>
     </div>

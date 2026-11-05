@@ -317,6 +317,7 @@ const zh: Record<string, string> = {
   'chat.runnerHintMiddle': '或',
   'chat.runnerHintAfter': '，否则消息会停在待领取。',
   'chat.selectOrCreate': '选择一个会话，或新建一个。',
+  'chat.loadingSession': '正在加载会话…',
 
   'rules.eyebrow': 'Meta-Agent Policy',
   'rules.eyebrowLocal': '御批枢密章法',
@@ -808,6 +809,7 @@ const en: Record<string, string> = {
   'chat.runnerHintMiddle': 'or',
   'chat.runnerHintAfter': 'running, otherwise messages stay queued.',
   'chat.selectOrCreate': 'Pick a chat, or create one.',
+  'chat.loadingSession': 'Loading session…',
 
   'rules.eyebrow': 'Meta-Agent Policy',
   'rules.eyebrowLocal': 'Engineering charter',
