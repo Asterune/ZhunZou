@@ -74,12 +74,23 @@ export const CHAT_ROLES = ['user', 'assistant', 'system'] as const;
 export type ChatRole = (typeof CHAT_ROLES)[number];
 
 export const CHAT_MESSAGE_STATUSES = [
+  /** Agent-drafted reply waiting for a human to adopt it. */
+  'PROPOSED',
   'PENDING',
   'RUNNING',
   'DONE',
   'FAILED',
+  /** A draft that was rejected; kept in the transcript for audit. */
+  'DISCARDED',
 ] as const;
 export type ChatMessageStatus = (typeof CHAT_MESSAGE_STATUSES)[number];
+
+/**
+ * Who authored a chat message. `agent` marks drafts the hub proposed on the
+ * human's behalf, so the transcript never pretends the human typed them.
+ */
+export const CHAT_MESSAGE_ORIGINS = ['human', 'agent'] as const;
+export type ChatMessageOrigin = (typeof CHAT_MESSAGE_ORIGINS)[number];
 
 export const CHAT_SESSION_STATUSES = ['ACTIVE', 'CLOSED'] as const;
 export type ChatSessionStatus = (typeof CHAT_SESSION_STATUSES)[number];

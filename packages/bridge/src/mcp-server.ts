@@ -140,6 +140,24 @@ const reportTaskInput = {
     .describe('Current env status; defaults to Running'),
 };
 
+const proposeReplyInput = {
+  content: z
+    .string()
+    .trim()
+    .min(1)
+    .max(32000)
+    .describe(
+      'The exact reply you would send as the human next. It is stored as a draft and never sent until a human adopts it.',
+    ),
+  rationale: z
+    .string()
+    .trim()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe('One sentence on why this is the right next step'),
+};
+
 const reportExchangeInput = {
   question: z
     .string()
@@ -469,6 +487,33 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
 
         return renderToolResult(
           `Zhunzou status updated: ${heartbeat.env} is now ${heartbeat.status}.`,
+        );
+      } catch (error) {
+        return renderToolError(errorText(error));
+      }
+    },
+  );
+
+  server.registerTool(
+    'agent_hub_propose_reply',
+    {
+      title: 'Draft the next reply for the human to adopt',
+      description:
+        'Use this at the end of a turn when you can see the obvious next step: write the reply the human would send, ' +
+        'instead of asking them to type it. Zhunzou stores it as a draft and the human adopts, edits or discards it in ' +
+        'the dashboard; nothing is delivered to the agent until they do. Do not use this for decisions that need a ' +
+        'ruling — call agent_hub_escalate for those.',
+      inputSchema: proposeReplyInput,
+    },
+    async (args) => {
+      try {
+        const response = await client.proposeChatReply({
+          content: args.content,
+          ...(args.rationale ? { rationale: args.rationale } : {}),
+        });
+
+        return renderToolResult(
+          `已提交待采纳草稿 #${response.message.id}（会话 #${response.session.id}）：${args.rationale ?? '等待人工采纳'}`,
         );
       } catch (error) {
         return renderToolError(errorText(error));

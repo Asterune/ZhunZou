@@ -13,6 +13,7 @@ import type { DecisionTicket, SyncState } from '@zhunzou/shared';
 import {
   appendChatEventSchema,
   appendTaskLogSchema,
+  adoptChatProposalSchema,
   batchResolveTicketsSchema,
   bindWorkspaceProjectSchema,
   bridgeReleaseManifestSchema,
@@ -42,6 +43,7 @@ import {
   listWorkspaceProjectsQuerySchema,
   nextChatMessageQuerySchema,
   nextTaskQuerySchema,
+  proposeChatReplySchema,
   releaseTaskSchema,
   reportExchangeSchema,
   resolveTicketSchema,
@@ -1217,6 +1219,41 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return reply.code(201).send({ session, messages: [] });
       });
 
+      // Draft mode (L1): an agent proposes the next reply, but the draft stays
+      // PROPOSED and therefore invisible to the bridge long-poll until a human
+      // adopts it. Session is resolved from the env so the MCP tool does not
+      // need to know which conversation it woke up in.
+      api.post('/sessions/proposals', async (request, reply) => {
+        const input = proposeChatReplySchema.parse(request.body);
+        requireEnvAccess(request, input.env);
+
+        const session = input.sessionId
+          ? repo.getChatSession(parseTicketId(input.sessionId))
+          : repo.findLatestActiveChatSession(input.env);
+        if (!session) {
+          throw new NotFoundError(`no active session for env ${input.env}`);
+        }
+        if (session.env !== input.env) {
+          throw new BadRequestError(
+            `session ${formatTicketId(session.id)} belongs to ${session.env}`,
+            'SESSION_ENV_MISMATCH',
+          );
+        }
+        if (session.status !== 'ACTIVE') {
+          throw new ConflictError(
+            `session ${formatTicketId(session.id)} is ${session.status}`,
+            'SESSION_CLOSED',
+          );
+        }
+
+        const message = repo.createChatProposal(Number(session.id), {
+          content: input.content,
+          ...(input.rationale ? { rationale: input.rationale } : {}),
+        });
+        sessionBus.publish(session);
+        return reply.code(201).send({ session, message });
+      });
+
       api.get('/sessions', async (request) => {
         requireAdmin(request);
         const query = listChatSessionsQuerySchema.parse(request.query);
@@ -1280,6 +1317,68 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         sessionBus.publish(session);
         return reply.code(201).send({ session, message });
       });
+
+      // Adopting a draft is the only path that turns agent-authored text into
+      // a queued user message; the human may edit it on the way through.
+      api.post(
+        '/sessions/:id/proposals/:messageId/adopt',
+        async (request, reply) => {
+          requireAdmin(request);
+          const { id, messageId } = chatMessageParamsSchema.parse(request.params);
+          const session = repo.getChatSession(parseTicketId(id));
+          if (!session) {
+            throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+          }
+          if (session.status !== 'ACTIVE') {
+            throw new ConflictError(
+              `session ${formatTicketId(id)} is ${session.status}`,
+              'SESSION_CLOSED',
+            );
+          }
+
+          const input = adoptChatProposalSchema.parse(request.body ?? {});
+          const message = repo.adoptChatProposal(
+            Number(session.id),
+            parseTicketId(messageId),
+            input,
+          );
+          if (!message) {
+            throw new ConflictError(
+              `proposal ${formatTicketId(messageId)} is not pending`,
+              'INVALID_PROPOSAL_STATUS',
+            );
+          }
+
+          sessionBus.publish(session);
+          return reply.code(201).send({ session, message });
+        },
+      );
+
+      api.post(
+        '/sessions/:id/proposals/:messageId/discard',
+        async (request, reply) => {
+          requireAdmin(request);
+          const { id, messageId } = chatMessageParamsSchema.parse(request.params);
+          const session = repo.getChatSession(parseTicketId(id));
+          if (!session) {
+            throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+          }
+
+          const message = repo.discardChatProposal(
+            Number(session.id),
+            parseTicketId(messageId),
+          );
+          if (!message) {
+            throw new ConflictError(
+              `proposal ${formatTicketId(messageId)} is not pending`,
+              'INVALID_PROPOSAL_STATUS',
+            );
+          }
+
+          sessionBus.publish(session);
+          return { session, message };
+        },
+      );
 
       api.post('/sessions/:id/close', async (request) => {
         requireAdmin(request);

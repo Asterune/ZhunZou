@@ -2,6 +2,7 @@
 import {
   Bot,
   CheckCircle2,
+  Ellipsis,
   Gavel,
   LogOut,
   MessageSquare,
@@ -11,10 +12,12 @@ import {
   SlidersHorizontal,
   SquareTerminal,
   WifiOff,
+  X,
 } from 'lucide-vue-next';
 import {
   computed,
   defineAsyncComponent,
+  nextTick,
   onBeforeUnmount,
   onMounted,
   ref,
@@ -95,6 +98,57 @@ const tabs = computed(() => [
   { key: 'rules' as const, label: t('app.tabs.rules'), icon: SlidersHorizontal },
 ]);
 
+// The mobile/PWA bottom bar only keeps the three high-frequency tabs and
+// folds the rest into a "More" sheet (see docs/UI_REDESIGN_BRIEF.md §16.3).
+const primaryTabKeys: ReadonlySet<Tab> = new Set(['pending', 'tasks', 'chat']);
+
+const primaryTabs = computed(() =>
+  tabs.value.filter((tab) => primaryTabKeys.has(tab.key)),
+);
+
+const moreTabs = computed(() =>
+  tabs.value.filter((tab) => !primaryTabKeys.has(tab.key)),
+);
+
+const moreActive = computed(() =>
+  moreTabs.value.some((tab) => tab.key === activeTab.value),
+);
+
+const moreCount = computed(() =>
+  moreTabs.value.reduce((sum, tab) => sum + (tab.count ?? 0), 0),
+);
+
+const moreOpen = ref(false);
+const moreButton = ref<HTMLButtonElement | null>(null);
+const moreSheet = ref<HTMLElement | null>(null);
+
+function selectTab(tab: Tab): void {
+  activeTab.value = tab;
+  moreOpen.value = false;
+}
+
+function closeMore(): void {
+  moreOpen.value = false;
+}
+
+function onMoreKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') closeMore();
+}
+
+watch(moreOpen, async (open) => {
+  if (typeof document !== 'undefined') {
+    document.body.style.overflow = open ? 'hidden' : '';
+  }
+  if (open) {
+    document.addEventListener('keydown', onMoreKeydown);
+    await nextTick();
+    moreSheet.value?.focus();
+  } else {
+    document.removeEventListener('keydown', onMoreKeydown);
+    moreButton.value?.focus();
+  }
+});
+
 const connectionLabel = computed(() => {
   if (store.connection === 'online') return t('app.connection.online');
   if (store.connection === 'offline') return t('app.connection.offline');
@@ -114,6 +168,8 @@ const connectionTextClass = computed(() => {
 });
 
 watch(activeTab, (tab) => {
+  moreOpen.value = false;
+
   if (tab === 'rules') {
     void store.loadRules();
     void store.loadRuleCandidates();
@@ -140,6 +196,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   store.stop();
+  document.removeEventListener('keydown', onMoreKeydown);
+  document.body.style.overflow = '';
 });
 </script>
 
@@ -368,10 +426,11 @@ onBeforeUnmount(() => {
 
     <nav
       class="fixed inset-x-0 bottom-0 z-40 border-t border-outline-variant/35 bg-surface/95 pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] shadow-[0_-2px_12px_rgba(30,27,25,0.05)] backdrop-blur-xl lg:hidden"
+      :aria-label="t('app.mainNav')"
     >
       <div class="flex h-16 items-stretch">
         <button
-          v-for="tab in tabs"
+          v-for="tab in primaryTabs"
           :key="tab.key"
           type="button"
           class="relative flex flex-1 flex-col items-center justify-center gap-1 text-[11px]"
@@ -381,7 +440,7 @@ onBeforeUnmount(() => {
               ? 'font-semibold text-primary'
               : 'text-on-surface-variant'
           "
-          @click="activeTab = tab.key"
+          @click="selectTab(tab.key)"
         >
           <span class="relative">
             <component :is="tab.icon" :size="21" />
@@ -394,8 +453,117 @@ onBeforeUnmount(() => {
           </span>
           <span>{{ tab.label }}</span>
         </button>
+
+        <button
+          ref="moreButton"
+          type="button"
+          class="relative flex flex-1 flex-col items-center justify-center gap-1 text-[11px]"
+          :aria-expanded="moreOpen"
+          :aria-current="moreActive ? 'page' : undefined"
+          :class="
+            moreActive || moreOpen
+              ? 'font-semibold text-primary'
+              : 'text-on-surface-variant'
+          "
+          @click="moreOpen = true"
+        >
+          <span class="relative">
+            <Ellipsis :size="21" />
+            <span
+              v-if="moreCount"
+              class="absolute -right-3 -top-0.5 h-2 w-2 rounded-full bg-primary ring-2 ring-surface"
+            />
+          </span>
+          <span>{{ t('app.tabs.more') }}</span>
+        </button>
       </div>
     </nav>
+
+    <Teleport to="body">
+      <Transition
+        enter-active-class="transition duration-200 ease-out"
+        enter-from-class="opacity-0"
+        leave-active-class="transition duration-150 ease-in"
+        leave-to-class="opacity-0"
+      >
+        <div
+          v-if="moreOpen"
+          class="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm lg:hidden"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="t('app.more.title')"
+          @click.self="closeMore"
+        >
+          <div
+            ref="moreSheet"
+            tabindex="-1"
+            class="w-full max-w-lg rounded-t-2xl bg-surface px-4 pb-[calc(1rem_+_env(safe-area-inset-bottom))] pt-3 shadow-2xl outline-none ring-1 ring-outline-variant/40"
+          >
+            <div class="mx-auto h-1 w-10 rounded-full bg-outline-variant/60" />
+
+            <div class="mt-3 flex items-start justify-between gap-3 px-1">
+              <div>
+                <h2
+                  class="text-lg font-semibold text-on-surface"
+                  style="font-family: var(--font-serif)"
+                >
+                  {{ t('app.more.title') }}
+                </h2>
+                <p class="mt-0.5 text-[11px] text-on-surface-variant">
+                  {{ t('app.more.desc') }}
+                </p>
+              </div>
+              <button
+                type="button"
+                :aria-label="t('app.more.close')"
+                class="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface"
+                @click="closeMore"
+              >
+                <X :size="18" />
+              </button>
+            </div>
+
+            <div class="mt-3 grid grid-cols-2 gap-2">
+              <button
+                v-for="tab in moreTabs"
+                :key="tab.key"
+                type="button"
+                class="flex min-h-[64px] items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition"
+                :aria-current="activeTab === tab.key ? 'page' : undefined"
+                :class="
+                  activeTab === tab.key
+                    ? 'bg-primary-fixed text-on-primary-fixed ring-1 ring-inset ring-primary/30'
+                    : 'bg-surface-container-low text-on-surface hover:bg-surface-container'
+                "
+                @click="selectTab(tab.key)"
+              >
+                <span
+                  class="grid h-9 w-9 shrink-0 place-items-center rounded-lg"
+                  :class="
+                    activeTab === tab.key
+                      ? 'bg-primary text-on-primary'
+                      : 'bg-surface-container text-on-surface-variant'
+                  "
+                >
+                  <component :is="tab.icon" :size="18" />
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-sm font-medium">
+                    {{ tab.label }}
+                  </span>
+                  <span
+                    v-if="tab.count"
+                    class="mt-0.5 block text-[10px] text-on-surface-variant"
+                  >
+                    {{ t('app.more.count', { count: tab.count }) }}
+                  </span>
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 
   <UpdatePrompt />

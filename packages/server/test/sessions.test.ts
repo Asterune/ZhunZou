@@ -357,4 +357,149 @@ describe('interactive sessions', () => {
       await ctx.close();
     }
   });
+
+  it('keeps an agent-drafted reply invisible until a human adopts it', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const agentAuth = await issueAgentToken(ctx);
+
+      const drafted = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/sessions/proposals',
+        headers: agentAuth,
+        payload: {
+          env: ENV,
+          content: '继续把剩下的两个用例补完',
+          rationale: '改完的模块还缺边界用例',
+        },
+      });
+      expect(drafted.statusCode).toBe(201);
+      const proposal = drafted.json().message as ChatMessage;
+      expect(proposal).toMatchObject({
+        role: 'user',
+        status: 'PROPOSED',
+        origin: 'agent',
+        rationale: '改完的模块还缺边界用例',
+      });
+
+      // Draft mode must not speak for the human: the bridge cannot claim it.
+      const beforeAdoption = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10`,
+        headers: agentAuth,
+      });
+      expect(beforeAdoption.json().timedOut).toBe(true);
+      expect(beforeAdoption.json().message).toBeNull();
+
+      const adopted = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/proposals/${proposal.id}/adopt`,
+        headers: ctx.auth,
+        payload: { content: '继续把剩下的两个用例补完，顺便跑一次全量测试' },
+      });
+      expect(adopted.statusCode).toBe(201);
+      const message = adopted.json().message as ChatMessage;
+      expect(message.status).toBe('PENDING');
+      expect(message.content).toContain('全量测试');
+
+      const claimed = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10`,
+        headers: agentAuth,
+      });
+      expect(claimed.json().message.id).toBe(proposal.id);
+      expect(claimed.json().message.status).toBe('RUNNING');
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('reports how many messages still need attention per session', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const agentAuth = await issueAgentToken(ctx);
+
+      const drafted = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/sessions/proposals',
+        headers: agentAuth,
+        payload: { env: ENV, sessionId: session.id, content: '补一条回归测试' },
+      });
+      const proposal = drafted.json().message as ChatMessage;
+
+      const withDraft = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/sessions',
+        headers: ctx.auth,
+      });
+      expect(withDraft.json().sessions[0]).toMatchObject({
+        id: session.id,
+        messageCount: 1,
+        pendingCount: 1,
+      });
+
+      await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/proposals/${proposal.id}/discard`,
+        headers: ctx.auth,
+      });
+
+      const afterDiscard = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/sessions',
+        headers: ctx.auth,
+      });
+      expect(afterDiscard.json().sessions[0]).toMatchObject({
+        id: session.id,
+        messageCount: 1,
+        pendingCount: 0,
+      });
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('discards a draft without queueing it, keeping it for audit', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const agentAuth = await issueAgentToken(ctx);
+
+      const drafted = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/sessions/proposals',
+        headers: agentAuth,
+        payload: { env: ENV, sessionId: session.id, content: '把死代码删掉' },
+      });
+      expect(drafted.statusCode).toBe(201);
+      const proposal = drafted.json().message as ChatMessage;
+
+      const discarded = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/proposals/${proposal.id}/discard`,
+        headers: ctx.auth,
+      });
+      expect(discarded.statusCode).toBe(200);
+      expect(discarded.json().message.status).toBe('DISCARDED');
+
+      const transcript = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}`,
+        headers: ctx.auth,
+      });
+      const messages = transcript.json().messages as ChatMessage[];
+      expect(messages.map((item) => item.id)).toContain(proposal.id);
+
+      const next = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10`,
+        headers: agentAuth,
+      });
+      expect(next.json().timedOut).toBe(true);
+    } finally {
+      await ctx.close();
+    }
+  });
 });

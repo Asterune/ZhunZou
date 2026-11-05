@@ -82,6 +82,27 @@ function fakeHub(overrides: Partial<HubApi> = {}): HubApi {
       tickets: [makeTicket(), makeTicket({ status: 'AUTO_RESOLVED', selectedOption: 'A' })],
       tasks: [makeTask()],
     })),
+    proposeChatReply: vi.fn(async (input: { content: string; rationale?: string }) => ({
+      session: {
+        id: '7',
+        env: 'company-cursor',
+        title: '会话',
+        status: 'ACTIVE' as const,
+        createdAt: 1,
+        updatedAt: 2,
+      },
+      message: {
+        id: '31',
+        sessionId: '7',
+        role: 'user' as const,
+        content: input.content,
+        status: 'PROPOSED' as const,
+        origin: 'agent' as const,
+        ...(input.rationale ? { rationale: input.rationale } : {}),
+        createdAt: 2,
+        updatedAt: 2,
+      },
+    })),
     ...overrides,
   };
 }
@@ -108,6 +129,7 @@ describe('MCP tool registration', () => {
         'agent_hub_escalate',
         'agent_hub_next_task',
         'agent_hub_notify_done',
+        'agent_hub_propose_reply',
         'agent_hub_report_exchange',
         'agent_hub_report_task',
         'agent_hub_resume',
@@ -421,6 +443,32 @@ describe('agent_hub_report_task', () => {
         projectName: 'yikuaomed-erp',
         currentTask: '修复登录页校验',
       });
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe('agent_hub_propose_reply', () => {
+  it('stores a draft and reports the pending proposal', async () => {
+    const client = fakeHub();
+    const { mcpClient, close } = await connect(client);
+
+    try {
+      const result = await mcpClient.callTool({
+        name: 'agent_hub_propose_reply',
+        arguments: {
+          content: '先跑一下 pnpm test，再决定要不要改 schema',
+          rationale: '测试结果会影响下一步',
+        },
+      });
+
+      expect((result as ToolResult).isError).toBeFalsy();
+      expect(client.proposeChatReply).toHaveBeenCalledWith({
+        content: '先跑一下 pnpm test，再决定要不要改 schema',
+        rationale: '测试结果会影响下一步',
+      });
+      expect(textOf(result)).toContain('待采纳草稿 #31');
     } finally {
       await close();
     }

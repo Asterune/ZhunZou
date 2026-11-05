@@ -8,6 +8,7 @@ import {
   AGENT_KINDS,
   AGENT_STATUSES,
   RULE_CANDIDATE_STATUSES,
+  CHAT_MESSAGE_ORIGINS,
   CHAT_MESSAGE_STATUSES,
   CHAT_ROLES,
   CHAT_SESSION_STATUSES,
@@ -373,6 +374,11 @@ export const chatSessionSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
   lastMessageAt: z.number().int().nonnegative().optional(),
   messageCount: z.number().int().nonnegative().optional(),
+  /**
+   * Messages that still need human or runner attention (draft to adopt,
+   * queued, or failed). Drives the unread-style dot in the session list.
+   */
+  pendingCount: z.number().int().nonnegative().optional(),
 });
 
 export const chatMessageSchema = z.object({
@@ -381,6 +387,10 @@ export const chatMessageSchema = z.object({
   role: z.enum(CHAT_ROLES),
   content: z.string().max(32_000),
   status: z.enum(CHAT_MESSAGE_STATUSES),
+  /** `agent` when this is a draft the hub wrote for the human to adopt. */
+  origin: z.enum(CHAT_MESSAGE_ORIGINS),
+  /** Why the agent proposed this reply; shown next to the draft. */
+  rationale: z.string().max(2_000).optional(),
   error: z.string().max(2_000).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
@@ -403,6 +413,26 @@ export const createChatSessionSchema = z.object({
 
 export const sendChatMessageSchema = z.object({
   content: z.string().trim().min(1).max(32_000),
+});
+
+/**
+ * Draft a reply on the human's behalf (L1 "draft mode").
+ *
+ * The draft is stored as a `PROPOSED` user message. Only after a human adopts
+ * it does it become `PENDING` and reach the bridge long-poll, so an agent can
+ * never put words in the human's mouth unreviewed.
+ */
+export const proposeChatReplySchema = z.object({
+  env: envSchema,
+  /** Target conversation; when omitted the newest active session for `env` wins. */
+  sessionId: ticketIdSchema.optional(),
+  content: z.string().trim().min(1).max(32_000),
+  rationale: z.string().trim().min(1).max(2_000).optional(),
+});
+
+export const adoptChatProposalSchema = z.object({
+  /** Human edit applied while adopting; omitted means send as drafted. */
+  content: z.string().trim().min(1).max(32_000).optional(),
 });
 
 export const completeChatMessageSchema = z.object({
@@ -790,6 +820,8 @@ export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ChatEvent = z.infer<typeof chatEventSchema>;
 export type CreateChatSessionInput = z.infer<typeof createChatSessionSchema>;
 export type SendChatMessageInput = z.infer<typeof sendChatMessageSchema>;
+export type ProposeChatReplyInput = z.infer<typeof proposeChatReplySchema>;
+export type AdoptChatProposalInput = z.infer<typeof adoptChatProposalSchema>;
 export type CompleteChatMessageInput = z.infer<
   typeof completeChatMessageSchema
 >;

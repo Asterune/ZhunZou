@@ -281,6 +281,13 @@ export async function runSessionDaemon(
       const run = buildChatRun(adapter, wake, session, message);
       const result = await runProcess(run.binary, run.args, {
         cwd: wake.cwd,
+        env: {
+          ...process.env,
+          // The MCP server inside this CLI inherits these, so
+          // agent_hub_propose_reply can address the exact conversation.
+          ZHUNZOU_CHAT_SESSION_ID: session.id,
+          ZHUNZOU_CHAT_ENV: session.env,
+        },
         timeoutMs: wake.runTimeoutMs,
         onOutput: sink.push,
       });

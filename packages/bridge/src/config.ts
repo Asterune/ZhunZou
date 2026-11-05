@@ -31,6 +31,12 @@ export interface BridgeConfig {
   /** Local client type shown in the dashboard's agent registry. */
   agentKind: AgentKind;
   /**
+   * Chat session this process is answering, injected by the session daemon.
+   * Lets `agent_hub_propose_reply` target the exact conversation instead of
+   * guessing from the env.
+   */
+  chatSessionId?: string;
+  /**
    * Realtime transport for claims/waits. `auto` tries `/ws/bridge` and falls
    * back to the existing HTTP long polls; `http` disables WS entirely.
    */
@@ -102,6 +108,7 @@ export function loadBridgeConfig(
   }
 
   const rawUrl = (env.HUB_URL ?? DEFAULT_HUB_URL).trim().replace(/\/+$/, '');
+  const chatSessionId = (env.ZHUNZOU_CHAT_SESSION_ID ?? '').trim();
   const projectName =
     (env.ZHUNZOU_PROJECT ?? '').trim() || detectWorkspaceProject(cwd) || '';
   const fallbackRaw = env.ZHUNZOU_FALLBACK ?? env.AGENT_HUB_FALLBACK;
@@ -135,5 +142,8 @@ export function loadBridgeConfig(
     ),
     agentKind: readAgentKind(env.ZHUNZOU_AGENT_KIND),
     transport: readTransport(env.ZHUNZOU_TRANSPORT),
+    ...(chatSessionId && /^\d+$/.test(chatSessionId)
+      ? { chatSessionId }
+      : {}),
   };
 }

@@ -21,6 +21,7 @@ import type {
   ChatEventListResponse,
   ChatMessage,
   ChatMessageResponse,
+  ChatMessageStatus,
   ChatSession,
   CompleteChatMessageInput,
   CompleteTaskInput,
@@ -95,6 +96,13 @@ import {
 import { BadRequestError, ConflictError } from './errors.js';
 
 const AWAITING: TicketStatus[] = ['PENDING_META', 'PENDING_HUMAN'];
+
+/** Chat messages that have not settled yet; drives the session-list dot. */
+const CHAT_PENDING_STATUSES: ChatMessageStatus[] = [
+  'PROPOSED',
+  'PENDING',
+  'FAILED',
+];
 
 /** Keep each task's live log bounded; older chunks are trimmed on append. */
 const MAX_TASK_LOG_BYTES = 256 * 1024;
@@ -213,7 +221,11 @@ function toTaskLog(row: TaskLogRow): TaskLog {
   };
 }
 
-function toChatSession(row: ChatSessionRow, messageCount?: number): ChatSession {
+function toChatSession(
+  row: ChatSessionRow,
+  messageCount?: number,
+  pendingCount?: number,
+): ChatSession {
   return {
     id: String(row.id),
     env: row.env,
@@ -225,6 +237,7 @@ function toChatSession(row: ChatSessionRow, messageCount?: number): ChatSession 
     updatedAt: row.updatedAt,
     ...(row.lastMessageAt !== null ? { lastMessageAt: row.lastMessageAt } : {}),
     ...(messageCount !== undefined ? { messageCount } : {}),
+    ...(pendingCount !== undefined ? { pendingCount } : {}),
   };
 }
 
@@ -235,6 +248,8 @@ function toChatMessage(row: ChatMessageRow): ChatMessage {
     role: row.role,
     content: row.content,
     status: row.status,
+    origin: row.origin,
+    ...(row.rationale ? { rationale: row.rationale } : {}),
     ...(row.error ? { error: row.error } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -464,6 +479,23 @@ export interface TicketStore {
     input: SendChatMessageInput,
     now?: number,
   ): ChatMessage;
+  findLatestActiveChatSession(env: string): ChatSession | null;
+  createChatProposal(
+    sessionId: number,
+    input: { content: string; rationale?: string },
+    now?: number,
+  ): ChatMessage;
+  adoptChatProposal(
+    sessionId: number,
+    messageId: number,
+    input: { content?: string },
+    now?: number,
+  ): ChatMessage | null;
+  discardChatProposal(
+    sessionId: number,
+    messageId: number,
+    now?: number,
+  ): ChatMessage | null;
   claimNextChatMessage(
     env: string,
     now?: number,
@@ -1276,7 +1308,7 @@ export class TicketRepository implements TicketStore {
     if (input.projectName) {
       this.bindWorkspaceProject(input.env, input.projectName, now);
     }
-    return toChatSession(row, 0);
+    return toChatSession(row, 0, 0);
   }
 
   listChatSessions(
@@ -1291,16 +1323,28 @@ export class TicketRepository implements TicketStore {
       .limit(query.limit)
       .all();
 
+    const sessionIds = rows.map((row) => row.id);
     const counts = new Map(
       rows.length === 0
         ? []
         : this.db
             .select({ sessionId: chatMessages.sessionId, value: count() })
             .from(chatMessages)
+            .where(inArray(chatMessages.sessionId, sessionIds))
+            .groupBy(chatMessages.sessionId)
+            .all()
+            .map((row) => [row.sessionId, Number(row.value)]),
+    );
+    const pendingCounts = new Map(
+      rows.length === 0
+        ? []
+        : this.db
+            .select({ sessionId: chatMessages.sessionId, value: count() })
+            .from(chatMessages)
             .where(
-              inArray(
-                chatMessages.sessionId,
-                rows.map((row) => row.id),
+              and(
+                inArray(chatMessages.sessionId, sessionIds),
+                inArray(chatMessages.status, CHAT_PENDING_STATUSES),
               ),
             )
             .groupBy(chatMessages.sessionId)
@@ -1309,7 +1353,11 @@ export class TicketRepository implements TicketStore {
     );
 
     return rows.map((row) =>
-      toChatSession(row, counts.get(row.id) ?? 0),
+      toChatSession(
+        row,
+        counts.get(row.id) ?? 0,
+        pendingCounts.get(row.id) ?? 0,
+      ),
     );
   }
 
@@ -1326,7 +1374,21 @@ export class TicketRepository implements TicketStore {
       .from(chatMessages)
       .where(eq(chatMessages.sessionId, id))
       .get();
-    return toChatSession(row, Number(countRow?.value ?? 0));
+    const pendingRow = this.db
+      .select({ value: count() })
+      .from(chatMessages)
+      .where(
+        and(
+          eq(chatMessages.sessionId, id),
+          inArray(chatMessages.status, CHAT_PENDING_STATUSES),
+        ),
+      )
+      .get();
+    return toChatSession(
+      row,
+      Number(countRow?.value ?? 0),
+      Number(pendingRow?.value ?? 0),
+    );
   }
 
   getChatMessage(id: number): ChatMessage | null {
@@ -1361,6 +1423,7 @@ export class TicketRepository implements TicketStore {
         role: 'user',
         content: input.content,
         status: 'PENDING',
+        origin: 'human',
         createdAt: now,
         updatedAt: now,
       })
@@ -1370,6 +1433,128 @@ export class TicketRepository implements TicketStore {
     this.db
       .update(chatSessions)
       .set({ updatedAt: now, lastMessageAt: now })
+      .where(eq(chatSessions.id, sessionId))
+      .run();
+
+    return toChatMessage(row);
+  }
+
+  findLatestActiveChatSession(env: string): ChatSession | null {
+    const row = this.db
+      .select()
+      .from(chatSessions)
+      .where(
+        and(eq(chatSessions.env, env), eq(chatSessions.status, 'ACTIVE')),
+      )
+      .orderBy(desc(chatSessions.updatedAt), desc(chatSessions.id))
+      .get();
+    return row ? toChatSession(row) : null;
+  }
+
+  /**
+   * Store an agent-drafted reply. It sits in `PROPOSED` and is invisible to
+   * `claimNextChatMessage`, so the bridge never delivers it until a human
+   * adopts it.
+   */
+  createChatProposal(
+    sessionId: number,
+    input: { content: string; rationale?: string },
+    now = Date.now(),
+  ): ChatMessage {
+    const row = this.db
+      .insert(chatMessages)
+      .values({
+        sessionId,
+        role: 'user',
+        content: input.content,
+        status: 'PROPOSED',
+        origin: 'agent',
+        rationale: input.rationale ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+
+    this.db
+      .update(chatSessions)
+      .set({ updatedAt: now })
+      .where(eq(chatSessions.id, sessionId))
+      .run();
+
+    return toChatMessage(row);
+  }
+
+  /** Turn a draft into a real queued user message (optionally human-edited). */
+  adoptChatProposal(
+    sessionId: number,
+    messageId: number,
+    input: { content?: string },
+    now = Date.now(),
+  ): ChatMessage | null {
+    const current = this.db
+      .select()
+      .from(chatMessages)
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.sessionId, sessionId),
+          eq(chatMessages.status, 'PROPOSED'),
+        ),
+      )
+      .get();
+    if (!current) return null;
+
+    const row = this.db
+      .update(chatMessages)
+      .set({
+        status: 'PENDING',
+        content: input.content ?? current.content,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.status, 'PROPOSED'),
+        ),
+      )
+      .returning()
+      .get();
+    if (!row) return null;
+
+    this.db
+      .update(chatSessions)
+      .set({ updatedAt: now, lastMessageAt: now })
+      .where(eq(chatSessions.id, sessionId))
+      .run();
+
+    return toChatMessage(row);
+  }
+
+  /** Reject a draft without deleting it, so the transcript stays auditable. */
+  discardChatProposal(
+    sessionId: number,
+    messageId: number,
+    now = Date.now(),
+  ): ChatMessage | null {
+    const row = this.db
+      .update(chatMessages)
+      .set({ status: 'DISCARDED', updatedAt: now })
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.sessionId, sessionId),
+          eq(chatMessages.status, 'PROPOSED'),
+        ),
+      )
+      .returning()
+      .get();
+
+    if (!row) return null;
+
+    this.db
+      .update(chatSessions)
+      .set({ updatedAt: now })
       .where(eq(chatSessions.id, sessionId))
       .run();
 
@@ -1462,6 +1647,7 @@ export class TicketRepository implements TicketStore {
           role: 'assistant',
           content: input.content?.trim() || '（无输出）',
           status: 'DONE',
+          origin: 'agent',
           createdAt: now,
           updatedAt: now,
         })

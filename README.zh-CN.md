@@ -263,6 +263,9 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/api/sessions` | 会话列表，支持 `?env=&limit=` |
 | `GET` | `/api/sessions/:id` | 会话详情与消息 |
 | `POST` | `/api/sessions/:id/messages` | 发送用户消息 `{ content }` |
+| `POST` | `/api/sessions/proposals` | Agent 起草下一句回复 `{ env, sessionId?, content, rationale? }`，存为 `PROPOSED` |
+| `POST` | `/api/sessions/:id/proposals/:messageId/adopt` | 采纳草稿（可带改写后的 `content`）并排队发送 |
+| `POST` | `/api/sessions/:id/proposals/:messageId/discard` | 丢弃草稿（保留记录用于审计） |
 | `POST` | `/api/sessions/:id/close` | 关闭会话 |
 | `DELETE` | `/api/sessions/:id` | 删除会话（连带消息与输出记录，不可恢复） |
 | `GET` | `/api/sessions/next?env=...&timeout=40000` | 端侧长轮询领取待处理消息 |
@@ -525,6 +528,7 @@ npx zhunzou-bridge init
 | `agent_hub_next_task` | 长轮询领取看板下发的任务，返回后标记 `Running` 并显示真实任务 |
 | `agent_hub_complete_task` | 回报下发任务 `DONE` / `FAILED`，状态回到 `Idle` |
 | `agent_hub_report_task` | 上报当前正在做的普通任务，避免看板一直显示「MCP 已连接」 |
+| `agent_hub_propose_reply` | 替人起草下一句回复（草稿模式）：人类采纳前不会真的发给 Agent |
 | `agent_hub_escalate` | 创建工单 → 长轮询 40s → 返回最终决策或超时引导 |
 | `agent_hub_wait` | 继续等待已有工单（策略 2 接力轮询） |
 | `agent_hub_notify_done` | 上报 `Idle`，更新看板状态灯 |
@@ -673,6 +677,21 @@ pm2 save
 > `--force` / `--auto` 决定。runner 掉线超过 `CHAT_MESSAGE_TIMEOUT_MS`（默认 5 分钟）后，
 > `RUNNING` 的消息会自动标记失败，可在气泡里点「重试」重新排队。需要真正的交互式
 > 权限事件时再升级到 ACP。
+
+#### 草稿模式（L1：替人起草，人工采纳）
+
+一轮对话结束时，Agent 可以调用 `agent_hub_propose_reply` 直接把「人类接下来会发的那句话」
+写成草稿，而不是只问一句「要不要继续？」。草稿以 `PROPOSED` 状态存在，会话里显示为虚线卡片，
+带上建议理由，并提供**采纳并发送 / 改一下 / 丢弃**三个动作：
+
+- 只有人点「采纳」之后，草稿才变成 `PENDING` 用户消息，由现有长轮询投递链路发给 Agent；
+- 采纳时可以顺手改写内容，改写后的文本才是真正发出去的那句；
+- 丢弃不会删记录，状态变为 `DISCARDED`，保留在会话里便于事后审计；
+- 草稿只能由该会话所属的 `env` 提交；`ZHUNZOU_CHAT_SESSION_ID` 由会话 runner 注入，
+  没有时服务端会退化为「该环境最近一个活跃会话」。
+
+草稿模式解决的是「替人打字」，不是「替人决策」：遇到真正需要拍板的分歧，仍然走
+`agent_hub_escalate` 生成待批奏折。
 
 ### 环境变量
 

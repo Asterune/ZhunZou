@@ -6,6 +6,7 @@ import type {
   BatchResolveTicketsInput,
   BindWorkspaceProjectInput,
   ChatEventListResponse,
+  ChatMessageResponse,
   ChatSessionListResponse,
   ChatSessionResponse,
   CreateAgentInput,
@@ -174,6 +175,17 @@ export interface HubApi {
     sessionId: string,
     messageId: string,
   ): Promise<ChatSessionResponse>;
+  adoptChatProposal(
+    token: string,
+    sessionId: string,
+    messageId: string,
+    content?: string,
+  ): Promise<ChatMessageResponse>;
+  discardChatProposal(
+    token: string,
+    sessionId: string,
+    messageId: string,
+  ): Promise<ChatMessageResponse>;
   getChatEvents(
     token: string,
     sessionId: string,
@@ -460,6 +472,23 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
       request<ChatSessionResponse>(
         token,
         `/api/sessions/${sessionId}/messages/${messageId}/retry`,
+        { method: 'POST' },
+      ),
+
+    adoptChatProposal: (token, sessionId, messageId, content) =>
+      request<ChatMessageResponse>(
+        token,
+        `/api/sessions/${sessionId}/proposals/${messageId}/adopt`,
+        {
+          method: 'POST',
+          body: JSON.stringify(content ? { content } : {}),
+        },
+      ),
+
+    discardChatProposal: (token, sessionId, messageId) =>
+      request<ChatMessageResponse>(
+        token,
+        `/api/sessions/${sessionId}/proposals/${messageId}/discard`,
         { method: 'POST' },
       ),
 

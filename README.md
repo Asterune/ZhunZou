@@ -262,6 +262,7 @@ node packages/bridge/bin/cli.js init
 | `agent_hub_next_task` | Claim a task dispatched from the dashboard |
 | `agent_hub_complete_task` | Report `DONE` / `FAILED` |
 | `agent_hub_report_task` | Show the current real task on the dashboard |
+| `agent_hub_propose_reply` | Draft the human's next chat reply; it stays pending until a human adopts it |
 | `agent_hub_notify_done` | Mark the environment `Idle` |
 
 Environment variables:
@@ -307,6 +308,9 @@ All `/api/*` routes require `Authorization: Bearer <HUB_SECRET_TOKEN>`. `/health
 | `GET` | `/api/sessions` | List sessions |
 | `DELETE` | `/api/sessions/:id` | Delete a session with its transcript and output |
 | `POST` | `/api/sessions/:id/messages` | Send a user message |
+| `POST` | `/api/sessions/proposals` | Agent drafts the next reply (`env`, optional `sessionId`) — stored as `PROPOSED` |
+| `POST` | `/api/sessions/:id/proposals/:messageId/adopt` | Adopt a draft, optionally with edited `content`, and queue it |
+| `POST` | `/api/sessions/:id/proposals/:messageId/discard` | Reject a draft (kept for audit) |
 | `GET` | `/api/sessions/next?env=...` | Runner claims the next message |
 | `POST` | `/api/sessions/:id/messages/:messageId/events` | Append streamed output |
 | `POST` | `/api/sessions/:id/messages/:messageId/complete` | Finish a turn (content + session id) |

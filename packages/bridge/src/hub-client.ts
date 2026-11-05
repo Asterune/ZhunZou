@@ -16,6 +16,7 @@ import type {
   ListTasksQuery,
   NextChatMessageResponse,
   NextTaskResponse,
+  ProposeChatReplyInput,
   ReleaseTaskInput,
   ReportExchangeInput,
   ResumeResponse,
@@ -30,6 +31,7 @@ import {
   completeTaskSchema,
   createTicketSchema,
   heartbeatSchema,
+  proposeChatReplySchema,
   releaseTaskSchema,
   reportExchangeSchema,
   ticketIdSchema,
@@ -70,6 +72,9 @@ export interface HubApi {
     sessionId: string,
     messageId: string,
     input: CompleteChatMessageInput,
+  ): Promise<ChatMessageResponse>;
+  proposeChatReply(
+    input: Omit<ProposeChatReplyInput, 'env'>,
   ): Promise<ChatMessageResponse>;
   listTasks(query?: Omit<ListTasksQuery, 'env'>): Promise<TaskListResponse>;
   completeTask(taskId: string, input: CompleteTaskInput): Promise<AgentTask>;
@@ -234,6 +239,27 @@ export class HubClient implements HubApi {
     const payload = completeChatMessageSchema.parse(input);
     return this.request<ChatMessageResponse>(
       `/api/sessions/${sid}/messages/${mid}/complete`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
+  }
+
+  /**
+   * Draft a reply for the human to adopt. The hub keeps it PROPOSED, so this
+   * never speaks for the human by itself.
+   */
+  async proposeChatReply(
+    input: Omit<ProposeChatReplyInput, 'env'>,
+  ): Promise<ChatMessageResponse> {
+    const payload = proposeChatReplySchema.parse({
+      env: this.config.agentEnv,
+      ...input,
+      ...(this.config.chatSessionId && !input.sessionId
+        ? { sessionId: this.config.chatSessionId }
+        : {}),
+    });
+    return this.request<ChatMessageResponse>(
+      '/api/sessions/proposals',
       { method: 'POST', body: JSON.stringify(payload) },
       REQUEST_GRACE_MS,
     );

@@ -2,9 +2,9 @@
 import {
   ArrowUp,
   MessageSquarePlus,
+  PanelLeft,
   Plus,
-  RefreshCw,
-  Trash2,
+  Sparkles,
   X,
   XCircle,
 } from 'lucide-vue-next';
@@ -25,10 +25,10 @@ import type {
 } from '@zhunzou/shared';
 
 import { hubApi } from '../lib/api';
-import { relativeTime } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
+import ChatSessionList from './ChatSessionList.vue';
 import SessionOutput from './SessionOutput.vue';
 
 const store = useHubStore();
@@ -47,9 +47,15 @@ const sending = ref(false);
 const closing = ref(false);
 const deletingId = ref('');
 const retrying = ref('');
+const proposalBusy = ref('');
+const editingProposal = ref('');
+const proposalDraft = ref('');
 const error = ref('');
 
 const formOpen = ref(false);
+const sessionListOpen = ref(false);
+const sessionListButton = ref<HTMLButtonElement | null>(null);
+const sessionDrawer = ref<HTMLElement | null>(null);
 const form = reactive({
   env: '',
   projectName: '',
@@ -209,9 +215,11 @@ async function refreshSession(): Promise<void> {
 }
 
 async function openSession(id: string): Promise<void> {
+  sessionListOpen.value = false;
   activeId.value = id;
   session.value = null;
   messages.value = [];
+  cancelEditProposal();
   await refreshSession();
   stickToBottom = true;
   void nextTick(() => scrollToBottom(true));
@@ -330,6 +338,63 @@ async function retryMessage(message: ChatMessage): Promise<void> {
   }
 }
 
+function startEditProposal(message: ChatMessage): void {
+  editingProposal.value = message.id;
+  proposalDraft.value = message.content;
+}
+
+function cancelEditProposal(): void {
+  editingProposal.value = '';
+  proposalDraft.value = '';
+}
+
+async function adoptProposal(
+  message: ChatMessage,
+  content?: string,
+): Promise<void> {
+  if (!session.value || proposalBusy.value) return;
+  const edited = content?.trim();
+  if (content !== undefined && !edited) return;
+
+  proposalBusy.value = message.id;
+  try {
+    await hubApi.adoptChatProposal(
+      store.token,
+      session.value.id,
+      message.id,
+      edited || undefined,
+    );
+    cancelEditProposal();
+    await refreshSession();
+    await loadSessions();
+    stickToBottom = true;
+    void nextTick(() => scrollToBottom(true));
+    pushToast(t('chat.proposalAdopted'), 'success');
+    // The runner long-polls and picks the adopted reply up immediately.
+    setTimeout(() => void refreshSession(), 800);
+  } catch (cause) {
+    pushToast(describe(cause), 'error');
+  } finally {
+    proposalBusy.value = '';
+  }
+}
+
+async function discardProposal(message: ChatMessage): Promise<void> {
+  if (!session.value || proposalBusy.value) return;
+
+  proposalBusy.value = message.id;
+  try {
+    await hubApi.discardChatProposal(store.token, session.value.id, message.id);
+    await refreshSession();
+    await loadSessions();
+    pushToast(t('chat.proposalDiscarded'), 'success');
+  } catch (cause) {
+    pushToast(describe(cause), 'error');
+  } finally {
+    proposalBusy.value = '';
+  }
+}
+
 async function closeSession(): Promise<void> {
   if (!session.value || closing.value) return;
   if (!globalThis.confirm(t('chat.closeConfirm'))) return;
@@ -362,7 +427,7 @@ async function deleteSession(item: ChatSession): Promise<void> {
       messages.value = [];
     }
     sessions.value = sessions.value.filter((entry) => entry.id !== item.id);
-    await loadSessions();
+    await loadSessions(true);
     pushToast(t('chat.deleted'), 'success');
   } catch (cause) {
     pushToast(describe(cause), 'error');
@@ -376,6 +441,34 @@ function openForm(): void {
   const current = envOptions.value.find((agent) => agent.env === form.env);
   if (!current?.online) form.env = preferredEnv();
 }
+
+function openSessionList(): void {
+  sessionListOpen.value = true;
+}
+
+function closeSessionList(): void {
+  sessionListOpen.value = false;
+}
+
+function onSessionListKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') closeSessionList();
+}
+
+// The PWA keeps the transcript on screen and slides the session list in from
+// the left, so switching chats never steals half the viewport.
+watch(sessionListOpen, async (open) => {
+  if (typeof document !== 'undefined') {
+    document.body.style.overflow = open ? 'hidden' : '';
+  }
+  if (open) {
+    document.addEventListener('keydown', onSessionListKeydown);
+    await nextTick();
+    sessionDrawer.value?.focus();
+  } else {
+    document.removeEventListener('keydown', onSessionListKeydown);
+    sessionListButton.value?.focus();
+  }
+});
 
 watch(envOptions, (options) => {
   const current = options.find((agent) => agent.env === form.env);
@@ -401,7 +494,11 @@ onMounted(() => {
   startPolling();
 });
 
-onBeforeUnmount(stopPolling);
+onBeforeUnmount(() => {
+  stopPolling();
+  document.removeEventListener('keydown', onSessionListKeydown);
+  document.body.style.overflow = '';
+});
 </script>
 
 <template>
@@ -536,90 +633,81 @@ onBeforeUnmount(stopPolling);
     </Teleport>
 
     <div class="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
-      <!-- Session list -->
+      <!-- Desktop session list -->
       <aside
-        class="flex max-h-[45dvh] flex-col gap-2 lg:h-[clamp(420px,calc(100dvh_-_14rem),760px)] lg:max-h-none"
+        class="hidden flex-col lg:flex lg:h-[clamp(420px,calc(100dvh_-_14rem),760px)]"
       >
-        <div class="flex items-center justify-between px-0.5 text-[11px] text-on-surface-variant">
-          <span>{{ t('chat.all') }}</span>
-          <button
-            type="button"
-            class="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-container"
-            :disabled="loadingList"
-            @click="loadSessions()"
-          >
-            <RefreshCw :size="12" :class="{ 'animate-spin': loadingList }" />
-          </button>
-        </div>
-
-        <div class="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-0.5">
-          <div v-for="item in sessions" :key="item.id" class="group relative">
-            <button
-              type="button"
-              class="w-full rounded-xl border py-2.5 pl-3 pr-8 text-left transition"
-              :class="
-                item.id === activeId
-                  ? 'border-primary/40 bg-primary/5'
-                  : 'border-outline-variant/35 bg-surface-container-low hover:bg-surface-container'
-              "
-              @click="openSession(item.id)"
-            >
-              <div class="flex items-center justify-between gap-2">
-                <span class="truncate text-[12px] font-semibold text-on-surface">
-                  {{ item.title }}
-                </span>
-                <span
-                  v-if="item.status === 'CLOSED'"
-                  class="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[9px] text-on-surface-variant"
-                >
-                  {{ t('chat.closedBadge') }}
-                </span>
-              </div>
-              <div class="mt-1 flex items-center gap-1.5 text-[10px] text-on-surface-variant">
-                <span class="rounded bg-surface-container-high px-1 py-0.5 font-mono">
-                  {{ item.env }}
-                </span>
-                <span v-if="item.projectName" class="truncate">{{ item.projectName }}</span>
-              </div>
-              <div class="mt-1 text-[10px] text-on-surface-variant/60">
-                {{ t('chat.messagesCount', { count: item.messageCount ?? 0 }) }} · {{ item.lastMessageAt ? relativeTime(item.lastMessageAt) : t('chat.justCreated') }}
-              </div>
-            </button>
-
-            <button
-              type="button"
-              class="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-md text-on-surface-variant/70 opacity-100 transition hover:bg-error-container hover:text-on-error-container focus-visible:opacity-100 disabled:opacity-40 sm:opacity-0 sm:group-hover:opacity-100"
-              :aria-label="t('chat.delete')"
-              :title="t('chat.delete')"
-              :disabled="deletingId === item.id"
-              @click.stop="deleteSession(item)"
-            >
-              <RefreshCw
-                v-if="deletingId === item.id"
-                :size="13"
-                class="animate-spin"
-              />
-              <Trash2 v-else :size="13" />
-            </button>
-          </div>
-
-          <p
-            v-if="listLoaded && !sessions.length"
-            class="rounded-xl border border-dashed border-outline-variant bg-surface-container-low/60 px-3 py-6 text-center text-[12px] text-on-surface-variant"
-          >
-            {{ t('chat.emptyList') }}
-          </p>
-        </div>
+        <ChatSessionList
+          :sessions="sessions"
+          :active-id="activeId"
+          :loading="loadingList"
+          :loaded="listLoaded"
+          :deleting-id="deletingId"
+          @open="openSession"
+          @delete="deleteSession"
+          @refresh="loadSessions(true)"
+        />
       </aside>
+
+      <!-- Mobile session drawer: the transcript stays on screen. -->
+      <Teleport to="body">
+        <Transition
+          enter-active-class="transition duration-200 ease-out"
+          enter-from-class="opacity-0"
+          leave-active-class="transition duration-150 ease-in"
+          leave-to-class="opacity-0"
+        >
+          <div
+            v-if="sessionListOpen"
+            class="fixed inset-0 z-50 lg:hidden"
+            role="dialog"
+            aria-modal="true"
+            :aria-label="t('chat.all')"
+          >
+            <div
+              class="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              @click="closeSessionList"
+            />
+            <aside
+              ref="sessionDrawer"
+              tabindex="-1"
+              class="absolute inset-y-0 left-0 flex w-[86vw] max-w-xs flex-col bg-surface px-3 pb-[calc(0.75rem_+_env(safe-area-inset-bottom))] pt-[calc(0.75rem_+_env(safe-area-inset-top))] shadow-2xl outline-none"
+            >
+              <ChatSessionList
+                :sessions="sessions"
+                :active-id="activeId"
+                :loading="loadingList"
+                :loaded="listLoaded"
+                :deleting-id="deletingId"
+                dismissible
+                @open="openSession"
+                @delete="deleteSession"
+                @refresh="loadSessions(true)"
+                @close="closeSessionList"
+              />
+            </aside>
+          </div>
+        </Transition>
+      </Teleport>
 
       <!-- Chat -->
       <div
         v-if="activeSession"
         class="flex flex-col overflow-hidden rounded-xl border border-outline-variant/35 bg-surface-container-lowest shadow-sm"
-        style="height: clamp(420px, calc(100dvh - 14rem), 760px)"
+        style="height: clamp(340px, calc(100dvh - 13rem), 760px)"
       >
-        <header class="flex shrink-0 items-center justify-between gap-2 border-b border-outline-variant/30 px-4 py-3">
-          <div class="min-w-0">
+        <header class="flex shrink-0 items-center gap-2 border-b border-outline-variant/30 px-2 py-3 sm:px-4">
+          <button
+            ref="sessionListButton"
+            type="button"
+            class="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface lg:hidden"
+            :aria-label="t('chat.openList')"
+            :title="t('chat.openList')"
+            @click="openSessionList"
+          >
+            <PanelLeft :size="18" />
+          </button>
+          <div class="min-w-0 flex-1">
             <h3 class="truncate text-sm font-semibold text-on-surface">
               {{ activeSession.title }}
             </h3>
@@ -666,6 +754,101 @@ onBeforeUnmount(stopPolling);
             :class="message.role === 'user' ? 'flex justify-end' : 'flex justify-start'"
           >
             <div
+              v-if="message.status === 'PROPOSED' || message.status === 'DISCARDED'"
+              class="max-w-[85%] rounded-2xl border border-dashed px-3.5 py-2.5 text-[13px] leading-6"
+              :class="
+                message.status === 'PROPOSED'
+                  ? 'border-primary/60 bg-surface-container text-on-surface'
+                  : 'border-outline-variant/40 bg-surface-container/60 text-on-surface-variant'
+              "
+            >
+              <p
+                class="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium tracking-wide uppercase"
+                :class="
+                  message.status === 'PROPOSED'
+                    ? 'text-primary'
+                    : 'text-on-surface-variant'
+                "
+              >
+                <Sparkles :size="12" />
+                {{
+                  message.status === 'PROPOSED'
+                    ? t('chat.proposalBadge')
+                    : t('chat.proposalDiscardedBadge')
+                }}
+              </p>
+
+              <template v-if="editingProposal === message.id">
+                <textarea
+                  v-model="proposalDraft"
+                  rows="3"
+                  maxlength="32000"
+                  class="w-full resize-none rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2.5 py-1.5 text-[13px] leading-5 text-on-surface outline-none focus:border-primary"
+                  @keydown.enter.exact.prevent="adoptProposal(message, proposalDraft)"
+                  @keydown.esc.prevent="cancelEditProposal"
+                />
+              </template>
+              <p v-else class="whitespace-pre-wrap break-words">{{ message.content }}</p>
+
+              <p
+                v-if="message.rationale"
+                class="mt-1.5 text-[11px] text-on-surface-variant"
+              >
+                {{ t('chat.proposalWhy', { reason: message.rationale }) }}
+              </p>
+
+              <div
+                v-if="message.status === 'PROPOSED'"
+                class="mt-2 flex flex-wrap items-center gap-1.5"
+              >
+                <template v-if="editingProposal === message.id">
+                  <button
+                    type="button"
+                    class="rounded-lg bg-primary px-2 py-1 text-[11px] font-medium text-on-primary transition hover:opacity-90 disabled:opacity-50"
+                    :disabled="proposalBusy === message.id || !proposalDraft.trim()"
+                    @click="adoptProposal(message, proposalDraft)"
+                  >
+                    {{ t('chat.proposalAdopt') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-lg px-2 py-1 text-[11px] text-on-surface-variant transition hover:bg-surface-container-high"
+                    @click="cancelEditProposal"
+                  >
+                    {{ t('chat.cancel') }}
+                  </button>
+                </template>
+                <template v-else>
+                  <button
+                    type="button"
+                    class="rounded-lg bg-primary px-2 py-1 text-[11px] font-medium text-on-primary transition hover:opacity-90 disabled:opacity-50"
+                    :disabled="proposalBusy === message.id || activeSession.status !== 'ACTIVE'"
+                    @click="adoptProposal(message)"
+                  >
+                    {{ t('chat.proposalAdopt') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-lg border border-outline-variant/50 px-2 py-1 text-[11px] text-on-surface transition hover:bg-surface-container-high disabled:opacity-50"
+                    :disabled="proposalBusy === message.id || activeSession.status !== 'ACTIVE'"
+                    @click="startEditProposal(message)"
+                  >
+                    {{ t('chat.proposalEdit') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-lg px-2 py-1 text-[11px] text-on-surface-variant transition hover:bg-error-container hover:text-on-error-container disabled:opacity-50"
+                    :disabled="proposalBusy === message.id"
+                    @click="discardProposal(message)"
+                  >
+                    {{ t('chat.proposalDiscard') }}
+                  </button>
+                </template>
+              </div>
+            </div>
+
+            <div
+              v-else
               class="max-w-[85%] rounded-2xl px-3.5 py-2 text-[13px] leading-6"
               :class="
                 message.role === 'user'
@@ -751,6 +934,14 @@ onBeforeUnmount(stopPolling);
         <div>
           <Plus :size="22" class="mx-auto mb-2 text-on-surface-variant/50" />
           {{ t('chat.selectOrCreate') }}
+          <button
+            type="button"
+            class="mt-3 flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container lg:hidden"
+            @click="openSessionList"
+          >
+            <PanelLeft :size="14" />
+            {{ t('chat.openList') }}
+          </button>
         </div>
       </div>
     </div>
