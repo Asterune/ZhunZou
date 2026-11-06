@@ -188,6 +188,8 @@ To avoid re-running the command, add a `scan` block to `~/.zhunzou/fleet.json`; 
 
 Discovered projects use the usual `<adapter prefix>-<project>` env name; colliding basenames get `-2`, `-3`. Tokens come from `adminToken` or the cached `fleet-tokens.json`, so configure one of them before the first start.
 
+No `scan` block is required either: when it is absent, `fleet` adopts the **git repositories** Cursor / VS Code opened recently (Windows reads `%APPDATA%\Cursor|Code\User\globalStorage\storage.json`, and path casing is folded), so neither `fleet scan --add` nor a dashboard click is needed. Adoption is best-effort: without an `adminToken` or cached token only that project is skipped. Pass `--no-auto-discover` to keep discovery manual.
+
 ### Associate a directory from the dashboard
 
 With a bridge that supports fleet directory sync, open **Agents → Associate directory** and either pick one of the reported candidates or use **Browse this machine** to walk the filesystem from home/`scan.roots`. No `fleet add` command or config is required for browsing (the feature is driven by the resident `fleet` process, not a standalone `wake`):

@@ -558,6 +558,8 @@ npx zhunzou-bridge fleet scan --root ~/code --root ~/work --depth 2 --add --code
 
 自动发现的项目同样会按 `env 前缀-项目名` 命名；同名目录会用 `-2`、`-3` 区分。Token 走 `adminToken` / 缓存的 `fleet-tokens.json`，首次启动前请确保配置了其中一种。
 
+连 `scan` 都不想配也可以：`fleet` 启动时如果配置里没有 `scan`，会自动纳入最近在 Cursor / VS Code 打开过的 **git 仓库**（不需要 `fleet scan --add`，也不需要看板点「关联」）。Windows 走 `%APPDATA%\Cursor|Code\User\globalStorage\storage.json`，路径大小写差异会按同一个项目处理。自动纳入的项目是尽力而为：没有 `adminToken` 或可用 Token 时只跳过它自己，不影响其它项目；不想自动纳入时加 `--no-auto-discover`。
+
 ### 在看板上一键关联目录
 
 升级到包含 `fleet` 目录同步的 bridge 后，看板「接入端 → 关联目录」可以直接选择本机目录并关联工作区，**零配置**也能用（该功能依赖 `fleet` 常驻进程，单独运行 `wake` 时不参与同步）：

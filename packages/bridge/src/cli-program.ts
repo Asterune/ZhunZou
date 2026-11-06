@@ -603,12 +603,17 @@ export function createProgram(): Command {
     )
     .option('--once', 'handle at most one poll cycle per project')
     .option('--refresh-tokens', 'rotate and cache a new token for every project')
+    .option(
+      '--no-auto-discover',
+      'do not adopt recent Cursor / VS Code workspaces when scan.roots is absent',
+    )
     .option('--print-launchd', 'print a launchd plist for auto-start and exit')
     .action(
       async (options: {
         config?: string;
         once?: boolean;
         refreshTokens?: boolean;
+        autoDiscover?: boolean;
         printLaunchd?: boolean;
       }) => {
         const configPath = resolve(
@@ -628,7 +633,9 @@ export function createProgram(): Command {
 
         let config;
         try {
-          config = loadFleetConfig(configPath);
+          config = loadFleetConfig(configPath, {
+            autoDiscover: options.autoDiscover !== false,
+          });
         } catch (error) {
           process.stderr.write(`[zhunzou] ${(error as Error).message}\n`);
           process.exitCode = 1;

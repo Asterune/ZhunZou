@@ -30,6 +30,7 @@ import {
   browseDirectory,
   scanProjectDirectories,
   scanRecentWorkspaces,
+  type ScanWorkspaceOptions,
 } from './workspaces.js';
 
 export { agentKindForAdapter } from './wake/adapters.js';
@@ -91,8 +92,14 @@ const fleetConfigSchema = z.object({
 
 export type FleetProject = z.infer<typeof fleetProjectSchema> & {
   absolutePath: string;
-  /** True when the project came from `scan.roots`, not fleet.json's projects. */
+  /** True when the project came from discovery, not fleet.json's projects. */
   discovered?: boolean;
+  /**
+   * True for projects adopted from recent editor workspaces at startup. They
+   * are best-effort: without a token they are skipped instead of failing the
+   * whole fleet.
+   */
+  implicit?: boolean;
 };
 export type FleetConfig = Omit<z.infer<typeof fleetConfigSchema>, 'projects'> & {
   projects: FleetProject[];
@@ -119,6 +126,35 @@ export interface FleetOptions {
   configPath?: string;
   /** How often to poll the dashboard for associations (defaults to 10s). */
   syncIntervalMs?: number;
+  /** How long a directory scan is reused for candidate reports (defaults to 60s). */
+  candidateTtlMs?: number;
+}
+
+export interface FleetConfigOptions {
+  /**
+   * When `scan` is absent, adopt git repositories that Cursor / VS Code
+   * opened recently as projects. Off by default so tests and one-off config
+   * reads (for example `fleet list`) stay deterministic.
+   */
+  autoDiscover?: boolean;
+  /** Platform/home overrides for the workspace reader (tests). */
+  workspaces?: ScanWorkspaceOptions;
+}
+
+/** Case-fold paths on Windows so the same directory is one project. */
+function pathKey(value: string): string {
+  const absolute = resolve(value);
+  return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+}
+
+function isGitRepository(dir: string): boolean {
+  try {
+    // `.git` is a directory in normal clones and a file in worktrees.
+    statSync(join(dir, '.git'));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const DEFAULT_CONFIG_PATH = join(homedir(), '.zhunzou', 'fleet.json');
@@ -248,7 +284,10 @@ function uniqueEnv(base: string, used: Set<string>): string {
 }
 
 /** Load and validate fleet.json, resolving paths relative to the config file. */
-export function loadFleetConfig(path = DEFAULT_CONFIG_PATH): FleetConfig {
+export function loadFleetConfig(
+  path = DEFAULT_CONFIG_PATH,
+  options: FleetConfigOptions = {},
+): FleetConfig {
   const absolute = resolve(expandHome(path));
   if (!existsSync(absolute)) {
     throw new Error(
@@ -299,12 +338,15 @@ export function loadFleetConfig(path = DEFAULT_CONFIG_PATH): FleetConfig {
       roots,
       depth: result.data.scan.depth,
     });
-    const knownPaths = new Set(projects.map((project) => resolve(project.absolutePath)));
+    const knownPaths = new Set(
+      projects.map((project) => pathKey(project.absolutePath)),
+    );
 
     for (const path of discovered) {
       const absolutePath = resolve(path);
-      if (knownPaths.has(absolutePath)) continue;
-      knownPaths.add(absolutePath);
+      const key = pathKey(absolutePath);
+      if (knownPaths.has(key)) continue;
+      knownPaths.add(key);
 
       const project = basename(absolutePath) || 'project';
       const adapter = result.data.scan.adapter ?? result.data.adapter;
@@ -320,11 +362,47 @@ export function loadFleetConfig(path = DEFAULT_CONFIG_PATH): FleetConfig {
         discovered: true,
       });
     }
+  } else if (options.autoDiscover) {
+    // Zero-config mode: projects the human already opened in an editor are a
+    // strong signal, so start them without editing fleet.json or clicking
+    // "关联" on the dashboard. Only git repositories are adopted.
+    const discovered = scanRecentWorkspaces({
+      flavors: ['cursor', 'code'],
+      ...options.workspaces,
+    })
+      .flatMap((result) => result.paths)
+      .filter(isGitRepository);
+    const knownPaths = new Set(
+      projects.map((project) => pathKey(project.absolutePath)),
+    );
+
+    for (const path of discovered) {
+      const absolutePath = resolve(path);
+      const key = pathKey(absolutePath);
+      if (knownPaths.has(key)) continue;
+      knownPaths.add(key);
+
+      const project = basename(absolutePath) || 'project';
+      const adapter = result.data.adapter;
+      const env = uniqueEnv(defaultEnvForProject(adapter, project), seen);
+      seen.add(env);
+
+      projects.push({
+        env,
+        path: absolutePath,
+        project,
+        adapter,
+        absolutePath,
+        discovered: true,
+        implicit: true,
+      });
+    }
   }
 
   if (projects.length === 0) {
     throw new Error(
-      'fleet config has no projects: add projects[] or scan.roots to the config',
+      'fleet config has no projects: add projects[], scan.roots to the config, ' +
+        'or open a repository in Cursor / VS Code for auto-discovery',
     );
   }
 
@@ -631,16 +709,24 @@ export async function resolveFleetTokens(
     }
 
     if (!adminToken) {
+      // Implicitly discovered projects are best-effort: without a way to mint
+      // a token, skip them instead of refusing to start every explicit project.
+      if (project.implicit) continue;
       throw new Error(
         `no token for ${project.env}: set projects[].token, add adminToken, ` +
           'or export HUB_SECRET_TOKEN once.',
       );
     }
 
-    const issued = await issueToken(config, project, adminToken);
-    tokens.set(project.env, issued);
-    cache[project.env] = issued;
-    cacheDirty = true;
+    try {
+      const issued = await issueToken(config, project, adminToken);
+      tokens.set(project.env, issued);
+      cache[project.env] = issued;
+      cacheDirty = true;
+    } catch (error) {
+      if (project.implicit) continue;
+      throw error;
+    }
   }
 
   if (cacheDirty) writeTokenCache(cachePath, cache);
@@ -729,10 +815,23 @@ export async function runFleet(
   config: FleetConfig,
   options: FleetOptions = {},
 ): Promise<number> {
-  const tokens = await resolveFleetTokens(config, options);
-  const runtimes = buildFleetRuntimes(config, tokens);
   const out = options.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = options.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+
+  const tokens = await resolveFleetTokens(config, options);
+  for (const project of config.projects) {
+    if (tokens.has(project.env)) continue;
+    err(
+      `[fleet] 跳过 ${project.env}（${project.absolutePath}）：需要 adminToken 才能为自动发现的项目签发 Token`,
+    );
+  }
+  const runtimes = buildFleetRuntimes(
+    {
+      ...config,
+      projects: config.projects.filter((project) => tokens.has(project.env)),
+    },
+    tokens,
+  );
 
   out(
     `[fleet] ${hostname()}: ${runtimes.length} project(s), hub ${config.hubUrl}`,
@@ -860,7 +959,7 @@ export async function runFleet(
   const tokenMap = new Map(tokens);
   const known = new Map<string, FleetProject>();
   for (const project of config.projects) {
-    known.set(resolve(project.absolutePath), project);
+    known.set(pathKey(project.absolutePath), project);
   }
   const managedEnvs = new Set(
     config.projects
@@ -870,8 +969,20 @@ export async function runFleet(
   /** Paths we have advertised to the dashboard (used as an allowlist). */
   const reportedPaths = new Set<string>();
   const configPath = options.configPath;
+  const candidateTtlMs = Math.max(10_000, options.candidateTtlMs ?? 60_000);
+  let discoveryCache: { at: number; paths: string[] } | undefined;
 
-  const candidateList = (): FleetCandidateReport[] => {
+  /**
+   * Directory walks are reused for a minute: the dashboard only needs a fresh
+   * candidate list occasionally, and walking `scan.roots` (or the editor
+   * history) every 30 seconds is wasted I/O on large trees.
+   */
+  const discoveredPaths = (): string[] => {
+    const now = Date.now();
+    if (discoveryCache && now - discoveryCache.at < candidateTtlMs) {
+      return discoveryCache.paths;
+    }
+
     const roots = config.scanRoots ?? [];
     const paths =
       roots.length > 0
@@ -886,15 +997,20 @@ export async function runFleet(
               ),
             ),
           ];
+    discoveryCache = { at: now, paths };
+    return paths;
+  };
 
+  const candidateList = (): FleetCandidateReport[] => {
     const seen = new Set<string>();
     const candidates: FleetCandidateReport[] = [];
-    for (const raw of paths) {
+    for (const raw of discoveredPaths()) {
       const absolute = resolve(raw);
-      if (seen.has(absolute)) continue;
-      seen.add(absolute);
+      const key = pathKey(absolute);
+      if (seen.has(key)) continue;
+      seen.add(key);
 
-      const current = known.get(absolute);
+      const current = known.get(key);
       const adapter =
         current?.adapter ?? config.scan?.adapter ?? config.adapter;
       const projectName =
@@ -912,10 +1028,12 @@ export async function runFleet(
 
   const allowed = (path: string): boolean => {
     if (!isAbsolute(path)) return false;
-    if (reportedPaths.has(path)) return true;
-    return (config.scanRoots ?? []).some(
-      (root) => path === root || path.startsWith(`${root}${sep}`),
-    );
+    const key = pathKey(path);
+    if (reportedPaths.has(key)) return true;
+    return (config.scanRoots ?? []).some((root) => {
+      const rootKey = pathKey(root);
+      return key === rootKey || key.startsWith(`${rootKey}${sep}`);
+    });
   };
 
   const runSync = async (): Promise<void> => {
@@ -940,7 +1058,9 @@ export async function runFleet(
       const client = controlClient();
       if (!client) return;
       const candidates = candidateList();
-      for (const candidate of candidates) reportedPaths.add(candidate.path);
+      for (const candidate of candidates) {
+        reportedPaths.add(pathKey(candidate.path));
+      }
       await client.reportFleetCandidates({
         host: hostname(),
         roots: config.scanRoots ?? [],
@@ -965,8 +1085,10 @@ export async function runFleet(
             home: homedir(),
             roots: config.scanRoots ?? [],
           });
-          reportedPaths.add(result.path);
-          for (const entry of result.entries) reportedPaths.add(entry.path);
+          reportedPaths.add(pathKey(result.path));
+          for (const entry of result.entries) {
+            reportedPaths.add(pathKey(entry.path));
+          }
 
           await client.reportFleetBrowseResult(request.id, {
             current: {
@@ -992,8 +1114,9 @@ export async function runFleet(
 
       for (const workspace of workspaces) {
         const absolute = resolve(workspace.path);
-        desiredPaths.add(absolute);
-        const existing = known.get(absolute);
+        const key = pathKey(absolute);
+        desiredPaths.add(key);
+        const existing = known.get(key);
 
         if (existing) {
           if (existing.env !== workspace.env) {
@@ -1087,7 +1210,7 @@ export async function runFleet(
               : {}),
             source: 'hub',
           };
-          known.set(absolute, project);
+          known.set(pathKey(absolute), project);
           tokenMap.set(workspace.env, workspace.token);
           managedEnvs.add(workspace.env);
           startProject(
@@ -1120,12 +1243,12 @@ export async function runFleet(
           continue;
         }
         const absolute = resolve(project.absolutePath);
-        if (desiredPaths.has(absolute)) continue;
+        if (desiredPaths.has(pathKey(absolute))) continue;
 
         try {
           removeFleetProject(env, configPath);
           await stopProject(env);
-          known.delete(absolute);
+          known.delete(pathKey(absolute));
           managedEnvs.delete(env);
           tokenMap.delete(env);
           out(`[fleet] 已解除 ${env} → ${absolute}`);

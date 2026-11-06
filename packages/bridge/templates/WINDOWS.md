@@ -176,6 +176,8 @@ node cli.mjs service restart
 
 `fleet scan` 读取本机 Cursor 的最近工作区列表（只读，加 `--add` 才写配置）；`fleet add` 会推断项目名并写 `~\.zhunzou\fleet.json`。两者都支持 `--code` 用看板接入码签发专属 Token，不需要管理员 Token。
 
+如果连 `fleet scan --add` 都不想执行：`fleet` 启动时若 `fleet.json` 里没有 `scan` 配置，会自动纳入最近在 Cursor / VS Code 打开过的 **git 仓库**（只读 `%APPDATA%\Cursor|Code\User\globalStorage\storage.json`），路径大小写不同也会视为同一个项目。自动纳入的项目需要 `adminToken` 或已有缓存 Token 才能上线；缺少时只跳过该项目并继续运行其它项目。加 `--no-auto-discover` 可关闭这个行为。
+
 ## 8. 常见问题
 
 | 现象 | 处理 |

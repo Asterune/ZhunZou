@@ -10,6 +10,7 @@ import {
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -46,6 +47,27 @@ function writeConfig(dir: string, value: unknown): string {
   const path = join(dir, 'fleet.json');
   writeFileSync(path, JSON.stringify(value), 'utf8');
   return path;
+}
+
+/** Fake Cursor's recent-workspace history in a throwaway home directory. */
+function writeEditorStorage(home: string, repos: string[]): void {
+  const dir = join(
+    home,
+    'Library',
+    'Application Support',
+    'Cursor',
+    'User',
+    'globalStorage',
+  );
+  mkdirSync(dir, { recursive: true });
+  const workspaces = Object.fromEntries(
+    repos.map((repo) => [pathToFileURL(repo).href, {}]),
+  );
+  writeFileSync(
+    join(dir, 'storage.json'),
+    JSON.stringify({ profileAssociations: { workspaces } }),
+    'utf8',
+  );
 }
 
 async function waitFor(
@@ -199,6 +221,86 @@ describe('loadFleetConfig', () => {
     const empty = writeConfig(dir, { hubUrl: 'https://hub.example.com' });
     expect(() => loadFleetConfig(empty)).toThrow(/no projects/);
   });
+
+  it('adopts recently opened editor workspaces when scan is absent', () => {
+    const home = tempDir();
+    const repo = join(home, 'code', 'erp');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    const plain = join(home, 'code', 'notes');
+    mkdirSync(plain, { recursive: true });
+    writeEditorStorage(home, [repo, plain]);
+
+    const dir = tempDir();
+    const path = writeConfig(dir, {
+      hubUrl: 'https://hub.example.com',
+      adapter: 'cursor-agent',
+    });
+
+    // Opt-in: a plain config read must stay deterministic.
+    expect(() => loadFleetConfig(path)).toThrow(/no projects/);
+
+    const config = loadFleetConfig(path, {
+      autoDiscover: true,
+      workspaces: { platform: 'darwin', home },
+    });
+
+    // Only git repositories are adopted; a plain folder is ignored.
+    expect(config.projects).toHaveLength(1);
+    expect(config.projects[0]).toMatchObject({
+      env: 'cursor-erp',
+      path: repo,
+      absolutePath: repo,
+      project: 'erp',
+      adapter: 'cursor-agent',
+      discovered: true,
+      implicit: true,
+    });
+  });
+
+  it('does not duplicate a workspace that is already configured', () => {
+    const home = tempDir();
+    const repo = join(home, 'code', 'erp');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    writeEditorStorage(home, [repo]);
+
+    const dir = tempDir();
+    const path = writeConfig(dir, {
+      hubUrl: 'https://hub.example.com',
+      projects: [{ env: 'hand-written', path: repo }],
+    });
+
+    const config = loadFleetConfig(path, {
+      autoDiscover: true,
+      workspaces: { platform: 'darwin', home },
+    });
+
+    expect(config.projects.map((project) => project.env)).toEqual([
+      'hand-written',
+    ]);
+    expect(config.projects[0]?.implicit).toBeUndefined();
+  });
+
+  it('prefers explicit scan.roots over editor history', () => {
+    const home = tempDir();
+    const recent = join(home, 'code', 'recent');
+    mkdirSync(join(recent, '.git'), { recursive: true });
+    writeEditorStorage(home, [recent]);
+
+    const dir = tempDir();
+    mkdirSync(join(dir, 'rooted', '.git'), { recursive: true });
+    const path = writeConfig(dir, {
+      hubUrl: 'https://hub.example.com',
+      adapter: 'cursor-agent',
+      scan: { roots: ['./rooted'], depth: 1 },
+    });
+
+    const config = loadFleetConfig(path, {
+      autoDiscover: true,
+      workspaces: { platform: 'darwin', home },
+    });
+
+    expect(config.projects.map((project) => project.project)).toEqual(['rooted']);
+  });
 });
 
 describe('agentKindForAdapter', () => {
@@ -296,6 +398,32 @@ describe('resolveFleetTokens', () => {
         tokenCachePath: join(dir, 'none.json'),
       }),
     ).rejects.toThrow(/no token for demo/);
+  });
+
+  it('skips implicit discoveries when no admin token is available', async () => {
+    const home = tempDir();
+    const repo = join(home, 'code', 'erp');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    writeEditorStorage(home, [repo]);
+
+    const dir = tempDir();
+    const path = writeConfig(dir, {
+      hubUrl: 'https://hub.example.com',
+      projects: [{ env: 'demo', path: './project', token: 'zz_demo' }],
+    });
+    const config = loadFleetConfig(path, {
+      autoDiscover: true,
+      workspaces: { platform: 'darwin', home },
+    });
+    expect(config.projects).toHaveLength(2);
+
+    const tokens = await resolveFleetTokens(config, {
+      tokenCachePath: join(dir, 'none.json'),
+    });
+
+    // The explicit project keeps working; the auto-discovered one is skipped
+    // instead of failing the whole fleet.
+    expect([...tokens.keys()]).toEqual(['demo']);
   });
 });
 
