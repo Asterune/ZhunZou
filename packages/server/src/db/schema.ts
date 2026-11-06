@@ -12,6 +12,7 @@ import type {
   DeviceStats,
   DeviceTransport,
   EnvStatus,
+  FleetWorkspaceStatus,
   RuleCandidateStatus,
   TaskLogStream,
   TaskStatus,
@@ -67,6 +68,19 @@ export const envHeartbeats = sqliteTable(
   },
   (table) => [index('idx_env_heartbeats_seen').on(table.lastSeenAt)],
 );
+
+/**
+ * Which chat runner instance currently owns an env's message queue.
+ *
+ * The bridge sends a fresh id when a session loop starts. A changed id means
+ * the previous process/loop died mid-turn, so messages it left RUNNING can be
+ * failed and retried instead of waiting forever.
+ */
+export const envRunners = sqliteTable('env_runners', {
+  env: text('env').primaryKey(),
+  runnerId: text('runner_id').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
 
 /**
  * Registry of bridges/agents. `env` stays the identity used by tickets and
@@ -331,6 +345,50 @@ export const workspaceProjects = sqliteTable(
   ],
 );
 
+export const fleetCandidates = sqliteTable(
+  'fleet_candidates',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    host: text('host').notNull(),
+    path: text('path').notNull(),
+    projectName: text('project_name').notNull(),
+    env: text('env').notNull(),
+    adapter: text('adapter'),
+    associated: integer('associated', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_fleet_candidates_host_path').on(table.host, table.path),
+    index('idx_fleet_candidates_host').on(table.host),
+  ],
+);
+
+export const fleetWorkspaces = sqliteTable(
+  'fleet_workspaces',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    host: text('host').notNull(),
+    env: text('env').notNull(),
+    path: text('path').notNull(),
+    projectName: text('project_name').notNull(),
+    adapter: text('adapter'),
+    status: text('status').$type<FleetWorkspaceStatus>().notNull(),
+    error: text('error'),
+    token: text('token'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_fleet_workspaces_host_path').on(table.host, table.path),
+    uniqueIndex('idx_fleet_workspaces_env').on(table.env),
+    index('idx_fleet_workspaces_host').on(table.host),
+    index('idx_fleet_workspaces_status').on(table.status),
+  ],
+);
+
 export const ruleCandidates = sqliteTable(
   'rule_candidates',
   {
@@ -353,6 +411,7 @@ export type RuleCandidateRow = typeof ruleCandidates.$inferSelect;
 export type RuleCandidateInsert = typeof ruleCandidates.$inferInsert;
 export type TicketInsert = typeof tickets.$inferInsert;
 export type HeartbeatRow = typeof envHeartbeats.$inferSelect;
+export type EnvRunnerRow = typeof envRunners.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentInsert = typeof agents.$inferInsert;
 export type EnrollmentRow = typeof enrollmentCodes.$inferSelect;
@@ -372,3 +431,7 @@ export type TerminalAuditRow = typeof terminalAudit.$inferSelect;
 export type TerminalAuditInsert = typeof terminalAudit.$inferInsert;
 export type WorkspaceProjectRow = typeof workspaceProjects.$inferSelect;
 export type WorkspaceProjectInsert = typeof workspaceProjects.$inferInsert;
+export type FleetCandidateRow = typeof fleetCandidates.$inferSelect;
+export type FleetCandidateInsert = typeof fleetCandidates.$inferInsert;
+export type FleetWorkspaceRow = typeof fleetWorkspaces.$inferSelect;
+export type FleetWorkspaceInsert = typeof fleetWorkspaces.$inferInsert;

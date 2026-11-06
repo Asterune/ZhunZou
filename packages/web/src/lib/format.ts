@@ -132,6 +132,18 @@ export function relativeTime(timestamp: number, now: number = Date.now()): strin
   return formatDate(timestamp);
 }
 
+/** Coarse elapsed time, for "this process has been up for…" labels. */
+export function formatUptime(ms: number): string {
+  if (ms < 0) return t('time.justNow');
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return t('time.secondsAgo', { count: Math.max(seconds, 1) });
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return t('time.minutesAgo', { count: minutes });
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return t('time.hoursAgo', { count: hours });
+  return t('time.daysAgo', { count: Math.floor(hours / 24) });
+}
+
 export function envDotClass(env: EnvHeartbeat): string {
   return env.online ? ENV_DOT_CLASSES[env.status] : 'bg-outline-variant';
 }

@@ -169,9 +169,36 @@ npx zhunzou-bridge fleet remove cursor-erp             # remove by env
 # No paths to type: scan the workspaces this machine already opened
 npx zhunzou-bridge fleet scan
 npx zhunzou-bridge fleet scan --add --code ABCDE-FGHIJ # register all (VS Code: --client code)
+
+# Scan for git repositories under one or more roots (depth 2 = children + grandchildren)
+npx zhunzou-bridge fleet scan --root ~/code --depth 2
+npx zhunzou-bridge fleet scan --root ~/code --root ~/work --depth 2 --add --code ABCDE-FGHIJ
 ```
 
 `fleet add` infers the project from the git root and writes `~/.zhunzou/fleet.json`; with `--code` it trades a dashboard enrollment code for one scoped token per project (no admin token needed), and `--admin-token` / `--token` also work. If the login daemon is installed it switches to `fleet` and restarts, so the new project can receive tasks immediately.
+
+To avoid re-running the command, add a `scan` block to `~/.zhunzou/fleet.json`; every `fleet` start walks those roots, adds new git repos to the runtime, and leaves the file untouched:
+
+```json
+{
+  "scan": { "roots": ["~/code", "~/work"], "depth": 2 },
+  "projects": []
+}
+```
+
+Discovered projects use the usual `<adapter prefix>-<project>` env name; colliding basenames get `-2`, `-3`. Tokens come from `adminToken` or the cached `fleet-tokens.json`, so configure one of them before the first start.
+
+### Associate a directory from the dashboard
+
+With a bridge that supports fleet directory sync, open **Agents → Associate directory** and either pick one of the reported candidates or use **Browse this machine** to walk the filesystem from home/`scan.roots`. No `fleet add` command or config is required for browsing (the feature is driven by the resident `fleet` process, not a standalone `wake`):
+
+1. The bridge reports candidate directories under `scan.roots` (or recent editor workspaces) every 30 seconds;
+2. Browsing sends a one-off listing request, so the dashboard can enter any allowed folder and associate it;
+3. The dashboard creates an env and a scoped token for the chosen directory;
+4. The bridge polls every 3 seconds, writes the project to `fleet.json` (`source: "hub"`), starts its agent loop, and reports **Associated**;
+5. Removing the association in the dashboard makes the bridge stop that loop and delete the entry.
+
+Safety: browsing is limited to the user's home directory and `scan.roots`, hidden directories are rejected, and symlinks are resolved before the allowlist check; only directories containing `.git` can be associated. A dashboard-issued token is kept on the server only until the bridge confirms `APPLIED`, then cleared.
 
 ### Manual setup (developers)
 
@@ -388,6 +415,17 @@ All `/api/*` routes require `Authorization: Bearer <HUB_SECRET_TOKEN>`. `/health
 | `GET` | `/api/workspace-projects` | Project bindings per env |
 | `POST` | `/api/workspace-projects` | Bind a project to an env |
 | `DELETE` | `/api/workspace-projects/:id` | Unbind |
+| `POST` | `/api/fleet/candidates` | Bridge reports host directories (replaces the host list) |
+| `GET` | `/api/fleet/candidates` | Candidate directories, optional `?host=` |
+| `POST` | `/api/fleet/workspaces` | Associate a candidate `{ candidateId }` |
+| `GET` | `/api/fleet/workspaces` | Association jobs, optional `?host=` |
+| `DELETE` | `/api/fleet/workspaces/:id` | Remove an association |
+| `POST` | `/api/fleet/workspaces/:id/retry` | Retry a failed association |
+| `GET` | `/api/fleet/desired` | Bridge polls pending directories (one-time token) and browse requests |
+| `POST` | `/api/fleet/desired/:id/status` | Bridge reports `APPLIED` / `FAILED` |
+| `POST` | `/api/fleet/browse` | Ask a host to list a directory `{ host, path? }` |
+| `GET` | `/api/fleet/browse/:id` | Read one browse result |
+| `POST` | `/api/fleet/browse/:id/result` | Bridge returns the directory listing |
 
 ## Configuration
 

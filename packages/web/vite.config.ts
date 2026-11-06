@@ -32,6 +32,12 @@ const buildId = new Date().toISOString();
 
 export default defineConfig({
   plugins: [vue(), tailwindcss(), serviceWorker(buildId)],
+  // Let the running page compare its own bundle with the waiting worker. A
+  // manual refresh already loads the new bundle while the old worker still
+  // controls the tab; without this the app would prompt a second time.
+  define: {
+    __APP_BUILD_ID__: JSON.stringify(buildId),
+  },
   server: {
     port: 5173,
     proxy: {
@@ -46,7 +52,9 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'dist',
+    // setup.sh builds into `dist.next` and swaps it in after the build, so an
+    // open dashboard never sees a half-written asset directory.
+    outDir: process.env.ZHUNZOU_WEB_OUT_DIR ?? 'dist',
     sourcemap: false,
   },
 });

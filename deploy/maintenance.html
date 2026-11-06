@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>准奏 · 正在升级</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f7f4ee;
+        --surface: #fffdf8;
+        --text: #1d1b17;
+        --muted: #6d665b;
+        --accent: #7c3f2c;
+        --ring: rgba(124, 63, 44, 0.16);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #17150f;
+          --surface: #211e17;
+          --text: #f2ece0;
+          --muted: #a9a092;
+          --accent: #e8b9a4;
+          --ring: rgba(232, 185, 164, 0.18);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      }
+      main {
+        width: min(420px, 100%);
+        padding: 28px;
+        border-radius: 20px;
+        background: var(--surface);
+        box-shadow: 0 0 0 1px var(--ring), 0 24px 60px rgba(0, 0, 0, 0.08);
+      }
+      .seal {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        border-radius: 14px;
+        background: var(--ring);
+        color: var(--accent);
+        font-size: 22px;
+      }
+      h1 { margin: 16px 0 8px; font-size: 20px; letter-spacing: 0.01em; }
+      p { margin: 0; color: var(--muted); line-height: 1.7; font-size: 14px; }
+      .progress {
+        margin-top: 20px;
+        height: 4px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: var(--ring);
+      }
+      .progress::after {
+        content: "";
+        display: block;
+        width: 40%;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--accent);
+        animation: slide 1.4s ease-in-out infinite;
+      }
+      @keyframes slide {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+      .hint { margin-top: 16px; font-size: 12px; color: var(--muted); }
+      @media (prefers-reduced-motion: reduce) {
+        .progress::after { animation: none; width: 100%; }
+      }
+    </style>
+    <meta http-equiv="refresh" content="8" />
+    <script>
+      // Meta refresh is the no-JS fallback; this retries sooner.
+      window.setTimeout(function () {
+        window.location.reload();
+      }, 5000);
+    </script>
+  </head>
+  <body>
+    <main>
+      <div class="seal" aria-hidden="true">准</div>
+      <h1>正在升级，马上回来</h1>
+      <p>
+        服务正在切换到新版本，通常只需要几秒钟。本页会自动重试，无需手动刷新。
+      </p>
+      <div class="progress" aria-hidden="true"></div>
+      <p class="hint">Zhunzou is updating. This page retries automatically.</p>
+    </main>
+  </body>
+</html>

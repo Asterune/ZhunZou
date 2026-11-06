@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS env_heartbeats (
 
 CREATE INDEX IF NOT EXISTS idx_env_heartbeats_seen ON env_heartbeats(last_seen_at);
 
+CREATE TABLE IF NOT EXISTS env_runners (
+  env TEXT PRIMARY KEY,
+  runner_id TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agents (
   env TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -225,6 +231,40 @@ CREATE TABLE IF NOT EXISTS workspace_projects (
 );
 
 CREATE INDEX IF NOT EXISTS idx_workspace_projects_env ON workspace_projects(env);
+
+CREATE TABLE IF NOT EXISTS fleet_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  host TEXT NOT NULL,
+  path TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  env TEXT NOT NULL,
+  adapter TEXT,
+  associated INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (host, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fleet_candidates_host ON fleet_candidates(host);
+
+CREATE TABLE IF NOT EXISTS fleet_workspaces (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  host TEXT NOT NULL,
+  env TEXT NOT NULL,
+  path TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  adapter TEXT,
+  status TEXT NOT NULL,
+  error TEXT,
+  token TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (host, path),
+  UNIQUE (env)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fleet_workspaces_host ON fleet_workspaces(host);
+CREATE INDEX IF NOT EXISTS idx_fleet_workspaces_status ON fleet_workspaces(status);
 
 CREATE TABLE IF NOT EXISTS rule_candidates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

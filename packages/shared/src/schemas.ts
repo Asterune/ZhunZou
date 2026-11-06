@@ -572,6 +572,11 @@ export const completeChatMessageSchema = z.object({
   content: z.string().max(20_000).optional(),
   externalId: z.string().max(128).optional(),
   error: z.string().max(2_000).optional(),
+  /**
+   * Accept a turn the hub already gave up on (interrupted by a restart) so a
+   * journaled result can still be recorded instead of being dropped.
+   */
+  force: z.boolean().optional(),
 });
 
 export const appendChatEventSchema = z.object({
@@ -592,6 +597,8 @@ export const nextChatMessageQuerySchema = z.object({
     .min(0)
     .max(MAX_WAIT_TIMEOUT_MS)
     .default(DEFAULT_WAIT_TIMEOUT_MS),
+  /** Per-session-loop instance id; a change means the previous runner died. */
+  runner: z.string().trim().min(1).max(80).optional(),
 });
 
 export const listChatEventsQuerySchema = z.object({
@@ -694,6 +701,151 @@ export const bindWorkspaceProjectSchema = z.object({
 
 export const listWorkspaceProjectsQuerySchema = z.object({
   env: envSchema.optional(),
+});
+
+/* ------------------------------------------------------------------ */
+/* Fleet directory association                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A directory the bridge found under its scan roots (or in recent editor
+ * history). The dashboard lists these so the human can associate one with a
+ * workspace without typing a path on the machine.
+ */
+export const fleetCandidateSchema = z.object({
+  id: ticketIdSchema,
+  host: z.string().trim().min(1).max(255),
+  path: z.string().trim().min(1).max(1000),
+  projectName: projectNameSchema,
+  env: envSchema,
+  adapter: z.string().trim().min(1).max(64).optional(),
+  /** True when the bridge already hosts this path in fleet.json. */
+  associated: z.boolean(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+export const fleetCandidateInputSchema = z.object({
+  path: z.string().trim().min(1).max(1000),
+  projectName: projectNameSchema,
+  env: envSchema,
+  adapter: z.string().trim().min(1).max(64).optional(),
+  associated: z.boolean().default(false),
+});
+
+/** Body of `POST /api/fleet/candidates`; the host comes from the token. */
+export const reportFleetCandidatesSchema = z.object({
+  candidates: z.array(fleetCandidateInputSchema).max(500),
+  roots: z.array(z.string().trim().min(1).max(1000)).max(50).default([]),
+  depth: z.number().int().min(0).max(8).optional(),
+  /** Admin-only override; agent tokens always use their registered host. */
+  host: z.string().trim().min(1).max(255).optional(),
+});
+
+export const FLEET_WORKSPACE_STATUSES = [
+  'PENDING',
+  'ISSUED',
+  'APPLIED',
+  'FAILED',
+] as const;
+
+export const fleetWorkspaceStatusSchema = z.enum(FLEET_WORKSPACE_STATUSES);
+
+/** A directory the human associated with a workspace from the dashboard. */
+export const fleetWorkspaceSchema = z.object({
+  id: ticketIdSchema,
+  host: z.string().trim().min(1).max(255),
+  env: envSchema,
+  path: z.string().trim().min(1).max(1000),
+  projectName: projectNameSchema,
+  adapter: z.string().trim().min(1).max(64).optional(),
+  status: fleetWorkspaceStatusSchema,
+  error: z.string().max(2000).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+/** Bridge poll response: carries the one-time scoped token until applied. */
+export const fleetDesiredWorkspaceSchema = fleetWorkspaceSchema.extend({
+  token: z.string().min(1).optional(),
+});
+
+export const createFleetWorkspaceSchema = z.union([
+  z.object({ candidateId: ticketIdSchema }),
+  z.object({
+    host: z.string().trim().min(1).max(255),
+    path: z.string().trim().min(1).max(1000),
+    projectName: projectNameSchema.optional(),
+    adapter: z.string().trim().min(1).max(64).optional(),
+  }),
+]);
+
+export const fleetWorkspaceStatusInputSchema = z.object({
+  status: z.enum(['APPLIED', 'FAILED']),
+  error: z.string().trim().max(2000).optional(),
+});
+
+export const listFleetQuerySchema = z.object({
+  host: z.string().trim().min(1).max(255).optional(),
+});
+
+/* ------------------------------------------------------------------ */
+/* Fleet directory browser                                             */
+/* ------------------------------------------------------------------ */
+
+export const fleetBrowseEntrySchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  path: z.string().trim().min(1).max(1000),
+  isRepo: z.boolean(),
+  isDirectory: z.boolean(),
+});
+
+export const fleetBrowseCurrentSchema = z.object({
+  path: z.string().trim().min(1).max(1000),
+  parent: z.string().trim().min(1).max(1000).optional(),
+  home: z.string().trim().min(1).max(1000),
+  isRepo: z.boolean(),
+  /** Default adapter of the reporting bridge, used to name the new env. */
+  adapter: z.string().trim().min(1).max(64).optional(),
+});
+
+export const FLEET_BROWSE_STATUSES = ['PENDING', 'DONE', 'ERROR'] as const;
+export const fleetBrowseStatusSchema = z.enum(FLEET_BROWSE_STATUSES);
+
+export const fleetBrowseRequestSchema = z.object({
+  id: ticketIdSchema,
+  host: z.string().trim().min(1).max(255),
+  /** Empty means "start at the bridge's home directory". */
+  path: z.string().max(1000),
+  status: fleetBrowseStatusSchema,
+  current: fleetBrowseCurrentSchema.optional(),
+  entries: z.array(fleetBrowseEntrySchema),
+  error: z.string().max(2000).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+/** The small task frame the bridge receives on its regular poll. */
+export const fleetBrowseTaskSchema = z.object({
+  id: ticketIdSchema,
+  host: z.string().trim().min(1).max(255),
+  path: z.string().max(1000),
+  requestedAt: z.number().int().nonnegative(),
+});
+
+export const createFleetBrowseSchema = z.object({
+  host: z.string().trim().min(1).max(255),
+  path: z.string().trim().max(1000).optional(),
+});
+
+export const fleetBrowseResultInputSchema = z.object({
+  current: fleetBrowseCurrentSchema.optional(),
+  entries: z.array(fleetBrowseEntrySchema).max(500).default([]),
+  error: z.string().trim().max(2000).optional(),
+});
+
+export const fleetBrowseResponseSchema = z.object({
+  request: fleetBrowseRequestSchema,
 });
 
 /* ------------------------------------------------------------------ */
@@ -814,6 +966,25 @@ export const workspaceProjectListResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 });
 
+export const fleetCandidateListResponseSchema = z.object({
+  candidates: z.array(fleetCandidateSchema),
+  total: z.number().int().nonnegative(),
+});
+
+export const fleetWorkspaceResponseSchema = z.object({
+  workspace: fleetWorkspaceSchema,
+});
+
+export const fleetWorkspaceListResponseSchema = z.object({
+  workspaces: z.array(fleetWorkspaceSchema),
+  total: z.number().int().nonnegative(),
+});
+
+export const fleetDesiredListResponseSchema = z.object({
+  workspaces: z.array(fleetDesiredWorkspaceSchema),
+  browse: z.array(fleetBrowseTaskSchema).default([]),
+});
+
 /* ------------------------------------------------------------------ */
 /* Dashboard sync long-poll                                            */
 /* ------------------------------------------------------------------ */
@@ -838,6 +1009,8 @@ export const syncStateSchema = z.object({
   projects: z.array(workspaceProjectSchema),
   agents: z.array(agentSchema),
   exchanges: z.array(exchangeSchema),
+  fleetCandidates: z.array(fleetCandidateSchema),
+  fleetWorkspaces: z.array(fleetWorkspaceSchema),
 });
 
 export const syncResponseSchema = z.object({
@@ -1000,6 +1173,43 @@ export type WorkspaceProjectResponse = z.infer<
 >;
 export type WorkspaceProjectListResponse = z.infer<
   typeof workspaceProjectListResponseSchema
+>;
+export type FleetCandidate = z.infer<typeof fleetCandidateSchema>;
+export type FleetCandidateInput = z.infer<typeof fleetCandidateInputSchema>;
+export type ReportFleetCandidatesInput = z.infer<
+  typeof reportFleetCandidatesSchema
+>;
+export type FleetWorkspaceStatus = z.infer<typeof fleetWorkspaceStatusSchema>;
+export type FleetWorkspace = z.infer<typeof fleetWorkspaceSchema>;
+export type FleetDesiredWorkspace = z.infer<typeof fleetDesiredWorkspaceSchema>;
+export type CreateFleetWorkspaceInput = z.infer<
+  typeof createFleetWorkspaceSchema
+>;
+export type FleetWorkspaceStatusInput = z.infer<
+  typeof fleetWorkspaceStatusInputSchema
+>;
+export type ListFleetQuery = z.infer<typeof listFleetQuerySchema>;
+export type FleetBrowseEntry = z.infer<typeof fleetBrowseEntrySchema>;
+export type FleetBrowseCurrent = z.infer<typeof fleetBrowseCurrentSchema>;
+export type FleetBrowseStatus = z.infer<typeof fleetBrowseStatusSchema>;
+export type FleetBrowseRequest = z.infer<typeof fleetBrowseRequestSchema>;
+export type FleetBrowseTask = z.infer<typeof fleetBrowseTaskSchema>;
+export type CreateFleetBrowseInput = z.infer<typeof createFleetBrowseSchema>;
+export type FleetBrowseResultInput = z.infer<
+  typeof fleetBrowseResultInputSchema
+>;
+export type FleetBrowseResponse = z.infer<typeof fleetBrowseResponseSchema>;
+export type FleetCandidateListResponse = z.infer<
+  typeof fleetCandidateListResponseSchema
+>;
+export type FleetWorkspaceResponse = z.infer<
+  typeof fleetWorkspaceResponseSchema
+>;
+export type FleetWorkspaceListResponse = z.infer<
+  typeof fleetWorkspaceListResponseSchema
+>;
+export type FleetDesiredListResponse = z.infer<
+  typeof fleetDesiredListResponseSchema
 >;
 export type SyncQuery = z.infer<typeof syncQuerySchema>;
 export type SyncState = z.infer<typeof syncStateSchema>;

@@ -12,6 +12,7 @@ const source = readFileSync(new URL('../src/sw.js', import.meta.url), 'utf8');
 
 type ExtendableEvent = {
   data?: unknown;
+  ports?: Array<{ postMessage: (message: unknown) => void }>;
   waitUntil: (promise: Promise<unknown>) => void;
 };
 
@@ -82,5 +83,21 @@ describe('service worker update lifecycle', () => {
 
     await dispatch(harness, 'message', { data: { type: 'SKIP_WAITING' } });
     expect(harness.skipWaiting).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports its build id so a refreshed page can skip a duplicate prompt', async () => {
+    const harness = loadWorker();
+    const reply = vi.fn();
+
+    await dispatch(harness, 'message', {
+      data: { type: 'BUILD_ID' },
+      ports: [{ postMessage: reply }],
+    });
+
+    expect(reply).toHaveBeenCalledWith({
+      type: 'BUILD_ID',
+      buildId: '__BUILD_ID__',
+    });
+    expect(harness.skipWaiting).not.toHaveBeenCalled();
   });
 });

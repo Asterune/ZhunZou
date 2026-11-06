@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -10,6 +11,8 @@ import { loadConfig } from '../src/config.js';
 
 let app: FastifyInstance;
 let dir: string;
+
+const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'zhunzou-web-'));
@@ -118,5 +121,11 @@ describe('web dashboard static hosting', () => {
     const response = await app.inject({ method: 'GET', url: '/healthz' });
     expect(response.statusCode).toBe(200);
     expect(response.json().ok).toBe(true);
+    // A deploy must be verifiable from this payload: the version is the real
+    // package version and startedAt moves with every process start.
+    expect(response.json().version).toBe(
+      JSON.parse(readFileSync(pkgPath, 'utf8')).version,
+    );
+    expect(response.json().startedAt).toBeLessThanOrEqual(Date.now());
   });
 });

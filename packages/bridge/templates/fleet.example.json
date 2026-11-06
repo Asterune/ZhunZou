@@ -2,6 +2,10 @@
   "hubUrl": "https://hub.example.com",
   "adminToken": "REPLACE_WITH_HUB_SECRET_TOKEN",
   "adapter": "cursor-agent",
+  "scan": {
+    "roots": ["~/code"],
+    "depth": 2
+  },
   "projects": [
     {
       "env": "cursor-yikuaomed-erp",

@@ -19,6 +19,9 @@ module.exports = {
       exec_mode: 'fork',
       autorestart: true,
       max_memory_restart: '400M',
+      // PM2 SIGKILLs after this; the server drains held long polls in ~1s and
+      // caps its own shutdown at 10s, so the gap is room, not a wait.
+      kill_timeout: 12000,
       time: true,
       merge_logs: true,
       out_file: './logs/zhunzou.out.log',

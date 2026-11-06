@@ -10,6 +10,7 @@ import {
   addFleetProjects,
   agentKindForAdapter,
   buildLaunchdPlist,
+  defaultEnvForProject,
   defaultFleetConfigPath,
   expandHome,
   loadFleetConfig,
@@ -37,6 +38,7 @@ import {
   type WakeAdapterName,
 } from './wake/index.js';
 import {
+  scanProjectDirectories,
   scanRecentWorkspaces,
   type EditorFlavor,
 } from './workspaces.js';
@@ -46,24 +48,9 @@ const DEFAULT_INTERVAL_MS = 15_000;
 const MIN_INTERVAL_MS = 1_000;
 const MAX_INTERVAL_MS = 55_000;
 
-/** Env prefix that matches `init` (`opencode-…`, `claude-…`, `agent-…`). */
-const ADAPTER_ENV_PREFIX: Record<string, string> = {
-  opencode: 'opencode',
-  'opencode-run': 'opencode',
-  claude: 'claude',
-  codex: 'codex',
-  gemini: 'gemini',
-  'cursor-agent': 'cursor',
-};
-
-function envSlug(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[\s/\\]+/g, '-')
-    .replace(/[^\p{L}\p{N}._-]+/gu, '')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64);
+/** Commander collector so `--root a --root b` accumulates instead of replacing. */
+function collectPaths(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 /**
@@ -209,9 +196,7 @@ async function addProjectsFromPaths(
     const project =
       options.project ?? detectWorkspaceProject(absolute) ?? basename(absolute);
     const adapter = options.adapter ?? 'auto';
-    const env =
-      options.env ??
-      `${ADAPTER_ENV_PREFIX[adapter] ?? 'agent'}-${envSlug(project) || 'project'}`;
+    const env = options.env ?? defaultEnvForProject(adapter, project);
 
     let token =
       options.token ?? file.projects.find((item) => item.env === env)?.token;
@@ -661,6 +646,7 @@ export function createProgram(): Command {
             ...(options.refreshTokens === true
               ? { refreshTokens: true }
               : {}),
+            configPath,
             signal: controller.signal,
           });
         } catch (error) {
@@ -697,10 +683,17 @@ export function createProgram(): Command {
   fleetCommand
     .command('scan')
     .description(
-      'Find recently opened Cursor / VS Code workspaces; `--add` registers them in fleet.json',
+      'Find project directories: recent Cursor / VS Code workspaces, or git repos under --root; `--add` registers them',
     )
     .option('--add', 'add every discovered workspace')
     .option('--client <name>', 'cursor | code | all', 'cursor')
+    .option(
+      '--root <dir>',
+      'scan this directory for git repos instead of editor history (repeatable)',
+      collectPaths,
+      [] as string[],
+    )
+    .option('--depth <n>', 'levels below each --root to search', '2')
     .option('--adapter <name>', `local client for dispatched tasks`)
     .option('--code <code>', 'dashboard enrollment code; mints one scoped token per project')
     .option('--admin-token <token>', 'admin token used to mint a scoped token')
@@ -710,9 +703,59 @@ export function createProgram(): Command {
     .option('--no-restart', 'do not restart the login daemon')
     .action(
       async (
-        options: AddProjectsOptions & { add?: boolean; client?: string },
+        options: AddProjectsOptions & {
+          add?: boolean;
+          client?: string;
+          root?: string[];
+          depth?: string;
+        },
         command: Command,
       ) => {
+        const roots = (options.root ?? []).map((root) =>
+          resolve(expandHome(root)),
+        );
+
+        if (roots.length > 0) {
+          const depth = Number.parseInt(options.depth ?? '2', 10);
+          if (!Number.isFinite(depth) || depth < 0 || depth > 8) {
+            process.stderr.write('[zhunzou] --depth 需要是 0~8 的整数\n');
+            process.exitCode = 1;
+            return;
+          }
+
+          for (const root of roots) {
+            if (!existsSync(root)) {
+              process.stderr.write(`[zhunzou] 目录不存在：${root}\n`);
+              process.exitCode = 1;
+              return;
+            }
+            process.stdout.write(`扫描 ${root}（深度 ${depth}）\n`);
+          }
+
+          const unique = scanProjectDirectories({
+            roots,
+            depth,
+            maxResults: 500,
+          });
+          if (unique.length === 0) {
+            process.stdout.write(
+              `没有在这些目录下找到 git 仓库（深度 ${depth}）；用 fleet add <路径> 可直接指定\n`,
+            );
+            return;
+          }
+          for (const path of unique) {
+            process.stdout.write(`  · ${path}\n`);
+          }
+          process.stdout.write(`共 ${unique.length} 个目录\n`);
+
+          if (!options.add) {
+            process.stdout.write('加 --add 即可登记到 fleet.json\n');
+            return;
+          }
+          process.exitCode = await addProjectsFromPaths(unique, options, command);
+          return;
+        }
+
         const client = (options.client ?? 'cursor').toLowerCase();
         if (!['cursor', 'code', 'all'].includes(client)) {
           process.stderr.write('[zhunzou] --client 可选 cursor / code / all\n');
@@ -725,7 +768,7 @@ export function createProgram(): Command {
 
         if (results.length === 0) {
           process.stdout.write(
-            '没有找到最近工作区：先在 Cursor 里打开过一个项目，或用 fleet add <路径> 直接指定\n',
+            '没有找到最近工作区：先在 Cursor 里打开过一个项目，或用 --root <目录> 扫描，或用 fleet add <路径> 直接指定\n',
           );
           return;
         }
@@ -763,18 +806,50 @@ export function createProgram(): Command {
         process.exitCode = 1;
         return;
       }
-      if (file.projects.length === 0) {
+      const scan = file.extra.scan;
+      const scanRoots =
+        scan && typeof scan === 'object' && !Array.isArray(scan)
+          ? (scan as { roots?: unknown }).roots
+          : undefined;
+      const roots = Array.isArray(scanRoots)
+        ? scanRoots.filter((root): root is string => typeof root === 'string')
+        : [];
+
+      if (file.projects.length === 0 && roots.length === 0) {
         process.stdout.write(
-          `fleet.json 里还没有项目（${configPath}）；用 zhunzou-bridge fleet add <path> 添加\n`,
+          `fleet.json 里还没有项目（${configPath}）；用 zhunzou-bridge fleet add <path> 或 fleet scan --root <dir> --add 添加\n`,
         );
         return;
       }
       process.stdout.write(`hub: ${file.hubUrl ?? '(未设置)'}\n`);
+      if (roots.length > 0) {
+        const depth =
+          scan && typeof scan === 'object'
+            ? (scan as { depth?: unknown }).depth
+            : undefined;
+        process.stdout.write(
+          `scan: ${roots.join('、')}（深度 ${typeof depth === 'number' ? depth : 2}，fleet 启动时自动纳入）\n`,
+        );
+      }
       for (const project of file.projects) {
         const token = project.token ? `${project.token.slice(0, 10)}…` : '（未签发）';
         process.stdout.write(
           `${project.env}\t${project.path}\t${project.project ?? '-'}\t${project.adapter ?? file.adapter ?? 'auto'}\t${token}\n`,
         );
+      }
+      if (roots.length > 0) {
+        try {
+          const discovered = loadFleetConfig(configPath).projects.filter(
+            (project) => project.discovered,
+          );
+          for (const project of discovered) {
+            process.stdout.write(
+              `${project.env}\t${project.path}\t${project.project ?? '-'}\t${project.adapter ?? file.adapter ?? 'auto'}\t（自动发现）\n`,
+            );
+          }
+        } catch {
+          // A partially edited config still deserves the raw project list.
+        }
       }
     });
 

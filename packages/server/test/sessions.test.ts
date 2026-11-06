@@ -330,6 +330,132 @@ describe('interactive sessions', () => {
     }
   });
 
+  it('recovers a RUNNING message when a new runner instance takes over', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const agentAuth = await issueAgentToken(ctx);
+
+      await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: { content: 'turn interrupted by a bridge restart' },
+      });
+
+      const first = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10&runner=runner-1`,
+        headers: agentAuth,
+      });
+      const message = first.json().message as ChatMessage;
+      expect(message.status).toBe('RUNNING');
+
+      // The same runner keeps polling: its slow turn must not be interrupted.
+      const sameRunner = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10&runner=runner-1`,
+        headers: agentAuth,
+      });
+      expect(sameRunner.json().message).toBeNull();
+
+      // A different id means the loop restarted; the orphaned turn is failed
+      // with a retryable error instead of staying RUNNING forever.
+      const restarted = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10&runner=runner-2`,
+        headers: agentAuth,
+      });
+      expect(restarted.statusCode).toBe(200);
+
+      const detail = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}`,
+        headers: ctx.auth,
+      });
+      expect(detail.json().messages[0]).toMatchObject({
+        id: message.id,
+        status: 'FAILED',
+        error: expect.stringContaining('可以重试'),
+      });
+
+      const retry = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages/${message.id}/retry`,
+        headers: ctx.auth,
+      });
+      expect(retry.statusCode).toBe(200);
+      expect(retry.json().message.status).toBe('PENDING');
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('lets a journaled result replace an interrupted turn when forced', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const agentAuth = await issueAgentToken(ctx);
+
+      const send = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: { content: '部署完成后把结果告诉我' },
+      });
+      const message = send.json().message as ChatMessage;
+
+      await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10&runner=runner-1`,
+        headers: agentAuth,
+      });
+      // A restarted runner takes over, so the hub gives the turn up.
+      await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10&runner=runner-2`,
+        headers: agentAuth,
+      });
+
+      const plain = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages/${message.id}/complete`,
+        headers: agentAuth,
+        payload: { status: 'DONE', content: '部署成功，服务已更新到 0.1.6' },
+      });
+      expect(plain.statusCode).toBe(409);
+
+      const replay = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages/${message.id}/complete`,
+        headers: agentAuth,
+        payload: {
+          status: 'DONE',
+          content: '部署成功，服务已更新到 0.1.6',
+          force: true,
+        },
+      });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json().assistant).toMatchObject({ role: 'assistant', status: 'DONE' });
+
+      const detail = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}`,
+        headers: ctx.auth,
+      });
+      const turn = (detail.json().messages as ChatMessage[]).find(
+        (row) => row.id === message.id,
+      );
+      expect(turn).toMatchObject({ status: 'DONE' });
+      expect(turn?.error ?? null).toBeNull();
+      expect(detail.json().messages as ChatMessage[]).toContainEqual(
+        expect.objectContaining({ role: 'assistant', status: 'DONE' }),
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('wakes a long-poll as soon as the human sends a message', async () => {
     const ctx = await createTestContext();
     try {

@@ -32,5 +32,6 @@ fi
 
 pm2 save
 echo
+echo "health:    $(curl -fsS -m 5 http://127.0.0.1:8787/healthz || echo 'not reachable yet')"
 echo "dashboard: http://127.0.0.1:8787  (put a reverse proxy in front for HTTPS)"
 echo "logs:      pm2 logs zhunzou"

@@ -1,5 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +46,18 @@ function writeConfig(dir: string, value: unknown): string {
   const path = join(dir, 'fleet.json');
   writeFileSync(path, JSON.stringify(value), 'utf8');
   return path;
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 8_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  throw new Error('timed out waiting for condition');
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
@@ -118,6 +137,67 @@ describe('loadFleetConfig', () => {
     writeFileSync(path, '{ nope', 'utf8');
 
     expect(() => loadFleetConfig(path)).toThrow(/not valid JSON/);
+  });
+
+  it('adds git repos discovered under scan.roots', () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'repos', 'one', '.git'), { recursive: true });
+    mkdirSync(join(dir, 'repos', 'team', 'two', '.git'), {
+      recursive: true,
+    });
+    const path = writeConfig(dir, {
+      hubUrl: 'https://hub.example.com',
+      adapter: 'cursor-agent',
+      projects: [{ env: 'explicit', path: './repos/one' }],
+      scan: { roots: ['./repos'], depth: 2 },
+    });
+
+    const config = loadFleetConfig(path);
+
+    expect(config.projects.map((project) => project.env)).toEqual([
+      'explicit',
+      'cursor-two',
+    ]);
+    expect(config.projects[1]).toMatchObject({
+      env: 'cursor-two',
+      path: join(dir, 'repos', 'team', 'two'),
+      absolutePath: join(dir, 'repos', 'team', 'two'),
+      project: 'two',
+      adapter: 'cursor-agent',
+      discovered: true,
+    });
+  });
+
+  it('keeps discovered envs unique when basenames collide', () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'repos', 'a', 'same', '.git'), { recursive: true });
+    mkdirSync(join(dir, 'repos', 'b', 'same', '.git'), { recursive: true });
+    const path = writeConfig(dir, {
+      hubUrl: 'https://hub.example.com',
+      scan: { roots: ['./repos'], depth: 2 },
+    });
+
+    const config = loadFleetConfig(path);
+
+    expect(config.projects.map((project) => project.env)).toEqual([
+      'agent-same',
+      'agent-same-2',
+    ]);
+    expect(config.projects.every((project) => project.discovered)).toBe(true);
+  });
+
+  it('accepts a scan-only config and rejects a completely empty one', () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'repos', 'solo', '.git'), { recursive: true });
+    const scanned = writeConfig(dir, {
+      hubUrl: 'https://hub.example.com',
+      scan: { roots: ['./repos'], depth: 1 },
+    });
+
+    expect(loadFleetConfig(scanned).projects).toHaveLength(1);
+
+    const empty = writeConfig(dir, { hubUrl: 'https://hub.example.com' });
+    expect(() => loadFleetConfig(empty)).toThrow(/no projects/);
   });
 });
 
@@ -322,6 +402,188 @@ describe('runFleet', () => {
       await hub.close();
     }
   });
+
+  it('applies and removes dashboard associations at runtime', async () => {
+    const dir = tempDir();
+    const root = join(dir, 'repos');
+    const base = join(dir, 'base');
+    const newRepo = join(root, 'new-repo');
+    mkdirSync(base, { recursive: true });
+    mkdirSync(root, { recursive: true });
+
+    const startedAt = Date.now();
+    let desired: Array<Record<string, unknown>> = [];
+    let browseTasks: Array<Record<string, unknown>> = [];
+    const statuses: Array<Record<string, unknown>> = [];
+    const candidateReports: Array<Record<string, unknown>> = [];
+    const browseResults: Array<Record<string, unknown>> = [];
+
+    const hub = await startHub((request, response) => {
+      if (request.url?.startsWith('/api/tasks')) {
+        json(response, 200, { tasks: [], total: 0 });
+        return;
+      }
+      if (request.url === '/api/status/heartbeat') {
+        json(response, 200, {
+          heartbeat: { env: 'base', status: 'Idle', lastSeenAt: 1, online: true },
+        });
+        return;
+      }
+      if (request.url === '/api/fleet/candidates') {
+        candidateReports.push(request.body as Record<string, unknown>);
+        json(response, 200, { candidates: [], total: 0 });
+        return;
+      }
+      if (request.url?.startsWith('/api/fleet/desired?')) {
+        json(response, 200, { workspaces: desired, browse: browseTasks });
+        return;
+      }
+      if (request.url === '/api/fleet/browse/2/result') {
+        browseResults.push(request.body as Record<string, unknown>);
+        browseTasks = [];
+        json(response, 200, {
+          request: {
+            id: '2',
+            host: 'test-host',
+            path: root,
+            status: 'DONE',
+            entries: [],
+            createdAt: startedAt,
+            updatedAt: startedAt,
+          },
+        });
+        return;
+      }
+      if (request.url === '/api/fleet/desired/1/status') {
+        statuses.push(request.body as Record<string, unknown>);
+        if ((request.body as { status?: string }).status === 'APPLIED') {
+          desired = [];
+        }
+        json(response, 200, {
+          workspace: {
+            id: '1',
+            host: 'test-host',
+            env: 'agent-new-repo',
+            path: newRepo,
+            projectName: 'new-repo',
+            status: 'APPLIED',
+            createdAt: startedAt,
+            updatedAt: startedAt,
+          },
+        });
+        return;
+      }
+      json(response, 404, { error: { message: 'not found' } });
+    });
+
+    const previousInterval = process.env.ZHUNZOU_WAKE_NOTIFY_INTERVAL_MS;
+    process.env.ZHUNZOU_WAKE_NOTIFY_INTERVAL_MS = '2000';
+
+    try {
+      const configPath = writeConfig(dir, {
+        hubUrl: hub.baseUrl,
+        adapter: 'notify',
+        scan: { roots: [root], depth: 1 },
+        projects: [
+          {
+            env: 'base',
+            path: base,
+            project: 'base',
+            adapter: 'notify',
+            token: 'zz_base',
+          },
+        ],
+      });
+      const config = loadFleetConfig(configPath);
+
+      // The repo appears after the config was loaded, exactly like a project
+      // cloned while fleet keeps running.
+      mkdirSync(join(newRepo, '.git'), { recursive: true });
+      desired = [
+        {
+          id: '1',
+          host: 'test-host',
+          env: 'agent-new-repo',
+          path: newRepo,
+          projectName: 'new-repo',
+          adapter: 'notify',
+          status: 'PENDING',
+          token: 'zz_new',
+          createdAt: startedAt,
+          updatedAt: startedAt,
+        },
+      ];
+      browseTasks = [
+        { id: '2', host: 'test-host', path: root, requestedAt: startedAt },
+      ];
+
+      const controller = new AbortController();
+      const running = runFleet(config, {
+        configPath,
+        signal: controller.signal,
+        syncIntervalMs: 2_000,
+        stdout: () => undefined,
+        stderr: () => undefined,
+      });
+
+      await waitFor(() => {
+        const file = readFleetFile(configPath);
+        return file.projects.some(
+          (project) => project.env === 'agent-new-repo',
+        );
+      });
+
+      const added = readFleetFile(configPath).projects.find(
+        (project) => project.env === 'agent-new-repo',
+      );
+      expect(added).toMatchObject({
+        path: newRepo,
+        project: 'new-repo',
+        source: 'hub',
+        token: 'zz_new',
+      });
+
+      await waitFor(
+        () => statuses.some((item) => item.status === 'APPLIED'),
+      );
+      await waitFor(() => browseResults.length > 0);
+
+      const firstReport = candidateReports[0] as {
+        candidates?: Array<{ path: string; associated: boolean }>;
+      };
+      expect(firstReport.candidates).toContainEqual(
+        expect.objectContaining({ path: newRepo, associated: false }),
+      );
+      expect(statuses).toContainEqual(
+        expect.objectContaining({ status: 'APPLIED' }),
+      );
+
+      const browseResult = browseResults[0] as {
+        entries?: Array<{ name: string; isRepo: boolean }>;
+      };
+      expect(browseResult.entries).toContainEqual(
+        expect.objectContaining({ name: 'new-repo', isRepo: true }),
+      );
+
+      // Unbinding in the dashboard removes the directory and stops its loop.
+      await waitFor(
+        () =>
+          !readFleetFile(configPath).projects.some(
+            (project) => project.env === 'agent-new-repo',
+          ),
+      );
+
+      controller.abort();
+      await running;
+    } finally {
+      if (previousInterval === undefined) {
+        delete process.env.ZHUNZOU_WAKE_NOTIFY_INTERVAL_MS;
+      } else {
+        process.env.ZHUNZOU_WAKE_NOTIFY_INTERVAL_MS = previousInterval;
+      }
+      await hub.close();
+    }
+  }, 20_000);
 });
 
 describe('editing fleet.json', () => {

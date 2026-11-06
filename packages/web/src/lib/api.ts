@@ -12,6 +12,8 @@ import type {
   CreateAgentInput,
   CreateChatSessionInput,
   CreateEnrollmentInput,
+  CreateFleetBrowseInput,
+  CreateFleetWorkspaceInput,
   CreateTaskInput,
   CreateTerminalInput,
   DecisionTicket,
@@ -19,6 +21,10 @@ import type {
   EnvHeartbeat,
   ExchangeListResponse,
   ExtendTicketInput,
+  FleetBrowseResponse,
+  FleetCandidateListResponse,
+  FleetWorkspaceListResponse,
+  FleetWorkspaceResponse,
   ResolveTicketInput,
   RuleCandidateActionResponse,
   RuleCandidateListResponse,
@@ -59,7 +65,17 @@ interface ApiErrorBody {
   error?: { code?: string; message?: string };
 }
 
+export interface ServerHealth {
+  ok: boolean;
+  version: string;
+  /** Process start; moves on every server deploy. */
+  startedAt?: number;
+  now?: number;
+}
+
 export interface HubApi {
+  /** Unauthenticated build identity of the server answering this request. */
+  health(): Promise<ServerHealth>;
   status(token: string): Promise<{ envs: EnvHeartbeat[] }>;
   listAgents(token: string): Promise<AgentListResponse>;
   listExchanges(
@@ -212,6 +228,34 @@ export interface HubApi {
     token: string,
     projectId: string,
   ): Promise<WorkspaceProjectResponse>;
+  listFleetCandidates(
+    token: string,
+    host?: string,
+  ): Promise<FleetCandidateListResponse>;
+  listFleetWorkspaces(
+    token: string,
+    host?: string,
+  ): Promise<FleetWorkspaceListResponse>;
+  createFleetWorkspace(
+    token: string,
+    input: CreateFleetWorkspaceInput,
+  ): Promise<FleetWorkspaceResponse>;
+  retryFleetWorkspace(
+    token: string,
+    workspaceId: string,
+  ): Promise<FleetWorkspaceResponse>;
+  deleteFleetWorkspace(
+    token: string,
+    workspaceId: string,
+  ): Promise<FleetWorkspaceResponse>;
+  createFleetBrowse(
+    token: string,
+    input: CreateFleetBrowseInput,
+  ): Promise<FleetBrowseResponse>;
+  getFleetBrowse(
+    token: string,
+    requestId: string,
+  ): Promise<FleetBrowseResponse>;
 }
 
 export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
@@ -257,6 +301,8 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
   }
 
   return {
+    health: () => request<ServerHealth>('', '/healthz'),
+
     status: (token) => request<{ envs: EnvHeartbeat[] }>(token, '/api/status'),
 
     listAgents: (token) => request<AgentListResponse>(token, '/api/agents'),
@@ -544,6 +590,51 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
         `/api/workspace-projects/${projectId}`,
         { method: 'DELETE' },
       ),
+
+    listFleetCandidates: (token, host) => {
+      const query = host ? `?host=${encodeURIComponent(host)}` : '';
+      return request<FleetCandidateListResponse>(
+        token,
+        `/api/fleet/candidates${query}`,
+      );
+    },
+
+    listFleetWorkspaces: (token, host) => {
+      const query = host ? `?host=${encodeURIComponent(host)}` : '';
+      return request<FleetWorkspaceListResponse>(
+        token,
+        `/api/fleet/workspaces${query}`,
+      );
+    },
+
+    createFleetWorkspace: (token, input) =>
+      request<FleetWorkspaceResponse>(token, '/api/fleet/workspaces', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    retryFleetWorkspace: (token, workspaceId) =>
+      request<FleetWorkspaceResponse>(
+        token,
+        `/api/fleet/workspaces/${workspaceId}/retry`,
+        { method: 'POST' },
+      ),
+
+    deleteFleetWorkspace: (token, workspaceId) =>
+      request<FleetWorkspaceResponse>(
+        token,
+        `/api/fleet/workspaces/${workspaceId}`,
+        { method: 'DELETE' },
+      ),
+
+    createFleetBrowse: (token, input) =>
+      request<FleetBrowseResponse>(token, '/api/fleet/browse', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    getFleetBrowse: (token, requestId) =>
+      request<FleetBrowseResponse>(token, `/api/fleet/browse/${requestId}`),
   };
 }
 

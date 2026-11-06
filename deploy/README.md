@@ -41,5 +41,7 @@ certbot renew --dry-run
 
 - 长轮询依赖进程内 `EventEmitter`，**只能单实例**；不要给 systemd 配多进程。
 - `data/` 与 `.env` 不在发布包内，重新部署不会覆盖数据库、规则与 Token。
+- 更新时 node 会重启几秒：nginx 通过 `deploy/nginx-maintenance.conf` 返回一个自动重试的维护页（503），而不是裸 502。
+- Web 资源先构建到 `packages/web/dist.next` 再原子切换，并保留上一版 hashed chunk，避免更新期间打开着的页面加载到 404 资源。
 - nginx 配置仅在首次部署时写入；之后由 certbot 维护 443 配置，`setup.sh` 不会覆盖。
 - 若 8899 端口被占用，用 `--app-port` 换一个端口重新部署。

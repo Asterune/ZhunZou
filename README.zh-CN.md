@@ -278,6 +278,17 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/api/workspace-projects` | 工作区项目绑定列表，支持 `?env=` |
 | `POST` | `/api/workspace-projects` | 绑定项目 `{ env, projectName }`，幂等 |
 | `DELETE` | `/api/workspace-projects/:id` | 解除一条工作区项目绑定 |
+| `POST` | `/api/fleet/candidates` | bridge 上报本机可关联目录（按 host 覆盖） |
+| `GET` | `/api/fleet/candidates` | 可关联目录列表，支持 `?host=` |
+| `POST` | `/api/fleet/workspaces` | 从候选目录创建关联 `{ candidateId }` |
+| `GET` | `/api/fleet/workspaces` | 关联任务列表，支持 `?host=` |
+| `DELETE` | `/api/fleet/workspaces/:id` | 解除目录关联 |
+| `POST` | `/api/fleet/workspaces/:id/retry` | 重试失败的关联 |
+| `GET` | `/api/fleet/desired` | bridge 拉取本机待关联目录（含一次性 Token）与目录浏览请求 |
+| `POST` | `/api/fleet/desired/:id/status` | bridge 回报 `APPLIED` / `FAILED` |
+| `POST` | `/api/fleet/browse` | 请求 bridge 列出目录 `{ host, path? }` |
+| `GET` | `/api/fleet/browse/:id` | 读取目录浏览结果 |
+| `POST` | `/api/fleet/browse/:id/result` | bridge 回报目录列表 |
 | `POST` | `/api/status/heartbeat` | 端侧上报 `{ env, status, projectName?, currentTask?, agent? }`，同时续租该端执行中的任务 |
 | `GET` | `/api/status` | 各接入端在线状态（90s 内有心跳视为在线） |
 | `POST` | `/api/realtime/ticket` | 管理员 Token 换取短期看板 WebSocket ticket |
@@ -528,9 +539,36 @@ npx zhunzou-bridge fleet remove cursor-erp             # 按 env 移除
 # 不想手敲路径：扫描本机 Cursor 最近打开的工作区
 npx zhunzou-bridge fleet scan
 npx zhunzou-bridge fleet scan --add --code ABCDE-FGHIJ # 全部登记（VS Code 加 --client code）
+
+# 按目录扫描 git 仓库：--depth 2 表示向下两层（root 的子目录 + 孙目录）
+npx zhunzou-bridge fleet scan --root ~/code --depth 2
+npx zhunzou-bridge fleet scan --root ~/code --root ~/work --depth 2 --add --code ABCDE-FGHIJ
 ```
 
 `fleet add` 会自动推断项目名（git 根目录）、写 `~/.zhunzou/fleet.json`；带 `--code` 时用看板接入码为每个项目签发 scoped Token（不需要管理员 Token），也可以用 `--admin-token` 或 `--token`。已经安装常驻服务的话会自动切到 `fleet` 模式并重启，让新项目立刻可被下发任务。
+
+如果不想每次手动登记，可在 `~/.zhunzou/fleet.json` 里加一段 `scan`，`fleet` 每次启动都会自动扫描并纳入新仓库（不会写回配置文件）：
+
+```json
+{
+  "scan": { "roots": ["~/code", "~/work"], "depth": 2 },
+  "projects": []
+}
+```
+
+自动发现的项目同样会按 `env 前缀-项目名` 命名；同名目录会用 `-2`、`-3` 区分。Token 走 `adminToken` / 缓存的 `fleet-tokens.json`，首次启动前请确保配置了其中一种。
+
+### 在看板上一键关联目录
+
+升级到包含 `fleet` 目录同步的 bridge 后，看板「接入端 → 关联目录」可以直接选择本机目录并关联工作区，**零配置**也能用（该功能依赖 `fleet` 常驻进程，单独运行 `wake` 时不参与同步）：
+
+1. 打开「关联目录」，在「浏览本机目录」里从主目录或 `scan.roots` 逐级进入；
+2. 也可以直接使用 bridge 每 30 秒自动上报的候选目录（`scan.roots` 或最近 Cursor / VS Code 工作区）；
+3. 点目录旁的「关联」（或「关联此目录」），看板会创建 env 并签发 scoped Token；
+4. bridge 每 3 秒拉取一次待关联列表，自动写入 `fleet.json`（`source: "hub"`）、启动 Agent 并回报「已关联」；
+5. 在看板「解除关联」后，bridge 会从 `fleet.json` 移除该目录并停止对应循环。
+
+安全边界：目录浏览限定在用户主目录和 `scan.roots` 之下，隐藏目录不可进入，符号链接会先解析再校验，不能借链接跳出范围；目前只允许关联含 `.git` 的仓库，避免误把任意目录变成 Agent 工作区。看板下发的 Token 只在下发到 bridge 之前暂存在服务端，回报 `APPLIED` 后立即清除。
 
 ### 手动接入（开发者）
 

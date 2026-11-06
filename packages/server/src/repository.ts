@@ -7,6 +7,7 @@ import {
   gt,
   inArray,
   isNotNull,
+  like,
   lte,
   sql,
 } from 'drizzle-orm';
@@ -39,6 +40,10 @@ import type {
   Enrollment,
   EnvHeartbeat,
   Exchange,
+  FleetCandidate,
+  FleetCandidateInput,
+  FleetWorkspace,
+  FleetWorkspaceStatus,
   HeartbeatInput,
   ListAgentsQuery,
   ListChatEventsQuery,
@@ -77,7 +82,10 @@ import {
   chatSessions,
   enrollmentCodes,
   envHeartbeats,
+  envRunners,
   exchanges,
+  fleetCandidates,
+  fleetWorkspaces,
   ruleCandidates,
   taskLogs,
   terminalAudit,
@@ -87,6 +95,8 @@ import {
   type AgentRow,
   type AgentTaskRow,
   type ChatEventRow,
+  type FleetCandidateRow,
+  type FleetWorkspaceRow,
   type ChatMessageRow,
   type ChatSessionRow,
   type EnrollmentRow,
@@ -113,6 +123,12 @@ const CHAT_PENDING_STATUSES: ChatMessageStatus[] = [
 /** Keep each task's live log bounded; older chunks are trimmed on append. */
 const MAX_TASK_LOG_BYTES = 256 * 1024;
 const MAX_CHAT_EVENT_BYTES = 256 * 1024;
+
+/**
+ * Marks a turn the hub gave up on because the client vanished mid-flight.
+ * The bridge may still hold the real answer and replay it with `force`.
+ */
+export const CHAT_INTERRUPTED_PREFIX = '执行已中断';
 
 /** Input for minting a one-time enrollment code (plaintext stays in the API). */
 export interface CreateEnrollmentCodeInput {
@@ -396,6 +412,35 @@ function toWorkspaceProject(row: WorkspaceProjectRow): WorkspaceProject {
   };
 }
 
+function toFleetCandidate(row: FleetCandidateRow): FleetCandidate {
+  return {
+    id: String(row.id),
+    host: row.host,
+    path: row.path,
+    projectName: row.projectName,
+    env: row.env,
+    ...(row.adapter ? { adapter: row.adapter } : {}),
+    associated: row.associated,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toFleetWorkspace(row: FleetWorkspaceRow): FleetWorkspace {
+  return {
+    id: String(row.id),
+    host: row.host,
+    env: row.env,
+    path: row.path,
+    projectName: row.projectName,
+    ...(row.adapter ? { adapter: row.adapter } : {}),
+    status: row.status,
+    ...(row.error ? { error: row.error } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function normalizeSimilarityText(text: string): string {
   return text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
 }
@@ -597,6 +642,7 @@ export interface TicketStore {
     messageId: number,
     input: CompleteChatMessageInput,
     now?: number,
+    force?: boolean,
   ): ChatMessageResponse;
   appendChatEvent(
     sessionId: number,
@@ -614,6 +660,17 @@ export interface TicketStore {
     onlineEnvs: Set<string>,
     cutoff: number,
     now?: number,
+  ): number;
+  /**
+   * Remember the chat runner instance serving an env and return the previous
+   * one. A different id means the old runner died, so its RUNNING messages are
+   * safe to fail and retry.
+   */
+  claimRunner(env: string, runnerId: string, now?: number): string | null;
+  failRunningChatMessages(
+    env: string,
+    now?: number,
+    error?: string,
   ): number;
   retryChatMessage(
     sessionId: number,
@@ -684,6 +741,45 @@ export interface TicketStore {
   };
   getWorkspaceProject(id: number): WorkspaceProject | null;
   unbindWorkspaceProject(id: number): WorkspaceProject | null;
+
+  /* Fleet directory association */
+  /** Replace one host's candidate list with the latest bridge scan. */
+  replaceFleetCandidates(
+    host: string,
+    candidates: FleetCandidateInput[],
+    now?: number,
+  ): FleetCandidate[];
+  listFleetCandidates(host?: string): {
+    candidates: FleetCandidate[];
+    total: number;
+  };
+  getFleetCandidate(id: number): FleetCandidate | null;
+  createFleetWorkspace(input: {
+    host: string;
+    env: string;
+    path: string;
+    projectName: string;
+    adapter?: string;
+  }, now?: number): FleetWorkspace;
+  listFleetWorkspaces(host?: string): {
+    workspaces: FleetWorkspace[];
+    total: number;
+  };
+  getFleetWorkspace(id: number): FleetWorkspace | null;
+  getFleetWorkspaceByEnv(env: string): FleetWorkspace | null;
+  getFleetWorkspaceByHostPath(host: string, path: string): FleetWorkspace | null;
+  /** Plaintext token is only kept until the bridge reports APPLIED. */
+  getFleetWorkspaceToken(id: number): string | null;
+  updateFleetWorkspace(
+    id: number,
+    input: {
+      status?: FleetWorkspaceStatus;
+      error?: string | null;
+      token?: string | null;
+    },
+    now?: number,
+  ): FleetWorkspace | null;
+  deleteFleetWorkspace(id: number): FleetWorkspace | null;
 
   /** Recent resolved tickets in the same project, ranked by text similarity. */
   findSimilarTickets(input: {
@@ -1835,8 +1931,9 @@ export class TicketRepository implements TicketStore {
     messageId: number,
     input: CompleteChatMessageInput,
     now = Date.now(),
+    force = false,
   ): ChatMessageResponse {
-    const row = this.db
+    let row = this.db
       .update(chatMessages)
       .set({
         status: input.status,
@@ -1852,6 +1949,30 @@ export class TicketRepository implements TicketStore {
       )
       .returning()
       .get();
+
+    // The hub already gave this turn up while the client was unreachable.
+    // `force` lets a replayed answer replace that placeholder; a genuine
+    // failure or an already-recorded turn stays untouched.
+    if (!row && force) {
+      row = this.db
+        .update(chatMessages)
+        .set({
+          status: input.status,
+          error: input.error ?? null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(chatMessages.id, messageId),
+            eq(chatMessages.sessionId, sessionId),
+            eq(chatMessages.role, 'user'),
+            eq(chatMessages.status, 'FAILED'),
+            like(chatMessages.error, `${CHAT_INTERRUPTED_PREFIX}%`),
+          ),
+        )
+        .returning()
+        .get();
+    }
 
     if (!row) {
       throw new ConflictError(
@@ -2016,10 +2137,63 @@ export class TicketRepository implements TicketStore {
       .update(chatMessages)
       .set({
         status: 'FAILED',
-        error: '端侧离线，执行已中断；可以重试',
+        error: `${CHAT_INTERRUPTED_PREFIX}：端侧离线，可以重试`,
         updatedAt: now,
       })
       .where(inArray(chatMessages.id, ids))
+      .run().changes;
+  }
+
+  claimRunner(env: string, runnerId: string, now = Date.now()): string | null {
+    const current = this.db
+      .select({ runnerId: envRunners.runnerId })
+      .from(envRunners)
+      .where(eq(envRunners.env, env))
+      .get();
+
+    if (current?.runnerId === runnerId) return runnerId;
+
+    this.db
+      .insert(envRunners)
+      .values({ env, runnerId, updatedAt: now })
+      .onConflictDoUpdate({
+        target: envRunners.env,
+        set: { runnerId, updatedAt: now },
+      })
+      .run();
+
+    return current?.runnerId ?? null;
+  }
+
+  failRunningChatMessages(
+    env: string,
+    now = Date.now(),
+    error = `${CHAT_INTERRUPTED_PREFIX}：端侧 runner 已重启，可以重试（会恢复原 CLI 会话）`,
+  ): number {
+    const rows = this.db
+      .select({ id: chatMessages.id })
+      .from(chatMessages)
+      .innerJoin(chatSessions, eq(chatMessages.sessionId, chatSessions.id))
+      .where(
+        and(
+          eq(chatSessions.env, env),
+          eq(chatMessages.role, 'user'),
+          eq(chatMessages.status, 'RUNNING'),
+        ),
+      )
+      .all();
+
+    if (rows.length === 0) return 0;
+
+    return this.db
+      .update(chatMessages)
+      .set({ status: 'FAILED', error, updatedAt: now })
+      .where(
+        inArray(
+          chatMessages.id,
+          rows.map((row) => row.id),
+        ),
+      )
       .run().changes;
   }
 
@@ -2636,6 +2810,191 @@ export class TicketRepository implements TicketStore {
   }
 
   /* ---------------------------------------------------------------- */
+  /* Fleet directory association                                      */
+  /* ---------------------------------------------------------------- */
+
+  replaceFleetCandidates(
+    host: string,
+    candidates: FleetCandidateInput[],
+    now = Date.now(),
+  ): FleetCandidate[] {
+    this.db.delete(fleetCandidates).where(eq(fleetCandidates.host, host)).run();
+    if (candidates.length === 0) return [];
+
+    const rows = this.db
+      .insert(fleetCandidates)
+      .values(
+        candidates.map((candidate) => ({
+          host,
+          path: candidate.path,
+          projectName: candidate.projectName,
+          env: candidate.env,
+          ...(candidate.adapter ? { adapter: candidate.adapter } : {}),
+          associated: candidate.associated ?? false,
+          createdAt: now,
+          updatedAt: now,
+        })),
+      )
+      .returning()
+      .all();
+
+    return rows.map(toFleetCandidate);
+  }
+
+  listFleetCandidates(host?: string): {
+    candidates: FleetCandidate[];
+    total: number;
+  } {
+    const where = host ? eq(fleetCandidates.host, host) : undefined;
+    const rows = this.db
+      .select()
+      .from(fleetCandidates)
+      .where(where)
+      .orderBy(asc(fleetCandidates.host), asc(fleetCandidates.path))
+      .all();
+    const countRow = this.db
+      .select({ value: count() })
+      .from(fleetCandidates)
+      .where(where)
+      .get();
+
+    return {
+      candidates: rows.map(toFleetCandidate),
+      total: countRow?.value ?? 0,
+    };
+  }
+
+  getFleetCandidate(id: number): FleetCandidate | null {
+    const row = this.db
+      .select()
+      .from(fleetCandidates)
+      .where(eq(fleetCandidates.id, id))
+      .get();
+    return row ? toFleetCandidate(row) : null;
+  }
+
+  createFleetWorkspace(
+    input: {
+      host: string;
+      env: string;
+      path: string;
+      projectName: string;
+      adapter?: string;
+    },
+    now = Date.now(),
+  ): FleetWorkspace {
+    const row = this.db
+      .insert(fleetWorkspaces)
+      .values({
+        host: input.host,
+        env: input.env,
+        path: input.path,
+        projectName: input.projectName,
+        ...(input.adapter ? { adapter: input.adapter } : {}),
+        status: 'PENDING',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+
+    return toFleetWorkspace(row);
+  }
+
+  listFleetWorkspaces(host?: string): {
+    workspaces: FleetWorkspace[];
+    total: number;
+  } {
+    const where = host ? eq(fleetWorkspaces.host, host) : undefined;
+    const rows = this.db
+      .select()
+      .from(fleetWorkspaces)
+      .where(where)
+      .orderBy(asc(fleetWorkspaces.host), asc(fleetWorkspaces.path))
+      .all();
+    const countRow = this.db
+      .select({ value: count() })
+      .from(fleetWorkspaces)
+      .where(where)
+      .get();
+
+    return {
+      workspaces: rows.map(toFleetWorkspace),
+      total: countRow?.value ?? 0,
+    };
+  }
+
+  getFleetWorkspace(id: number): FleetWorkspace | null {
+    const row = this.db
+      .select()
+      .from(fleetWorkspaces)
+      .where(eq(fleetWorkspaces.id, id))
+      .get();
+    return row ? toFleetWorkspace(row) : null;
+  }
+
+  getFleetWorkspaceByEnv(env: string): FleetWorkspace | null {
+    const row = this.db
+      .select()
+      .from(fleetWorkspaces)
+      .where(eq(fleetWorkspaces.env, env))
+      .get();
+    return row ? toFleetWorkspace(row) : null;
+  }
+
+  getFleetWorkspaceByHostPath(host: string, path: string): FleetWorkspace | null {
+    const row = this.db
+      .select()
+      .from(fleetWorkspaces)
+      .where(
+        and(eq(fleetWorkspaces.host, host), eq(fleetWorkspaces.path, path)),
+      )
+      .get();
+    return row ? toFleetWorkspace(row) : null;
+  }
+
+  getFleetWorkspaceToken(id: number): string | null {
+    const row = this.db
+      .select({ token: fleetWorkspaces.token })
+      .from(fleetWorkspaces)
+      .where(eq(fleetWorkspaces.id, id))
+      .get();
+    return row?.token ?? null;
+  }
+
+  updateFleetWorkspace(
+    id: number,
+    input: {
+      status?: FleetWorkspaceStatus;
+      error?: string | null;
+      token?: string | null;
+    },
+    now = Date.now(),
+  ): FleetWorkspace | null {
+    const row = this.db
+      .update(fleetWorkspaces)
+      .set({
+        ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.error !== undefined ? { error: input.error } : {}),
+        ...(input.token !== undefined ? { token: input.token } : {}),
+        updatedAt: now,
+      })
+      .where(eq(fleetWorkspaces.id, id))
+      .returning()
+      .get();
+    return row ? toFleetWorkspace(row) : null;
+  }
+
+  deleteFleetWorkspace(id: number): FleetWorkspace | null {
+    const row = this.db
+      .delete(fleetWorkspaces)
+      .where(eq(fleetWorkspaces.id, id))
+      .returning()
+      .get();
+    return row ? toFleetWorkspace(row) : null;
+  }
+
+  /* ---------------------------------------------------------------- */
   /* Decision memory & rule candidates                                */
   /* ---------------------------------------------------------------- */
 
@@ -2781,9 +3140,13 @@ export class TicketRepository implements TicketStore {
         COALESCE((SELECT MAX(updated_at) FROM agents), 0) AS agents_updated,
         COALESCE((SELECT MAX(last_seen_at) FROM env_heartbeats), 0) AS heartbeats_seen,
         COALESCE((SELECT MAX(id) FROM exchanges), 0) AS exchanges_max,
+        COALESCE((SELECT MAX(updated_at) FROM fleet_candidates), 0) AS fleet_candidates_updated,
+        COALESCE((SELECT MAX(updated_at) FROM fleet_workspaces), 0) AS fleet_workspaces_updated,
         (SELECT COUNT(*) FROM agents) AS agents_count,
         (SELECT COUNT(*) FROM env_heartbeats) AS heartbeats_count,
-        (SELECT COUNT(*) FROM workspace_projects) AS projects_count
+        (SELECT COUNT(*) FROM workspace_projects) AS projects_count,
+        (SELECT COUNT(*) FROM fleet_candidates) AS fleet_candidates_count,
+        (SELECT COUNT(*) FROM fleet_workspaces) AS fleet_workspaces_count
     `);
     return row ? Object.values(row).join(':') : '';
   }

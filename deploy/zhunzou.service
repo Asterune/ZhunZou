@@ -13,6 +13,9 @@ EnvironmentFile=-/opt/zhunzou/.env
 ExecStart=/usr/bin/node packages/server/dist/main.js
 Restart=on-failure
 RestartSec=3
+# A restart only needs the server to answer held long polls and exit, about a
+# second; this is the backstop for a wedged process, not the normal budget.
+TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
 

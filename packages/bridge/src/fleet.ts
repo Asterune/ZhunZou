@@ -1,6 +1,19 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { arch, homedir, hostname, platform } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  resolve,
+  sep,
+} from 'node:path';
 
 import { z } from 'zod';
 
@@ -13,6 +26,11 @@ import { agentKindForAdapter } from './wake/adapters.js';
 import type { WakeAdapterName } from './wake/config.js';
 import { WAKE_ADAPTERS, loadWakeConfig } from './wake/config.js';
 import { runWakeDaemon } from './wake/daemon.js';
+import {
+  browseDirectory,
+  scanProjectDirectories,
+  scanRecentWorkspaces,
+} from './workspaces.js';
 
 export { agentKindForAdapter } from './wake/adapters.js';
 
@@ -39,6 +57,23 @@ const fleetProjectSchema = z.object({
   args: z.array(z.string()).optional(),
   /** Shell template for the command adapter. */
   command: z.string().min(1).optional(),
+  /** `hub` marks a directory associated from the dashboard. */
+  source: z.string().trim().max(32).optional(),
+});
+
+/**
+ * Optional filesystem discovery: on every `fleet` start, walk these roots and
+ * add every git repository to the runtime project list. Discovered projects
+ * are not written back to fleet.json, so adding a repository on disk is enough
+ * to make it reachable after the next restart.
+ */
+const fleetScanSchema = z.object({
+  /** Directories to search. `~` and paths relative to fleet.json are allowed. */
+  roots: z.array(z.string().trim().min(1)).min(1),
+  /** Levels below each root to search (1 = direct children). Defaults to 2. */
+  depth: z.number().int().min(0).max(8).default(2),
+  /** Adapter for discovered projects; defaults to the top-level adapter. */
+  adapter: z.enum(WAKE_ADAPTERS).optional(),
 });
 
 const fleetConfigSchema = z.object({
@@ -49,14 +84,20 @@ const fleetConfigSchema = z.object({
   adapter: z.enum(WAKE_ADAPTERS).default('auto'),
   /** Where issued tokens are cached. Defaults to ~/.zhunzou/fleet-tokens.json. */
   tokenCache: z.string().trim().min(1).optional(),
-  projects: z.array(fleetProjectSchema).min(1),
+  /** Auto-discover git repositories under these roots on every start. */
+  scan: fleetScanSchema.optional(),
+  projects: z.array(fleetProjectSchema).default([]),
 });
 
 export type FleetProject = z.infer<typeof fleetProjectSchema> & {
   absolutePath: string;
+  /** True when the project came from `scan.roots`, not fleet.json's projects. */
+  discovered?: boolean;
 };
 export type FleetConfig = Omit<z.infer<typeof fleetConfigSchema>, 'projects'> & {
   projects: FleetProject[];
+  /** Absolute roots resolved from `scan.roots`, ready for filesystem walks. */
+  scanRoots?: string[];
 };
 
 export interface FleetRuntime {
@@ -74,6 +115,10 @@ export interface FleetOptions {
   tokenCachePath?: string;
   /** Rotate tokens even when a cached one exists. */
   refreshTokens?: boolean;
+  /** fleet.json path; required for dashboard-driven add/remove. */
+  configPath?: string;
+  /** How often to poll the dashboard for associations (defaults to 10s). */
+  syncIntervalMs?: number;
 }
 
 const DEFAULT_CONFIG_PATH = join(homedir(), '.zhunzou', 'fleet.json');
@@ -160,8 +205,46 @@ export function buildLaunchdPlist(options: LaunchdOptions): string {
 
 export function expandHome(value: string): string {
   if (value === '~') return homedir();
-  if (value.startsWith('~/')) return join(homedir(), value.slice(2));
+  if (value.startsWith('~/') || value.startsWith('~\\')) {
+    return join(homedir(), value.slice(2));
+  }
   return value;
+}
+
+/** Env prefix that matches `init` (`opencode-…`, `claude-…`, `agent-…`). */
+const ADAPTER_ENV_PREFIX: Record<string, string> = {
+  opencode: 'opencode',
+  'opencode-run': 'opencode',
+  claude: 'claude',
+  codex: 'codex',
+  gemini: 'gemini',
+  'cursor-agent': 'cursor',
+};
+
+/** `My Project` → `my-project`; kept stable so re-scans reuse the same env. */
+export function envSlug(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s/\\]+/g, '-')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+}
+
+export function defaultEnvForProject(adapter: string, project: string): string {
+  const prefix = ADAPTER_ENV_PREFIX[adapter] ?? 'agent';
+  return `${prefix}-${envSlug(project) || 'project'}`;
+}
+
+/** Append `-2`, `-3`… until the env is free (envs are capped at 64 chars). */
+function uniqueEnv(base: string, used: Set<string>): string {
+  if (!used.has(base)) return base;
+  for (let index = 2; ; index += 1) {
+    const suffix = `-${index}`;
+    const candidate = `${base.slice(0, 64 - suffix.length)}${suffix}`;
+    if (!used.has(candidate)) return candidate;
+  }
 }
 
 /** Load and validate fleet.json, resolving paths relative to the config file. */
@@ -191,7 +274,7 @@ export function loadFleetConfig(path = DEFAULT_CONFIG_PATH): FleetConfig {
 
   const baseDir = dirname(absolute);
   const seen = new Set<string>();
-  const projects = result.data.projects.map((project) => {
+  const projects: FleetProject[] = result.data.projects.map((project) => {
     if (seen.has(project.env)) {
       throw new Error(`duplicate env in fleet config: ${project.env}`);
     }
@@ -204,12 +287,54 @@ export function loadFleetConfig(path = DEFAULT_CONFIG_PATH): FleetConfig {
     };
   });
 
+  let scanRoots: string[] | undefined;
+  if (result.data.scan) {
+    const roots = result.data.scan.roots.map((root) => {
+      const expanded = expandHome(root);
+      return isAbsolute(expanded) ? resolve(expanded) : resolve(baseDir, expanded);
+    });
+    scanRoots = roots;
+
+    const discovered = scanProjectDirectories({
+      roots,
+      depth: result.data.scan.depth,
+    });
+    const knownPaths = new Set(projects.map((project) => resolve(project.absolutePath)));
+
+    for (const path of discovered) {
+      const absolutePath = resolve(path);
+      if (knownPaths.has(absolutePath)) continue;
+      knownPaths.add(absolutePath);
+
+      const project = basename(absolutePath) || 'project';
+      const adapter = result.data.scan.adapter ?? result.data.adapter;
+      const env = uniqueEnv(defaultEnvForProject(adapter, project), seen);
+      seen.add(env);
+
+      projects.push({
+        env,
+        path: absolutePath,
+        project,
+        adapter,
+        absolutePath,
+        discovered: true,
+      });
+    }
+  }
+
+  if (projects.length === 0) {
+    throw new Error(
+      'fleet config has no projects: add projects[] or scan.roots to the config',
+    );
+  }
+
   return {
     ...result.data,
     ...(result.data.tokenCache
       ? { tokenCache: resolve(expandHome(result.data.tokenCache)) }
       : {}),
     projects,
+    ...(scanRoots ? { scanRoots } : {}),
   };
 }
 
@@ -224,6 +349,8 @@ export interface FleetProjectEntry {
   project?: string;
   adapter?: string;
   token?: string;
+  /** `hub` means the directory was associated from the dashboard. */
+  source?: string;
 }
 
 export interface FleetFile {
@@ -269,6 +396,9 @@ export function readFleetFile(path = DEFAULT_CONFIG_PATH): FleetFile {
           : {}),
         ...(typeof project.token === 'string'
           ? { token: project.token }
+          : {}),
+        ...(typeof project.source === 'string'
+          ? { source: project.source }
           : {}),
       }))
     : [];
@@ -571,9 +701,29 @@ function sleep(ms: number): Promise<void> {
   return new Promise((done) => setTimeout(done, ms));
 }
 
+interface RunningFleetProject {
+  runtime: FleetRuntime;
+  controller: AbortController;
+  /** Removes the global-abort listener when the project is stopped. */
+  abortChild: () => void;
+  presence: ReturnType<typeof createPresenceReporter>;
+  client: ReturnType<typeof createHubApi>;
+  tasks: Promise<void>[];
+}
+
+interface FleetCandidateReport {
+  path: string;
+  projectName: string;
+  env: string;
+  adapter: string;
+  associated: boolean;
+}
+
 /**
  * Run every project's wake loop, restarting a crashed loop with a short
- * backoff. Returns when the signal aborts (or when --once finishes).
+ * backoff. When `configPath` is present, the process also polls the dashboard
+ * for directory associations and adds/removes projects at runtime.
+ * Returns when the signal aborts (or when --once finishes).
  */
 export async function runFleet(
   config: FleetConfig,
@@ -588,9 +738,27 @@ export async function runFleet(
     `[fleet] ${hostname()}: ${runtimes.length} project(s), hub ${config.hubUrl}`,
   );
 
-  const presences = new Map<string, ReturnType<typeof createPresenceReporter>>();
-  for (const runtime of runtimes) {
-    const reporter = createPresenceReporter(new HubClient(runtime.hub), {
+  const globalController = new AbortController();
+  const forwardAbort = () => globalController.abort();
+  if (options.signal?.aborted) forwardAbort();
+  else options.signal?.addEventListener('abort', forwardAbort, { once: true });
+
+  const running = new Map<string, RunningFleetProject>();
+
+  const startProject = (runtime: FleetRuntime): RunningFleetProject => {
+    const existing = running.get(runtime.project.env);
+    if (existing) return existing;
+
+    const controller = new AbortController();
+    const abortChild = () => controller.abort();
+    if (globalController.signal.aborted) controller.abort();
+    else {
+      globalController.signal.addEventListener('abort', abortChild, {
+        once: true,
+      });
+    }
+
+    const presence = createPresenceReporter(new HubClient(runtime.hub), {
       intervalMs: runtime.hub.heartbeatIntervalMs,
       ...(runtime.hub.projectName
         ? { projectName: runtime.hub.projectName }
@@ -600,71 +768,434 @@ export async function runFleet(
           `[${runtime.project.env}] heartbeat failed: ${(error as Error).message}`,
         ),
     });
-    reporter.start();
-    void reporter.beat({ currentTask: 'Runner 已连接' }).catch(() => undefined);
-    presences.set(runtime.project.env, reporter);
-  }
+    presence.start();
+    void presence.beat({ currentTask: 'Runner 已连接' }).catch(() => undefined);
 
-  const supervise = async (
-    runtime: FleetRuntime,
-    label: string,
-    run: () => Promise<number>,
-  ): Promise<void> => {
-    const prefix = `[${runtime.project.env}]${label ? ` ${label}` : ''}`;
-    for (;;) {
-      if (options.signal?.aborted) return;
-      try {
-        await run();
-        if (options.once) return;
-        // A clean return only happens on abort; avoid a hot loop otherwise.
-        await sleep(DEFAULT_RESTART_DELAY_MS);
-      } catch (error) {
-        err(`${prefix} loop crashed: ${(error as Error).message}`);
-        if (options.once) return;
-        await sleep(DEFAULT_RESTART_DELAY_MS);
-      }
-    }
-  };
-
-  const clients: Array<ReturnType<typeof createHubApi>> = [];
-  const tasks = runtimes.flatMap((runtime) => {
     const client = createHubApi(runtime.hub);
-    clients.push(client);
-    const presence = presences.get(runtime.project.env);
-    const taskLoop = supervise(runtime, '', () =>
+    const supervise = async (
+      label: string,
+      run: () => Promise<number>,
+    ): Promise<void> => {
+      const prefix = `[${runtime.project.env}]${label ? ` ${label}` : ''}`;
+      for (;;) {
+        if (controller.signal.aborted) return;
+        try {
+          await run();
+          if (options.once) return;
+          // A clean return only happens on abort; avoid a hot loop otherwise.
+          await sleep(DEFAULT_RESTART_DELAY_MS);
+        } catch (error) {
+          err(`${prefix} loop crashed: ${(error as Error).message}`);
+          if (options.once) return;
+          await sleep(DEFAULT_RESTART_DELAY_MS);
+        }
+      }
+    };
+
+    const taskLoop = supervise('', () =>
       runWakeDaemon({
         client,
         hub: runtime.hub,
         wake: runtime.wake,
-        ...(presence ? { presence } : {}),
+        presence,
         ...(options.once ? { once: true } : {}),
-        ...(options.signal ? { signal: options.signal } : {}),
+        signal: controller.signal,
         stdout: (line) => out(`[${runtime.project.env}] ${line}`),
         stderr: (line) => err(`[${runtime.project.env}] ${line}`),
       }),
     );
+    const tasks = [taskLoop];
 
-    if (!supportsChat(runtime.wake)) return [taskLoop];
+    if (supportsChat(runtime.wake)) {
+      tasks.push(
+        supervise('[chat]', () =>
+          runSessionDaemon({
+            client,
+            hub: runtime.hub,
+            wake: runtime.wake,
+            presence,
+            ...(options.once ? { once: true } : {}),
+            signal: controller.signal,
+            stdout: (line) => out(`[${runtime.project.env}] [chat] ${line}`),
+            stderr: (line) => err(`[${runtime.project.env}] [chat] ${line}`),
+          }),
+        ),
+      );
+    }
 
-    return [
-      taskLoop,
-      supervise(runtime, '[chat]', () =>
-        runSessionDaemon({
-          client,
-          hub: runtime.hub,
-          wake: runtime.wake,
-          ...(presence ? { presence } : {}),
-          ...(options.once ? { once: true } : {}),
-          ...(options.signal ? { signal: options.signal } : {}),
-          stdout: (line) => out(`[${runtime.project.env}] [chat] ${line}`),
-          stderr: (line) => err(`[${runtime.project.env}] [chat] ${line}`),
-        }),
-      ),
-    ];
+    const project: RunningFleetProject = {
+      runtime,
+      controller,
+      abortChild,
+      presence,
+      client,
+      tasks,
+    };
+    running.set(runtime.project.env, project);
+    return project;
+  };
+
+  const stopProject = async (env: string): Promise<void> => {
+    const project = running.get(env);
+    if (!project) return;
+    running.delete(env);
+    globalController.signal.removeEventListener('abort', project.abortChild);
+    project.controller.abort();
+    project.presence.stop();
+    await Promise.allSettled(project.tasks);
+    project.client.close?.();
+  };
+
+  for (const runtime of runtimes) startProject(runtime);
+
+  if (options.once) {
+    await Promise.allSettled(
+      [...running.values()].flatMap((project) => project.tasks),
+    );
+    for (const env of [...running.keys()]) await stopProject(env);
+    options.signal?.removeEventListener('abort', forwardAbort);
+    return 0;
+  }
+
+  const tokenMap = new Map(tokens);
+  const known = new Map<string, FleetProject>();
+  for (const project of config.projects) {
+    known.set(resolve(project.absolutePath), project);
+  }
+  const managedEnvs = new Set(
+    config.projects
+      .filter((project) => project.source === 'hub')
+      .map((project) => project.env),
+  );
+  /** Paths we have advertised to the dashboard (used as an allowlist). */
+  const reportedPaths = new Set<string>();
+  const configPath = options.configPath;
+
+  const candidateList = (): FleetCandidateReport[] => {
+    const roots = config.scanRoots ?? [];
+    const paths =
+      roots.length > 0
+        ? scanProjectDirectories({
+            roots,
+            depth: config.scan?.depth ?? 2,
+          })
+        : [
+            ...new Set(
+              scanRecentWorkspaces({ flavors: ['cursor', 'code'] }).flatMap(
+                (result) => result.paths,
+              ),
+            ),
+          ];
+
+    const seen = new Set<string>();
+    const candidates: FleetCandidateReport[] = [];
+    for (const raw of paths) {
+      const absolute = resolve(raw);
+      if (seen.has(absolute)) continue;
+      seen.add(absolute);
+
+      const current = known.get(absolute);
+      const adapter =
+        current?.adapter ?? config.scan?.adapter ?? config.adapter;
+      const projectName =
+        (current?.project ?? basename(absolute)) || 'project';
+      candidates.push({
+        path: absolute,
+        projectName,
+        env: current?.env ?? defaultEnvForProject(adapter, projectName),
+        adapter,
+        associated: Boolean(current),
+      });
+    }
+    return candidates;
+  };
+
+  const allowed = (path: string): boolean => {
+    if (!isAbsolute(path)) return false;
+    if (reportedPaths.has(path)) return true;
+    return (config.scanRoots ?? []).some(
+      (root) => path === root || path.startsWith(`${root}${sep}`),
+    );
+  };
+
+  const runSync = async (): Promise<void> => {
+    if (!configPath) return;
+
+    /**
+     * Use a hand-registered project when possible; a dashboard-managed one
+     * can be unbound, which also deletes its token.
+     */
+    const controlClient = (): HubClient | null => {
+      const projects = [...running.values()];
+      const preferred =
+        projects.find((project) => project.runtime.project.source !== 'hub') ??
+        projects[0];
+      return preferred ? new HubClient(preferred.runtime.hub) : null;
+    };
+
+    const interval = Math.max(2_000, options.syncIntervalMs ?? 3_000);
+    let tick = 0;
+
+    const reportCandidates = async (): Promise<void> => {
+      const client = controlClient();
+      if (!client) return;
+      const candidates = candidateList();
+      for (const candidate of candidates) reportedPaths.add(candidate.path);
+      await client.reportFleetCandidates({
+        host: hostname(),
+        roots: config.scanRoots ?? [],
+        ...(config.scan?.depth !== undefined
+          ? { depth: config.scan.depth }
+          : {}),
+        candidates,
+      });
+    };
+
+    const syncDesired = async (): Promise<void> => {
+      const client = controlClient();
+      if (!client) return;
+      const { workspaces, browse } = await client.listDesiredWorkspaces();
+
+      // Answer filesystem picker requests before applying associations, so a
+      // directory the human just browsed can be associated in the same cycle.
+      for (const request of browse ?? []) {
+        try {
+          const result = browseDirectory({
+            path: request.path,
+            home: homedir(),
+            roots: config.scanRoots ?? [],
+          });
+          reportedPaths.add(result.path);
+          for (const entry of result.entries) reportedPaths.add(entry.path);
+
+          await client.reportFleetBrowseResult(request.id, {
+            current: {
+              path: result.path,
+              ...(result.parent ? { parent: result.parent } : {}),
+              home: result.home,
+              isRepo: result.isRepo,
+              adapter: config.adapter,
+            },
+            entries: result.entries,
+          });
+        } catch (error) {
+          await client
+            .reportFleetBrowseResult(request.id, {
+              entries: [],
+              error: (error as Error).message,
+            })
+            .catch(() => undefined);
+        }
+      }
+
+      const desiredPaths = new Set<string>();
+
+      for (const workspace of workspaces) {
+        const absolute = resolve(workspace.path);
+        desiredPaths.add(absolute);
+        const existing = known.get(absolute);
+
+        if (existing) {
+          if (existing.env !== workspace.env) {
+            if (workspace.status !== 'FAILED') {
+              await client.reportFleetWorkspaceStatus(workspace.id, {
+                status: 'FAILED',
+                error: `目录已由 ${existing.env} 托管`,
+              });
+            }
+            continue;
+          }
+
+          if (!running.has(existing.env)) {
+            const token = tokenMap.get(existing.env);
+            if (!token) {
+              if (workspace.status !== 'FAILED') {
+                await client.reportFleetWorkspaceStatus(workspace.id, {
+                  status: 'FAILED',
+                  error: '本地缺少 Token，请重试',
+                });
+              }
+              continue;
+            }
+            startProject(
+              buildFleetRuntimes(
+                { ...config, projects: [existing] },
+                new Map([[existing.env, token]]),
+              )[0]!,
+            );
+          }
+
+          if (workspace.status !== 'APPLIED') {
+            await client.reportFleetWorkspaceStatus(workspace.id, {
+              status: 'APPLIED',
+            });
+          }
+          continue;
+        }
+
+        let directoryOk = false;
+        try {
+          directoryOk =
+            allowed(absolute) &&
+            statSync(absolute).isDirectory() &&
+            existsSync(join(absolute, '.git'));
+        } catch {
+          directoryOk = false;
+        }
+        if (!directoryOk) {
+          if (workspace.status !== 'FAILED') {
+            await client.reportFleetWorkspaceStatus(workspace.id, {
+              status: 'FAILED',
+              error: '目录不在可关联范围内，或不是 Git 仓库',
+            });
+          }
+          continue;
+        }
+
+        if (!workspace.token) {
+          if (workspace.status !== 'FAILED') {
+            await client.reportFleetWorkspaceStatus(workspace.id, {
+              status: 'FAILED',
+              error: '尚未下发 Token，请重试',
+            });
+          }
+          continue;
+        }
+
+        try {
+          addFleetProjects({
+            configPath,
+            projects: [
+              {
+                env: workspace.env,
+                path: absolute,
+                project: workspace.projectName,
+                ...(workspace.adapter ? { adapter: workspace.adapter } : {}),
+                token: workspace.token,
+                source: 'hub',
+              },
+            ],
+          });
+
+          const project: FleetProject = {
+            env: workspace.env,
+            path: absolute,
+            absolutePath: absolute,
+            project: workspace.projectName,
+            ...(workspace.adapter
+              ? { adapter: workspace.adapter as WakeAdapterName }
+              : {}),
+            source: 'hub',
+          };
+          known.set(absolute, project);
+          tokenMap.set(workspace.env, workspace.token);
+          managedEnvs.add(workspace.env);
+          startProject(
+            buildFleetRuntimes(
+              { ...config, projects: [project] },
+              new Map([[workspace.env, workspace.token]]),
+            )[0]!,
+          );
+          await client.reportFleetWorkspaceStatus(workspace.id, {
+            status: 'APPLIED',
+          });
+          out(`[fleet] 已关联 ${workspace.env} → ${absolute}`);
+        } catch (error) {
+          const message = (error as Error).message;
+          err(`[fleet] ${workspace.env} 关联失败: ${message}`);
+          await client
+            .reportFleetWorkspaceStatus(workspace.id, {
+              status: 'FAILED',
+              error: message,
+            })
+            .catch(() => undefined);
+        }
+      }
+
+      // Dashboard-managed projects disappear as soon as the human unbinds them.
+      for (const env of [...managedEnvs]) {
+        const project = [...known.values()].find((item) => item.env === env);
+        if (!project) {
+          managedEnvs.delete(env);
+          continue;
+        }
+        const absolute = resolve(project.absolutePath);
+        if (desiredPaths.has(absolute)) continue;
+
+        try {
+          removeFleetProject(env, configPath);
+          await stopProject(env);
+          known.delete(absolute);
+          managedEnvs.delete(env);
+          tokenMap.delete(env);
+          out(`[fleet] 已解除 ${env} → ${absolute}`);
+        } catch (error) {
+          err(
+            `[fleet] ${env} 解除失败: ${(error as Error).message}`,
+          );
+        }
+      }
+    };
+
+    const runOnce = async (): Promise<void> => {
+      if (tick % 10 === 0) {
+        try {
+          await reportCandidates();
+        } catch (error) {
+          err(`[fleet] 上报可关联目录失败: ${(error as Error).message}`);
+        }
+      }
+      tick += 1;
+      try {
+        await syncDesired();
+      } catch (error) {
+        err(`[fleet] 同步看板目录失败: ${(error as Error).message}`);
+      }
+    };
+
+    try {
+      await runOnce();
+    } catch (error) {
+      err(`[fleet] 首次同步失败: ${(error as Error).message}`);
+    }
+    const timer = setInterval(() => {
+      void runOnce().catch((error) => {
+        err(`[fleet] 同步失败: ${(error as Error).message}`);
+      });
+    }, interval);
+    timer.unref?.();
+
+    await new Promise<void>((resolve) => {
+      if (globalController.signal.aborted) {
+        clearInterval(timer);
+        resolve();
+        return;
+      }
+      globalController.signal.addEventListener(
+        'abort',
+        () => {
+          clearInterval(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  };
+
+  const syncLoop = configPath ? runSync() : Promise.resolve();
+
+  await new Promise<void>((resolve) => {
+    if (globalController.signal.aborted) {
+      resolve();
+      return;
+    }
+    globalController.signal.addEventListener('abort', () => resolve(), {
+      once: true,
+    });
   });
 
-  await Promise.allSettled(tasks);
-  for (const client of clients) client.close?.();
-  for (const presence of presences.values()) presence.stop();
+  await Promise.allSettled([...running.keys()].map(stopProject));
+  await syncLoop;
+  options.signal?.removeEventListener('abort', forwardAbort);
   return 0;
 }

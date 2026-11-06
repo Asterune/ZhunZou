@@ -34,6 +34,33 @@ log()  { printf '\033[1;36m[zhunzou]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Friendly page for the seconds node restarts during a deploy. Safe to call on
+# every run: it only inserts one include the first time and never touches
+# certbot's 443 settings.
+install_maintenance_page() {
+  local conf="/etc/nginx/conf.d/${SERVICE_NAME}.conf"
+  local snippet="/etc/nginx/snippets/zhunzou-maintenance.conf"
+  [ -f "$conf" ] || return 0
+  [ -f "${APP_DIR}/deploy/nginx-maintenance.conf" ] || return 0
+
+  mkdir -p /etc/nginx/snippets
+  sed -e "s#__APP_DIR__#${APP_DIR}#g" \
+      "${APP_DIR}/deploy/nginx-maintenance.conf" > "$snippet"
+
+  if grep -q 'zhunzou-maintenance.conf' "$conf"; then
+    return 0
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v inc="        include ${snippet};" '
+    { print }
+    /^[[:space:]]*server[[:space:]]*\{[[:space:]]*$/ { print inc }
+  ' "$conf" > "$tmp"
+  mv "$tmp" "$conf"
+  log "已启用更新维护页（502 → 自动重试）"
+}
+
 [ "$(id -u)" -eq 0 ] || die "请使用 root 或 sudo 运行本脚本"
 
 APT_GET=(apt-get -o DPkg::Lock::Timeout=300)
@@ -79,7 +106,27 @@ if ! pnpm install --frozen-lockfile; then
 fi
 
 log "构建 shared / server / bridge / web ..."
-pnpm build
+WEB_DIR="${APP_DIR}/packages/web"
+WEB_STAGE="${WEB_DIR}/dist.next"
+rm -rf "$WEB_STAGE"
+# Build next to the live directory, then swap. Building straight into dist/
+# empties it first, so an open dashboard (or a reload during the deploy) would
+# hit missing hashed assets until the new build finishes.
+ZHUNZOU_WEB_OUT_DIR=dist.next pnpm build
+
+log "原子切换 Web 静态资源（保留上一版 hashed chunk，避免旧页面 404）..."
+mkdir -p "${WEB_STAGE}/assets"
+if [ -d "${WEB_DIR}/dist/assets" ]; then
+  cp -a -n "${WEB_DIR}/dist/assets/." "${WEB_STAGE}/assets/" 2>/dev/null || true
+fi
+# Chunks are only referenced by pages from the last month at most; the update
+# prompt moves everyone to the newest index.html long before this.
+find "${WEB_STAGE}/assets" -type f -mtime +30 -delete 2>/dev/null || true
+rm -rf "${WEB_DIR}/dist.old"
+if [ -d "${WEB_DIR}/dist" ]; then
+  mv "${WEB_DIR}/dist" "${WEB_DIR}/dist.old"
+fi
+mv "$WEB_STAGE" "${WEB_DIR}/dist"
 
 # ---------------------------------------------------------------- 运行时配置
 mkdir -p "${APP_DIR}/data"
@@ -170,12 +217,26 @@ sed -e "s#/opt/zhunzou#${APP_DIR}#g" \
 
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME" >/dev/null
+
+# Put the maintenance page in front of the existing nginx *before* the bounce,
+# so even this rollout never shows a raw 502. Fresh installs are handled in the
+# nginx section below, after the config exists.
+if [ "$INSTALL_NGINX" = "1" ] && command -v nginx >/dev/null 2>&1; then
+  install_maintenance_page
+  if nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx || warn "nginx 重载失败，将在重启后重试"
+  else
+    warn "维护页配置未通过 nginx -t，继续部署并稍后重试"
+  fi
+fi
+
 systemctl restart "$SERVICE_NAME"
 
 # ---------------------------------------------------------------- 健康检查
 ok=0
+health=''
 for _ in $(seq 1 40); do
-  if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
+  if health="$(curl -fsS "http://127.0.0.1:${PORT}/healthz" 2>/dev/null)"; then
     ok=1
     break
   fi
@@ -189,7 +250,8 @@ if [ "$ok" -ne 1 ]; then
   journalctl -u "$SERVICE_NAME" -n 60 --no-pager || true
   die "健康检查失败：http://127.0.0.1:${PORT}/healthz"
 fi
-log "健康检查通过：http://127.0.0.1:${PORT}/healthz"
+# The running build's version and start time: proof this rollout took effect.
+log "健康检查通过：http://127.0.0.1:${PORT}/healthz ${health}"
 
 # ---------------------------------------------------------------- nginx
 if [ "$INSTALL_NGINX" = "1" ]; then
@@ -233,6 +295,9 @@ if [ "$INSTALL_NGINX" = "1" ]; then
     mv "$NGINX_TMP" "$NGINX_CONF"
     log "已补充 WebSocket upgrade map"
   fi
+
+  # First installs only: the pre-restart hook above covers upgrades.
+  install_maintenance_page
 
   if nginx -t; then
     systemctl enable nginx >/dev/null 2>&1 || true

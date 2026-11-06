@@ -10,6 +10,9 @@ import type {
   EnrollmentResponse,
   EnvHeartbeat,
   Exchange,
+  FleetBrowseRequest,
+  FleetCandidate,
+  FleetWorkspace,
   ResolveTicketInput,
   RuleCandidate,
   RulesResponse,
@@ -18,7 +21,7 @@ import type {
   WorkspaceProject,
 } from '@zhunzou/shared';
 
-import { ApiError, hubApi, type HubApi } from '../lib/api';
+import { ApiError, hubApi, type HubApi, type ServerHealth } from '../lib/api';
 import {
   isActiveTask,
   isAwaitingTicket,
@@ -35,6 +38,8 @@ const SYNC_TIMEOUT_MS = 25_000;
 const SYNC_RETRY_MS = 4_000;
 /** Backoff before asking for a fresh realtime ticket and reconnecting. */
 const REALTIME_RETRY_MS = 4_000;
+/** How often to re-read the server build, so a deploy shows up unaided. */
+const HEALTH_POLL_MS = 60_000;
 
 function loadStoredToken(): string {
   try {
@@ -69,7 +74,10 @@ function clearStoredToken(): void {
 
 function describeError(error: unknown): string {
   if (error instanceof ApiError) {
-    return error.status === 0 ? t('store.networkError') : error.message;
+    if (error.status === 0) return t('store.networkError');
+    // nginx answers 503 while a deploy restarts the node process.
+    if (error.status === 503) return t('store.updating');
+    return error.message;
   }
   return error instanceof Error ? error.message : t('store.unknownError');
 }
@@ -84,6 +92,11 @@ export function createHubStore(api: HubApi = hubApi) {
   const rules = ref<RulesResponse | null>(null);
   const ruleCandidates = ref<RuleCandidate[]>([]);
   const workspaceProjects = ref<WorkspaceProject[]>([]);
+  const fleetCandidates = ref<FleetCandidate[]>([]);
+  const fleetWorkspaces = ref<FleetWorkspace[]>([]);
+  const fleetBrowse = ref<FleetBrowseRequest | null>(null);
+  const fleetBrowseLoading = ref(false);
+  const fleetBrowseError = ref('');
   /** Server revision of the snapshot currently applied. */
   const rev = ref(0);
 
@@ -100,17 +113,23 @@ export function createHubStore(api: HubApi = hubApi) {
   const batchResolving = ref(false);
   const bindingProject = ref(false);
   const unbindingProjectId = ref('');
+  const fleetActionId = ref('');
+  const fleetLoading = ref(false);
   const agentActionEnv = ref('');
   const agentsLoading = ref(false);
   const connection = ref<'idle' | 'online' | 'offline'>('idle');
   const realtimeState = ref<'idle' | 'connecting' | 'online' | 'offline'>('idle');
+  const serverVersion = ref('');
+  const serverStartedAt = ref(0);
   const lastSyncAt = ref(0);
   const lastError = ref('');
   const authError = ref('');
 
   let syncGeneration = 0;
   let realtimeGeneration = 0;
+  let browseGeneration = 0;
   let realtimeSocket: WebSocket | null = null;
+  let healthTimer: ReturnType<typeof setInterval> | null = null;
 
   const pendingTickets = computed(() =>
     tickets.value
@@ -192,6 +211,34 @@ export function createHubStore(api: HubApi = hubApi) {
     return [...names].sort((left, right) => left.localeCompare(right));
   });
 
+  /** Candidates grouped by the machine that reported them. */
+  const fleetCandidatesByHost = computed(() => {
+    const groups = new Map<string, FleetCandidate[]>();
+    for (const candidate of fleetCandidates.value) {
+      const list = groups.get(candidate.host) ?? [];
+      list.push(candidate);
+      groups.set(candidate.host, list);
+    }
+    for (const list of groups.values()) {
+      list.sort((left, right) => left.path.localeCompare(right.path));
+    }
+    return groups;
+  });
+
+  /** Association jobs grouped by host, newest first. */
+  const fleetWorkspacesByHost = computed(() => {
+    const groups = new Map<string, FleetWorkspace[]>();
+    for (const workspace of fleetWorkspaces.value) {
+      const list = groups.get(workspace.host) ?? [];
+      list.push(workspace);
+      groups.set(workspace.host, list);
+    }
+    for (const list of groups.values()) {
+      list.sort((left, right) => right.createdAt - left.createdAt);
+    }
+    return groups;
+  });
+
   /**
    * Replace every slice of dashboard state with one server snapshot.
    * The snapshot is built from the same repository calls the individual
@@ -204,6 +251,25 @@ export function createHubStore(api: HubApi = hubApi) {
     tickets.value = state.tickets;
     tasks.value = state.tasks;
     workspaceProjects.value = state.projects;
+    fleetCandidates.value = state.fleetCandidates;
+    fleetWorkspaces.value = state.fleetWorkspaces;
+  }
+
+  /**
+   * Which server build answers this origin. Refreshing after a deploy moves
+   * `version` or restarts `startedAt`, which is the evidence the dashboard
+   * otherwise has no way to show.
+   */
+  async function pollHealth(): Promise<void> {
+    let health: ServerHealth;
+    try {
+      health = await api.health();
+    } catch {
+      // A server mid-restart has no opinion; keep the last known build.
+      return;
+    }
+    serverVersion.value = health.version ?? '';
+    serverStartedAt.value = health.startedAt ?? 0;
   }
 
   /**
@@ -224,6 +290,7 @@ export function createHubStore(api: HubApi = hubApi) {
       lastSyncAt.value = Date.now();
       lastError.value = '';
       connection.value = 'online';
+      if (options.manual) void pollHealth();
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         logout(t('store.sessionExpired'));
@@ -433,6 +500,8 @@ export function createHubStore(api: HubApi = hubApi) {
     if (!token.value) return;
     void runSyncLoop(syncGeneration);
     void runRealtimeLoop(realtimeGeneration);
+    void pollHealth();
+    healthTimer = setInterval(() => void pollHealth(), HEALTH_POLL_MS);
   }
 
   function stop(): void {
@@ -441,6 +510,10 @@ export function createHubStore(api: HubApi = hubApi) {
     realtimeSocket?.close();
     realtimeSocket = null;
     realtimeState.value = 'idle';
+    if (healthTimer !== null) {
+      clearInterval(healthTimer);
+      healthTimer = null;
+    }
   }
 
   function fail(error: unknown, fallback: string): void {
@@ -631,6 +704,161 @@ export function createHubStore(api: HubApi = hubApi) {
       return false;
     } finally {
       unbindingProjectId.value = '';
+    }
+  }
+
+  async function associateFleetCandidate(candidateId: string): Promise<boolean> {
+    if (fleetActionId.value) return false;
+
+    fleetActionId.value = candidateId;
+    try {
+      const response = await api.createFleetWorkspace(token.value, {
+        candidateId,
+      });
+      fleetWorkspaces.value = [
+        ...fleetWorkspaces.value.filter(
+          (workspace) => workspace.id !== response.workspace.id,
+        ),
+        response.workspace,
+      ];
+      pushToast(t('store.fleetAssociated', { env: response.workspace.env }), 'success');
+      return true;
+    } catch (error) {
+      fail(error, t('store.fleetAssociateFailed'));
+      return false;
+    } finally {
+      fleetActionId.value = '';
+    }
+  }
+
+  async function retryFleetWorkspace(workspaceId: string): Promise<boolean> {
+    if (fleetActionId.value) return false;
+
+    fleetActionId.value = workspaceId;
+    try {
+      const response = await api.retryFleetWorkspace(token.value, workspaceId);
+      fleetWorkspaces.value = fleetWorkspaces.value.map((workspace) =>
+        workspace.id === response.workspace.id ? response.workspace : workspace,
+      );
+      pushToast(t('store.fleetRetried'), 'success');
+      return true;
+    } catch (error) {
+      fail(error, t('store.fleetRetryFailed'));
+      return false;
+    } finally {
+      fleetActionId.value = '';
+    }
+  }
+
+  async function removeFleetWorkspace(workspaceId: string): Promise<boolean> {
+    if (fleetActionId.value) return false;
+
+    fleetActionId.value = workspaceId;
+    try {
+      await api.deleteFleetWorkspace(token.value, workspaceId);
+      fleetWorkspaces.value = fleetWorkspaces.value.filter(
+        (workspace) => workspace.id !== workspaceId,
+      );
+      pushToast(t('store.fleetRemoved'), 'success');
+      return true;
+    } catch (error) {
+      fail(error, t('store.fleetRemoveFailed'));
+      return false;
+    } finally {
+      fleetActionId.value = '';
+    }
+  }
+
+  async function loadFleet(): Promise<void> {
+    if (!token.value || fleetLoading.value) return;
+
+    fleetLoading.value = true;
+    try {
+      const [candidates, workspaces] = await Promise.all([
+        api.listFleetCandidates(token.value),
+        api.listFleetWorkspaces(token.value),
+      ]);
+      fleetCandidates.value = candidates.candidates;
+      fleetWorkspaces.value = workspaces.workspaces;
+    } catch (error) {
+      fail(error, t('store.fleetLoadFailed'));
+    } finally {
+      fleetLoading.value = false;
+    }
+  }
+
+  /** Ask one bridge to list a directory; polls until the listing arrives. */
+  async function browseFleet(host: string, path?: string): Promise<void> {
+    if (!token.value || !host) return;
+    const generation = ++browseGeneration;
+    fleetBrowseLoading.value = true;
+    fleetBrowseError.value = '';
+    fleetBrowse.value = null;
+
+    try {
+      const created = await api.createFleetBrowse(token.value, {
+        host,
+        ...(path?.trim() ? { path: path.trim() } : {}),
+      });
+      if (generation !== browseGeneration) return;
+      fleetBrowse.value = created.request;
+
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (fleetBrowse.value?.status !== 'PENDING') break;
+        await new Promise((done) => setTimeout(done, 700));
+        if (generation !== browseGeneration) return;
+        const response = await api.getFleetBrowse(
+          token.value,
+          created.request.id,
+        );
+        if (generation !== browseGeneration) return;
+        fleetBrowse.value = response.request;
+      }
+
+      if (fleetBrowse.value?.status === 'PENDING') {
+        fleetBrowseError.value = t('store.fleetBrowseTimeout');
+      } else if (fleetBrowse.value?.status === 'ERROR') {
+        fleetBrowseError.value =
+          fleetBrowse.value.error ?? t('store.fleetBrowseFailed');
+      }
+    } catch (error) {
+      if (generation === browseGeneration) {
+        fleetBrowseError.value = describeError(error);
+      }
+    } finally {
+      if (generation === browseGeneration) fleetBrowseLoading.value = false;
+    }
+  }
+
+  async function associateFleetPath(
+    host: string,
+    path: string,
+    projectName: string,
+    adapter?: string,
+  ): Promise<boolean> {
+    if (fleetActionId.value) return false;
+
+    fleetActionId.value = `browse:${path}`;
+    try {
+      const response = await api.createFleetWorkspace(token.value, {
+        host,
+        path,
+        projectName,
+        ...(adapter ? { adapter } : {}),
+      });
+      fleetWorkspaces.value = [
+        ...fleetWorkspaces.value.filter(
+          (workspace) => workspace.id !== response.workspace.id,
+        ),
+        response.workspace,
+      ];
+      pushToast(t('store.fleetAssociated', { env: response.workspace.env }), 'success');
+      return true;
+    } catch (error) {
+      fail(error, t('store.fleetAssociateFailed'));
+      return false;
+    } finally {
+      fleetActionId.value = '';
     }
   }
 
@@ -851,6 +1079,15 @@ export function createHubStore(api: HubApi = hubApi) {
     tasks,
     ruleCandidates,
     workspaceProjects,
+    fleetCandidates,
+    fleetWorkspaces,
+    fleetBrowse,
+    fleetBrowseLoading,
+    fleetBrowseError,
+    fleetCandidatesByHost,
+    fleetWorkspacesByHost,
+    fleetActionId,
+    fleetLoading,
     knownProjects,
     pendingTickets,
     historyTickets,
@@ -872,6 +1109,9 @@ export function createHubStore(api: HubApi = hubApi) {
     agentsLoading,
     connection,
     realtimeState,
+    serverVersion,
+    serverStartedAt,
+    pollHealth,
     rev,
     lastSyncAt,
     lastError,
@@ -889,6 +1129,12 @@ export function createHubStore(api: HubApi = hubApi) {
     cancelTask,
     bindProject,
     unbindProject,
+    associateFleetCandidate,
+    associateFleetPath,
+    browseFleet,
+    retryFleetWorkspace,
+    removeFleetWorkspace,
+    loadFleet,
     registerAgent,
     createEnrollment,
     updateAgent,

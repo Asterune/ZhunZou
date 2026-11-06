@@ -14,6 +14,10 @@ import type {
   DecisionTicket,
   EnvHeartbeat,
   Exchange,
+  FleetBrowseResultInput,
+  FleetCandidate,
+  FleetDesiredListResponse,
+  FleetWorkspaceStatusInput,
   HeartbeatInput,
   ListTasksQuery,
   NextChatMessageResponse,
@@ -21,6 +25,7 @@ import type {
   ProposeChatReplyInput,
   ReleaseTaskInput,
   ReportExchangeInput,
+  ReportFleetCandidatesInput,
   ResumeResponse,
   TaskListResponse,
   TaskLog,
@@ -33,10 +38,13 @@ import {
   completeTaskSchema,
   createTicketSchema,
   decisionRequestSchema,
+  fleetBrowseResultInputSchema,
+  fleetWorkspaceStatusInputSchema,
   heartbeatSchema,
   proposeChatReplySchema,
   releaseTaskSchema,
   reportExchangeSchema,
+  reportFleetCandidatesSchema,
   ticketIdSchema,
 } from '@zhunzou/shared';
 
@@ -74,7 +82,10 @@ export interface HubApi {
   wait(ticketId: string, timeoutMs?: number): Promise<WaitResponse>;
   heartbeat(input: Omit<HeartbeatInput, 'env'>): Promise<EnvHeartbeat>;
   nextTask(timeoutMs?: number): Promise<NextTaskResponse>;
-  nextChatMessage(timeoutMs?: number): Promise<NextChatMessageResponse>;
+  nextChatMessage(
+    timeoutMs?: number,
+    runnerId?: string,
+  ): Promise<NextChatMessageResponse>;
   appendChatEvent(
     sessionId: string,
     messageId: string,
@@ -96,6 +107,21 @@ export interface HubApi {
     input: Omit<ReportExchangeInput, 'env'>,
   ): Promise<Exchange>;
   resume(sinceMs?: number): Promise<ResumeResponse>;
+  /** Publish local directories the dashboard can associate with an env. */
+  reportFleetCandidates(
+    input: ReportFleetCandidatesInput,
+  ): Promise<{ candidates: FleetCandidate[]; total: number }>;
+  /** Directories the human associated with this machine but the bridge has not applied yet. */
+  listDesiredWorkspaces(): Promise<FleetDesiredListResponse>;
+  reportFleetWorkspaceStatus(
+    workspaceId: string,
+    input: FleetWorkspaceStatusInput,
+  ): Promise<void>;
+  /** Return one directory listing requested by the dashboard picker. */
+  reportFleetBrowseResult(
+    requestId: string,
+    input: FleetBrowseResultInput,
+  ): Promise<void>;
   /** Present on clients that hold a realtime socket. */
   close?(): void;
 }
@@ -240,11 +266,13 @@ export class HubClient implements HubApi {
 
   async nextChatMessage(
     timeoutMs = this.config.waitTimeoutMs,
+    runnerId?: string,
   ): Promise<NextChatMessageResponse> {
     const query = new URLSearchParams({
       env: this.config.agentEnv,
       timeout: String(timeoutMs),
     });
+    if (runnerId) query.set('runner', runnerId);
     return this.request<NextChatMessageResponse>(
       `/api/sessions/next?${query.toString()}`,
       { method: 'GET' },
@@ -393,6 +421,52 @@ export class HubClient implements HubApi {
       REQUEST_GRACE_MS,
     );
     return body.exchange;
+  }
+
+  async reportFleetCandidates(
+    input: ReportFleetCandidatesInput,
+  ): Promise<{ candidates: FleetCandidate[]; total: number }> {
+    const payload = reportFleetCandidatesSchema.parse(input);
+    return this.request<{ candidates: FleetCandidate[]; total: number }>(
+      '/api/fleet/candidates',
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
+  }
+
+  async listDesiredWorkspaces(): Promise<FleetDesiredListResponse> {
+    const query = new URLSearchParams({ host: hostname() });
+    return this.request<FleetDesiredListResponse>(
+      `/api/fleet/desired?${query.toString()}`,
+      { method: 'GET' },
+      REQUEST_GRACE_MS,
+    );
+  }
+
+  async reportFleetWorkspaceStatus(
+    workspaceId: string,
+    input: FleetWorkspaceStatusInput,
+  ): Promise<void> {
+    const id = ticketIdSchema.parse(String(workspaceId));
+    const payload = fleetWorkspaceStatusInputSchema.parse(input);
+    await this.request<unknown>(
+      `/api/fleet/desired/${id}/status`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
+  }
+
+  async reportFleetBrowseResult(
+    requestId: string,
+    input: FleetBrowseResultInput,
+  ): Promise<void> {
+    const id = ticketIdSchema.parse(String(requestId));
+    const payload = fleetBrowseResultInputSchema.parse(input);
+    await this.request<unknown>(
+      `/api/fleet/browse/${id}/result`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
   }
 
   /** Best-effort status update; never blocks a decision. */

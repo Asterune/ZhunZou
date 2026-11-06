@@ -20,6 +20,9 @@
  * Build: __BUILD_ID__
  */
 
+/** Stamped by vite.config.ts; the page compares this with its own bundle id. */
+const BUILD_ID = '__BUILD_ID__';
+
 const CACHE_VERSION = 'zhunzou-v2';
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const ASSET_CACHE = `${CACHE_VERSION}-assets`;
@@ -58,8 +61,23 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SKIP_WAITING') {
+  const data = event.data;
+  if (!data) return;
+
+  if (data.type === 'SKIP_WAITING') {
     event.waitUntil(self.skipWaiting());
+    return;
+  }
+
+  // The page asks which build this worker carries. If it matches the running
+  // bundle, a manual refresh already applied the update and no prompt is due.
+  if (data.type === 'BUILD_ID') {
+    const reply = { type: 'BUILD_ID', buildId: BUILD_ID };
+    if (event.ports && event.ports[0]) {
+      event.ports[0].postMessage(reply);
+    } else if (event.source && event.source.postMessage) {
+      event.source.postMessage(reply);
+    }
   }
 });
 

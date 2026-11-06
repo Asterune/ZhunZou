@@ -6,6 +6,7 @@ import type { AgentKind, AgentTask } from '@zhunzou/shared';
 
 import type { WakeAdapterName, WakeConfig } from './config.js';
 import { NOTIFY_ADAPTERS } from './config.js';
+import type { LogStream } from './log-sink.js';
 import { buildInjectPrompt, buildRunPrompt } from './prompt.js';
 
 export type WakeDelivery = 'inject' | 'run' | 'notify';
@@ -42,7 +43,7 @@ export interface WakeAdapter {
 /* Process helpers                                                     */
 /* ------------------------------------------------------------------ */
 
-interface ProcessResult {
+export interface ProcessResult {
   code: number | null;
   stdout: string;
   stderr: string;
@@ -62,7 +63,7 @@ export interface RunProcessOptions {
   timeoutMs: number;
   shell?: boolean;
   onOutput?: (
-    stream: 'stdout' | 'stderr',
+    stream: LogStream,
     chunk: string,
   ) => void;
 }

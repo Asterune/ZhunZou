@@ -29,6 +29,7 @@ import type {
 import { relativeTime } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
+import FleetWorkspaces from './FleetWorkspaces.vue';
 
 const store = useHubStore();
 const { t } = useI18n();
@@ -311,6 +312,7 @@ async function copyEnrollmentCommand(): Promise<void> {
           <Plus :size="14" />
           {{ t('agents.register') }}
         </button>
+        <FleetWorkspaces />
         <button
           type="button"
           class="flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[11px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container"

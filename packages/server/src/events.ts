@@ -10,6 +10,7 @@ import type { AgentTask, ChatMessage, ChatSession, DecisionTicket } from '@zhunz
  */
 export class TicketEventBus {
   private readonly emitter = new EventEmitter();
+  private readonly waiters = new Set<() => void>();
 
   constructor() {
     // One listener per concurrent long-poll; there is no meaningful cap.
@@ -31,11 +32,13 @@ export class TicketEventBus {
   wait(id: string, timeoutMs: number): Promise<{ ticket: DecisionTicket | null; timedOut: boolean }> {
     return new Promise((resolve) => {
       let settled = false;
+      let release = () => {};
 
       const finish = (ticket: DecisionTicket | null, timedOut: boolean) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        this.waiters.delete(release);
         this.emitter.removeListener(this.channel(id), onPublish);
         resolve({ ticket, timedOut });
       };
@@ -47,7 +50,18 @@ export class TicketEventBus {
       timer.unref?.();
 
       this.emitter.once(this.channel(id), onPublish);
+      release = () => {
+        // Deferring the answer lets the closing sequence finish its own
+        // synchronous work before these handlers touch the database again.
+        setTimeout(() => finish(null, true), 0).unref?.();
+      };
+      this.waiters.add(release);
     });
+  }
+
+  /** Answer every held poll as a timeout so a restart need not wait it out. */
+  releaseAll(): void {
+    for (const release of [...this.waiters]) release();
   }
 
   listenerCount(id: string): number {
@@ -69,6 +83,7 @@ export interface ChatClaim {
 
 export class SessionEventBus {
   private readonly emitter = new EventEmitter();
+  private readonly waiters = new Set<() => void>();
 
   constructor() {
     this.emitter.setMaxListeners(0);
@@ -89,11 +104,13 @@ export class SessionEventBus {
   ): Promise<{ claim: ChatClaim | null; timedOut: boolean }> {
     return new Promise((resolve) => {
       let settled = false;
+      let release = () => {};
 
       const finish = (claim: ChatClaim | null, timedOut: boolean) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        this.waiters.delete(release);
         this.emitter.removeListener(this.channel(env), onPublish);
         resolve({ claim, timedOut });
       };
@@ -104,12 +121,23 @@ export class SessionEventBus {
       timer.unref?.();
 
       this.emitter.once(this.channel(env), onPublish);
+      release = () => {
+        // Deferring the answer lets the closing sequence finish its own
+        // synchronous work before these handlers touch the database again.
+        setTimeout(() => finish(null, true), 0).unref?.();
+      };
+      this.waiters.add(release);
 
       if (probe) {
         const claimed = probe();
         if (claimed) finish(claimed, false);
       }
     });
+  }
+
+  /** Answer every held poll as a timeout so a restart need not wait it out. */
+  releaseAll(): void {
+    for (const release of [...this.waiters]) release();
   }
 
   listenerCount(env: string): number {
@@ -126,6 +154,7 @@ export class SessionEventBus {
  */
 export class SyncEventBus {
   private readonly emitter = new EventEmitter();
+  private readonly releasers = new Set<() => void>();
   private rev = 1;
 
   constructor() {
@@ -161,11 +190,13 @@ export class SyncEventBus {
 
     return new Promise((resolve) => {
       let settled = false;
+      let release = () => {};
 
       const finish = (rev: number, timedOut: boolean) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        this.releasers.delete(release);
         this.emitter.removeListener('change', onChange);
         resolve({ rev, timedOut });
       };
@@ -177,12 +208,24 @@ export class SyncEventBus {
       timer.unref?.();
 
       this.emitter.once('change', onChange);
+      release = () => {
+        // Deferring the answer lets the closing sequence finish its own
+        // synchronous work before these handlers touch the database again.
+        setTimeout(() => finish(this.rev, true), 0).unref?.();
+      };
+      this.releasers.add(release);
     });
+  }
+
+  /** Answer every held poll as a timeout so a restart need not wait it out. */
+  releaseAll(): void {
+    for (const release of [...this.releasers]) release();
   }
 }
 
 export class TaskEventBus {
   private readonly emitter = new EventEmitter();
+  private readonly waiters = new Set<() => void>();
 
   constructor() {
     this.emitter.setMaxListeners(0);
@@ -209,11 +252,13 @@ export class TaskEventBus {
   ): Promise<{ task: AgentTask | null; timedOut: boolean }> {
     return new Promise((resolve) => {
       let settled = false;
+      let release = () => {};
 
       const finish = (task: AgentTask | null, timedOut: boolean) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        this.waiters.delete(release);
         this.emitter.removeListener(this.channel(env), onPublish);
         resolve({ task, timedOut });
       };
@@ -224,12 +269,23 @@ export class TaskEventBus {
       timer.unref?.();
 
       this.emitter.once(this.channel(env), onPublish);
+      release = () => {
+        // Deferring the answer lets the closing sequence finish its own
+        // synchronous work before these handlers touch the database again.
+        setTimeout(() => finish(null, true), 0).unref?.();
+      };
+      this.waiters.add(release);
 
       if (probe) {
         const claimed = probe();
         if (claimed) finish(claimed, false);
       }
     });
+  }
+
+  /** Answer every held poll as a timeout so a restart need not wait it out. */
+  releaseAll(): void {
+    for (const release of [...this.waiters]) release();
   }
 
   listenerCount(env: string): number {

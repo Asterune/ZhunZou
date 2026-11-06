@@ -35,8 +35,28 @@ import SessionOutput from './SessionOutput.vue';
 const store = useHubStore();
 const { t } = useI18n();
 
+/** Remember the open chat so a PWA update reload lands back in it. */
+const ACTIVE_SESSION_KEY = 'zhunzou.chat.active';
+
+function loadActiveSessionId(): string {
+  try {
+    return globalThis.localStorage?.getItem(ACTIVE_SESSION_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberActiveSession(id: string): void {
+  try {
+    if (id) globalThis.localStorage?.setItem(ACTIVE_SESSION_KEY, id);
+    else globalThis.localStorage?.removeItem(ACTIVE_SESSION_KEY);
+  } catch {
+    // Private browsing may deny storage; the session still works in memory.
+  }
+}
+
 const sessions = ref<ChatSession[]>([]);
-const activeId = ref('');
+const activeId = ref(loadActiveSessionId());
 const session = ref<ChatSession | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const draft = ref('');
@@ -184,15 +204,24 @@ async function loadSessions(
     listLoaded.value = true;
     error.value = '';
 
-    if (selectFirst && !activeId.value && response.sessions[0]) {
-      await openSession(response.sessions[0].id);
-    } else if (
+    if (
       activeId.value &&
       !response.sessions.some((item) => item.id === activeId.value)
     ) {
       activeId.value = '';
       session.value = null;
       messages.value = [];
+      rememberActiveSession('');
+    }
+
+    if (!session.value) {
+      // Reopen the chat that was on screen before the reload; fall back to the
+      // newest one when it was deleted elsewhere. Also covers a first load
+      // that failed while the hub was restarting.
+      if (activeId.value) await refreshSession({ force: true });
+      else if (selectFirst && response.sessions[0]) {
+        await openSession(response.sessions[0].id);
+      }
     }
   } catch (cause) {
     error.value = describe(cause);
@@ -231,6 +260,7 @@ async function refreshSession(
 async function openSession(id: string): Promise<void> {
   sessionListOpen.value = false;
   activeId.value = id;
+  rememberActiveSession(id);
   session.value = null;
   messages.value = [];
   cancelEditProposal();
@@ -439,6 +469,7 @@ async function deleteSession(item: ChatSession): Promise<void> {
       activeId.value = '';
       session.value = null;
       messages.value = [];
+      rememberActiveSession('');
     }
     sessions.value = sessions.value.filter((entry) => entry.id !== item.id);
     await loadSessions(true);

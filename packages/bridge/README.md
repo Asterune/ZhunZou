@@ -266,6 +266,7 @@ zhunzou-bridge fleet
   "hubUrl": "https://hub.example.com",
   "adminToken": "HUB_SECRET_TOKEN，仅用于首次登记与签发",
   "adapter": "cursor-agent",
+  "scan": { "roots": ["~/code", "~/work"], "depth": 2 },
   "projects": [
     { "env": "cursor-yikuaomed-erp", "path": "~/code/yikuaomed-erp" },
     { "env": "opencode-zhunzou", "path": "~/code/zhunzou", "adapter": "opencode-run" }
@@ -274,6 +275,8 @@ zhunzou-bridge fleet
 ```
 
 - 每个项目对应 Hub 里的一个 `env`，可以独立下发任务、看状态、停用/轮换 Token。
+- `scan.roots` 会在每次 `fleet` 启动时向下扫描指定层数（默认 2 层）的 git 仓库并自动纳入，不会写回 `fleet.json`；同名目录自动加 `-2`、`-3` 后缀。也可以用 `fleet scan --root <目录> --depth 2 --add` 一次性登记。
+- 看板「接入端 → 关联目录」可以一键把本机目录变成常驻项目：`fleet` 每 30 秒上报候选目录、每 3 秒拉取待关联列表（含目录浏览请求），自动写入 `fleet.json`（`source: "hub"`）、启动 Agent；看板解除关联后自动停止并移除。目录浏览限定在主目录和 `scan.roots` 下，隐藏目录与跳出范围的符号链接会被拒绝。
 - 每个项目会同时跑**任务循环**和**会话循环**：会话消息用 `opencode run --session` /
   `agent -p --resume` / `claude -p --resume` 续聊，`command` 适配器支持
   `{message}` / `{session}` 占位符。

@@ -36,7 +36,7 @@ import TaskBoard from './components/TaskBoard.vue';
 import TicketCard from './components/TicketCard.vue';
 import ToastStack from './components/ToastStack.vue';
 import UpdatePrompt from './components/UpdatePrompt.vue';
-import { relativeTime } from './lib/format';
+import { relativeTime, formatUptime } from './lib/format';
 import { useI18n } from './lib/i18n';
 import { useHubStore } from './stores/hub';
 
@@ -167,6 +167,19 @@ const connectionTextClass = computed(() => {
   return 'text-on-surface-variant';
 });
 
+/** Ticks so the reported server uptime ages without another request. */
+const now = ref(Date.now());
+let clockTimer: ReturnType<typeof setInterval> | null = null;
+
+const serverBadge = computed(() => {
+  if (!store.serverVersion) return '';
+  const label = t('app.serverRunning', {
+    version: store.serverVersion,
+    duration: formatUptime(Math.max(0, now.value - store.serverStartedAt)),
+  });
+  return store.serverStartedAt ? label : `Hub v${store.serverVersion}`;
+});
+
 watch(activeTab, (tab) => {
   moreOpen.value = false;
 
@@ -192,10 +205,13 @@ watch(activeTab, (tab) => {
 
 onMounted(() => {
   if (store.token) store.start();
+  clockTimer = setInterval(() => (now.value = Date.now()), 15_000);
 });
 
 onBeforeUnmount(() => {
   store.stop();
+  if (clockTimer !== null) clearInterval(clockTimer);
+  clockTimer = null;
   document.removeEventListener('keydown', onMoreKeydown);
   document.body.style.overflow = '';
 });
@@ -248,6 +264,14 @@ onBeforeUnmount(() => {
               <span class="hidden text-on-surface-variant/35 xl:inline">•</span>
               <span class="hidden text-on-surface-variant xl:inline">
                 {{ store.lastSyncAt ? relativeTime(store.lastSyncAt) : t('app.syncing') }}
+              </span>
+              <span v-if="serverBadge" class="hidden text-on-surface-variant/60 lg:inline">•</span>
+              <span
+                v-if="serverBadge"
+                class="hidden text-on-surface-variant/70 lg:inline"
+                :title="t('app.serverRunningTitle')"
+              >
+                {{ serverBadge }}
               </span>
             </div>
           </div>

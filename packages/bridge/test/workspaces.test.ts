@@ -1,11 +1,20 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  browseDirectory,
   fileUriToPath,
+  scanProjectDirectories,
   scanRecentWorkspaces,
   workspaceStoragePaths,
   workspaceUrisFromStorage,
@@ -149,3 +158,134 @@ describe('workspace discovery', () => {
 function pathToFileUri(path: string): string {
   return `file://${encodeURI(path)}`.replace(/%2F/g, '/');
 }
+
+describe('directory discovery', () => {
+  it('finds git repos at the configured depth and stops at repo roots', () => {
+    const root = tempDir();
+    const direct = join(root, 'alpha');
+    const nested = join(root, 'team', 'beta');
+    const deep = join(root, 'team', 'beta', 'packages', 'deep');
+    const dependency = join(root, 'node_modules', 'pkg');
+    const hidden = join(root, '.hidden', 'repo');
+    const worktree = join(root, 'worktree');
+
+    for (const dir of [
+      direct,
+      nested,
+      deep,
+      dependency,
+      hidden,
+      worktree,
+    ]) {
+      mkdirSync(join(dir, '.git'), { recursive: true });
+    }
+    // A worktree keeps `.git` as a file instead of a directory.
+    rmSync(join(worktree, '.git'), { recursive: true, force: true });
+    writeFileSync(join(worktree, '.git'), 'gitdir: /tmp/somewhere\n');
+
+    expect(scanProjectDirectories({ roots: [root], depth: 1 })).toEqual([
+      direct,
+      worktree,
+    ]);
+    expect(scanProjectDirectories({ roots: [root], depth: 2 })).toEqual([
+      direct,
+      nested,
+      worktree,
+    ]);
+  });
+
+  it('treats a repository root passed as --root as the project itself', () => {
+    const root = tempDir();
+    const project = join(root, 'app');
+    const child = join(project, 'packages', 'child');
+    mkdirSync(join(project, '.git'), { recursive: true });
+    mkdirSync(join(child, '.git'), { recursive: true });
+
+    expect(scanProjectDirectories({ roots: [project], depth: 2 })).toEqual([
+      project,
+    ]);
+  });
+
+  it('ignores missing roots and caps results', () => {
+    const root = tempDir();
+    for (const name of ['a', 'b', 'c']) {
+      mkdirSync(join(root, name, '.git'), { recursive: true });
+    }
+
+    expect(
+      scanProjectDirectories({ roots: [join(root, 'missing'), root], depth: 1 }),
+    ).toEqual([join(root, 'a'), join(root, 'b'), join(root, 'c')]);
+    expect(
+      scanProjectDirectories({ roots: [root], depth: 1, maxResults: 2 }),
+    ).toHaveLength(2);
+  });
+});
+
+describe('directory browser', () => {
+  it('lists immediate subdirectories and marks git repos', () => {
+    const home = tempDir();
+    mkdirSync(join(home, 'code', 'repo', '.git'), { recursive: true });
+    mkdirSync(join(home, 'code', 'plain'), { recursive: true });
+    mkdirSync(join(home, 'code', 'node_modules', 'pkg'), { recursive: true });
+    mkdirSync(join(home, 'code', '.hidden', 'repo'), { recursive: true });
+
+    const realHome = realpathSync(home);
+    const result = browseDirectory({ home, path: 'code' });
+
+    expect(result.path).toBe(join(realHome, 'code'));
+    expect(result.parent).toBe(realHome);
+    expect(result.isRepo).toBe(false);
+    expect(result.entries.map((entry) => entry.name)).toEqual([
+      'plain',
+      'repo',
+    ]);
+    expect(result.entries.find((entry) => entry.name === 'repo')?.isRepo).toBe(
+      true,
+    );
+    expect(result.entries.find((entry) => entry.name === 'plain')?.isRepo).toBe(
+      false,
+    );
+  });
+
+  it('starts at home and accepts ~ paths', () => {
+    const home = tempDir();
+    mkdirSync(join(home, 'work'), { recursive: true });
+    const realHome = realpathSync(home);
+
+    expect(browseDirectory({ home }).path).toBe(realHome);
+    expect(browseDirectory({ home, path: '~/work' }).path).toBe(
+      join(realHome, 'work'),
+    );
+  });
+
+  it('rejects hidden paths, paths outside the allowlist and symlink escapes', () => {
+    const home = tempDir();
+    const outside = tempDir();
+    mkdirSync(join(home, '.ssh'), { recursive: true });
+    mkdirSync(join(home, 'code', 'repo', '.git'), { recursive: true });
+    mkdirSync(join(outside, 'secret'), { recursive: true });
+    symlinkSync(outside, join(home, 'escape'));
+
+    expect(() => browseDirectory({ home, path: '.ssh' })).toThrow(
+      /隐藏目录/,
+    );
+    expect(() => browseDirectory({ home, path: '/etc' })).toThrow(
+      /允许浏览/,
+    );
+    expect(() => browseDirectory({ home, path: 'escape/secret' })).toThrow(
+      /允许浏览/,
+    );
+    expect(() => browseDirectory({ home, path: 'missing' })).toThrow(
+      /不存在/,
+    );
+  });
+
+  it('allows configured scan roots outside home', () => {
+    const home = tempDir();
+    const work = tempDir();
+    mkdirSync(join(work, 'repo', '.git'), { recursive: true });
+
+    const result = browseDirectory({ home, roots: [work], path: work });
+    expect(result.entries.map((entry) => entry.name)).toEqual(['repo']);
+  });
+});

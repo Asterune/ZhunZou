@@ -5,11 +5,19 @@ import { basename, dirname, join } from 'node:path';
 import fastifyStatic from '@fastify/static';
 import Fastify, {
   type FastifyInstance,
+  type FastifyRequest,
   type FastifyServerOptions,
 } from 'fastify';
 import { z, ZodError } from 'zod';
 
-import type { DecisionTicket, SyncState } from '@zhunzou/shared';
+import type {
+  DecisionTicket,
+  FleetBrowseCurrent,
+  FleetBrowseEntry,
+  FleetBrowseStatus,
+  FleetWorkspace,
+  SyncState,
+} from '@zhunzou/shared';
 import {
   appendChatEventSchema,
   appendTaskLogSchema,
@@ -22,10 +30,14 @@ import {
   createAgentSchema,
   createChatSessionSchema,
   createEnrollmentSchema,
+  createFleetBrowseSchema,
+  createFleetWorkspaceSchema,
   createTaskSchema,
   createTerminalSchema,
   createTicketSchema,
   decisionRequestSchema,
+  fleetBrowseResultInputSchema,
+  fleetWorkspaceStatusInputSchema,
   extendTicketSchema,
   formatTicketId,
   heartbeatSchema,
@@ -35,6 +47,7 @@ import {
   listChatEventsQuerySchema,
   listChatSessionsQuerySchema,
   listExchangesQuerySchema,
+  listFleetQuerySchema,
   listRuleCandidatesQuerySchema,
   listTaskLogsQuerySchema,
   listTasksQuerySchema,
@@ -51,6 +64,7 @@ import {
   redeemEnrollmentSchema,
   releaseTaskSchema,
   reportExchangeSchema,
+  reportFleetCandidatesSchema,
   resolveTicketSchema,
   resumeQuerySchema,
   sendChatMessageSchema,
@@ -126,6 +140,7 @@ import {
 } from './realtime/terminal-manager.js';
 import { buildRealtimeTicket } from './realtime/ticket.js';
 import { RulesStore } from './rules-store.js';
+import { SERVER_VERSION, STARTED_AT } from './version.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -137,7 +152,6 @@ declare module 'fastify' {
   }
 }
 
-const APP_VERSION = '0.1.0';
 const paramsSchema = z.object({ id: ticketIdSchema });
 const chatMessageParamsSchema = z.object({
   id: ticketIdSchema,
@@ -275,6 +289,47 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     projects: repo.listWorkspaceProjects({}).projects,
     agents: repo.listAgents({}),
     exchanges: repo.listExchanges({ limit: 100 }),
+    fleetCandidates: repo.listFleetCandidates().candidates,
+    fleetWorkspaces: repo.listFleetWorkspaces().workspaces,
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Ephemeral dashboard directory-browser requests                      */
+  /* ------------------------------------------------------------------ */
+
+  interface FleetBrowseState {
+    id: number;
+    host: string;
+    path: string;
+    status: FleetBrowseStatus;
+    current?: FleetBrowseCurrent;
+    entries: FleetBrowseEntry[];
+    error?: string;
+    createdAt: number;
+    updatedAt: number;
+  }
+
+  const FLEET_BROWSE_TTL_MS = 5 * 60 * 1000;
+  const FLEET_BROWSE_MAX = 200;
+  const fleetBrowseRequests = new Map<number, FleetBrowseState>();
+  let fleetBrowseSequence = 1;
+
+  const pruneFleetBrowse = (now = Date.now()): void => {
+    for (const [id, request] of fleetBrowseRequests) {
+      if (now - request.createdAt > FLEET_BROWSE_TTL_MS) {
+        fleetBrowseRequests.delete(id);
+      }
+    }
+    if (fleetBrowseRequests.size <= FLEET_BROWSE_MAX) return;
+    const oldest = [...fleetBrowseRequests.values()]
+      .sort((left, right) => left.createdAt - right.createdAt)
+      .slice(0, fleetBrowseRequests.size - FLEET_BROWSE_MAX);
+    for (const request of oldest) fleetBrowseRequests.delete(request.id);
+  };
+
+  const toBrowseResponse = (request: FleetBrowseState) => ({
+    ...request,
+    id: String(request.id),
   });
 
   const rulesStore = new RulesStore(config.rulesPath);
@@ -297,7 +352,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   app.decorate('sessionBus', sessionBus);
   app.decorate('rulesStore', rulesStore);
 
-  app.addHook('onClose', async () => {
+  // Fastify closes the HTTP server before its `onClose` hooks run, and it
+  // waits for busy connections: held polls must be answered and streaming
+  // sockets ended here, or a restart waits out every one of their windows.
+  // The released polls resume on a later timer, so they still finish against
+  // an open database.
+  app.addHook('preClose', async () => {
     closing = true;
     if (sweeper !== null) {
       clearInterval(sweeper);
@@ -307,12 +367,17 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       clearInterval(syncTicker);
       syncTicker = null;
     }
-    // Release held long polls so a restart does not wait for their timeout.
-    syncBus.bump();
+    bus.releaseAll();
+    taskBus.releaseAll();
+    sessionBus.releaseAll();
+    syncBus.releaseAll();
     deviceRouter?.close();
     terminals?.closeAll();
     realtime?.close();
     await closePlugins(plugins, app.log);
+  });
+
+  app.addHook('onClose', async () => {
     sqlite.close();
   });
 
@@ -711,7 +776,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   // -----------------------------------------------------------------
   app.get('/healthz', async () => ({
     ok: true,
-    version: APP_VERSION,
+    version: SERVER_VERSION,
+    startedAt: STARTED_AT,
     now: Date.now(),
   }));
 
@@ -1082,6 +1148,112 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         }),
       );
 
+      /**
+       * Resolve the machine a fleet request belongs to.
+       *
+       * Agent tokens are pinned to the host registered on their heartbeat, so
+       * one machine cannot read or claim another machine's pending
+       * directories. The admin token may pass an explicit `host` (tests and
+       * manual recovery).
+       */
+      const fleetHostFor = (
+        request: FastifyRequest,
+        explicit?: string,
+      ): string => {
+        const principal = request.principal;
+        if (principal?.role === 'agent') {
+          const agent = repo.getAgent(principal.env);
+          const registered = agent?.host?.trim() ?? '';
+          if (registered && explicit && explicit !== registered) {
+            throw new ForbiddenError(
+              `agent token belongs to ${registered}, not ${explicit}`,
+              'HOST_FORBIDDEN',
+            );
+          }
+          // Never trust a host supplied by an unbound token.
+          return registered;
+        }
+        return explicit?.trim() ?? '';
+      };
+
+      const fleetKindOf = (adapter?: string): 'cursor' | 'opencode' | 'claude-code' | 'codex' | 'gemini' | 'other' => {
+        switch (adapter) {
+          case 'cursor':
+          case 'cursor-agent':
+            return 'cursor';
+          case 'opencode':
+          case 'opencode-run':
+            return 'opencode';
+          case 'claude':
+            return 'claude-code';
+          case 'codex':
+            return 'codex';
+          case 'gemini':
+            return 'gemini';
+          default:
+            return 'other';
+        }
+      };
+
+      /** Mint a scoped token for a fleet-created workspace. */
+      const mintFleetToken = (workspace: FleetWorkspace): string => {
+        const agent =
+          repo.getAgent(workspace.env) ??
+          repo.registerAgent({
+            env: workspace.env,
+            name: workspace.projectName,
+            kind: fleetKindOf(workspace.adapter),
+            host: workspace.host,
+          });
+        if (agent.status !== 'active') {
+          throw new ConflictError(
+            `agent ${workspace.env} is disabled; enable it before associating a directory`,
+            'AGENT_DISABLED',
+          );
+        }
+
+        const token = `zz_${randomBytes(32).toString('base64url')}`;
+        repo.setAgentToken(workspace.env, hashToken(token), token.slice(0, 10));
+        return token;
+      };
+
+      const uniqueFleetEnv = (base: string): string => {
+        let env = base;
+        let index = 2;
+        while (repo.getAgent(env) || repo.getFleetWorkspaceByEnv(env)) {
+          const suffix = `-${index}`;
+          env = `${base.slice(0, 64 - suffix.length)}${suffix}`;
+          index += 1;
+        }
+        return env;
+      };
+
+      const fleetEnvPrefix: Record<string, string> = {
+        opencode: 'opencode',
+        'opencode-run': 'opencode',
+        claude: 'claude',
+        codex: 'codex',
+        gemini: 'gemini',
+        'cursor-agent': 'cursor',
+      };
+
+      const fleetEnvFor = (adapter: string | undefined, project: string): string => {
+        const prefix = fleetEnvPrefix[adapter ?? ''] ?? 'agent';
+        const slug =
+          project
+            .trim()
+            .toLowerCase()
+            .replace(/[\s/\\]+/g, '-')
+            .replace(/[^\p{L}\p{N}._-]+/gu, '')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 64) || 'project';
+        return `${prefix}-${slug}`;
+      };
+
+      /** Works for both POSIX and Windows paths on any server OS. */
+      const basenameAny = (path: string): string =>
+        path.split(/[\\/]+/).filter(Boolean).pop() ?? 'project';
+
       // Create a ticket; Meta-Agent pre-review is scheduled immediately after.
       api.post('/tickets', async (request, reply) => {
         const input = createTicketSchema.parse(request.body);
@@ -1183,7 +1355,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         }
 
         const result = await bus.wait(existing.id, timeout);
-        const ticket = result.ticket ?? repo.get(ticketId);
+        // A poll released by a restart may resume after the database is
+        // already closed, so answering from the copy read before the wait is
+        // the only safe fallback while closing.
+        const ticket = result.ticket ?? (closing ? existing : repo.get(ticketId));
 
         if (!ticket) throw new NotFoundError(`ticket ${formatTicketId(id)} not found`);
 
@@ -1532,6 +1707,22 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       api.get('/sessions/next', async (request) => {
         const query = nextChatMessageQuerySchema.parse(request.query);
         requireEnvAccess(request, query.env);
+
+        // A new session-loop instance means the previous one died. Anything it
+        // left RUNNING can never be reported, so make it retryable now.
+        if (query.runner) {
+          const previous = repo.claimRunner(query.env, query.runner);
+          if (previous && previous !== query.runner) {
+            const failed = repo.failRunningChatMessages(query.env);
+            if (failed > 0) {
+              app.log.warn(
+                { env: query.env, count: failed },
+                'recovered chat messages left RUNNING by a replaced runner',
+              );
+            }
+          }
+        }
+
         const deadline = Date.now() + query.timeout;
 
         for (;;) {
@@ -1749,6 +1940,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           Number(session.id),
           Number(message.id),
           input,
+          Date.now(),
+          input.force === true,
         );
       });
 
@@ -2194,6 +2387,250 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return { project };
       });
 
+      // -----------------------------------------------------------------
+      // Fleet directory association (one-click workspace add)
+      // -----------------------------------------------------------------
+
+      // Bridge reports the directories it can host; replaces its previous list.
+      api.post('/fleet/candidates', async (request) => {
+        const input = reportFleetCandidatesSchema.parse(request.body ?? {});
+        const host = fleetHostFor(request, input.host);
+        if (!host) {
+          throw new BadRequestError(
+            'host is required (send a heartbeat or register the agent first)',
+            'HOST_REQUIRED',
+          );
+        }
+
+        const byPath = new Map<string, (typeof input.candidates)[number]>();
+        for (const candidate of input.candidates) {
+          byPath.set(candidate.path, candidate);
+        }
+        const candidates = repo.replaceFleetCandidates(host, [
+          ...byPath.values(),
+        ]);
+        return { candidates, total: candidates.length };
+      });
+
+      api.get('/fleet/candidates', async (request) => {
+        requireAdmin(request);
+        const query = listFleetQuerySchema.parse(request.query);
+        return repo.listFleetCandidates(query.host);
+      });
+
+      // Ask the bridge to list one directory for the dashboard picker.
+      api.post('/fleet/browse', async (request, reply) => {
+        requireAdmin(request);
+        const input = createFleetBrowseSchema.parse(request.body ?? {});
+        pruneFleetBrowse();
+
+        const now = Date.now();
+        const record: FleetBrowseState = {
+          id: fleetBrowseSequence,
+          host: input.host,
+          path: input.path ?? '',
+          status: 'PENDING',
+          entries: [],
+          createdAt: now,
+          updatedAt: now,
+        };
+        fleetBrowseSequence += 1;
+        fleetBrowseRequests.set(record.id, record);
+
+        return reply.code(201).send({ request: toBrowseResponse(record) });
+      });
+
+      api.get('/fleet/browse/:id', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const record = fleetBrowseRequests.get(parseTicketId(id));
+        if (!record) {
+          throw new NotFoundError(`fleet browse request ${id} not found`);
+        }
+        return { request: toBrowseResponse(record) };
+      });
+
+      api.post('/fleet/browse/:id/result', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const record = fleetBrowseRequests.get(parseTicketId(id));
+        if (!record) {
+          throw new NotFoundError(`fleet browse request ${id} not found`);
+        }
+
+        const principal = request.principal;
+        if (principal?.role === 'agent') {
+          const host = fleetHostFor(request);
+          if (!host || host !== record.host) {
+            throw new ForbiddenError(
+              'agent token cannot answer another host',
+              'HOST_FORBIDDEN',
+            );
+          }
+        }
+
+        const input = fleetBrowseResultInputSchema.parse(request.body ?? {});
+        record.status = input.error ? 'ERROR' : 'DONE';
+        record.current = input.current;
+        record.entries = input.entries;
+        record.error = input.error;
+        record.updatedAt = Date.now();
+        return { request: toBrowseResponse(record) };
+      });
+
+      // Bridge polls the directories the human associated with this machine.
+      // Tokens stay in the row until the bridge reports APPLIED, so a retry
+      // after a local write failure does not lose the scoped credential.
+      api.get('/fleet/desired', async (request) => {
+        const query = listFleetQuerySchema.parse(request.query);
+        const host = fleetHostFor(request, query.host);
+        if (!host) {
+          throw new BadRequestError('host is required', 'HOST_REQUIRED');
+        }
+
+        const { workspaces } = repo.listFleetWorkspaces(host);
+        const desired = workspaces.map((workspace) => {
+          if (workspace.status !== 'PENDING' && workspace.status !== 'ISSUED') {
+            return workspace;
+          }
+
+          const workspaceId = parseTicketId(workspace.id);
+          let token = repo.getFleetWorkspaceToken(workspaceId);
+          if (!token) {
+            token = mintFleetToken(workspace);
+          }
+          const status =
+            workspace.status === 'PENDING' ? 'ISSUED' : workspace.status;
+          if (workspace.status === 'PENDING') {
+            repo.updateFleetWorkspace(workspaceId, { status: 'ISSUED' });
+          }
+          return { ...workspace, status, token };
+        });
+
+        const browse = [...fleetBrowseRequests.values()]
+          .filter(
+            (request) => request.host === host && request.status === 'PENDING',
+          )
+          .sort((left, right) => left.createdAt - right.createdAt)
+          .slice(0, 10)
+          .map((request) => ({
+            id: String(request.id),
+            host: request.host,
+            path: request.path,
+            requestedAt: request.createdAt,
+          }));
+
+        return { workspaces: desired, browse };
+      });
+
+      api.get('/fleet/workspaces', async (request) => {
+        requireAdmin(request);
+        const query = listFleetQuerySchema.parse(request.query);
+        return repo.listFleetWorkspaces(query.host);
+      });
+
+      api.post('/fleet/workspaces', async (request, reply) => {
+        requireAdmin(request);
+        const input = createFleetWorkspaceSchema.parse(request.body);
+
+        let host: string;
+        let path: string;
+        let projectName: string;
+        let adapter: string | undefined;
+        let suggestedEnv: string | undefined;
+
+        if ('candidateId' in input) {
+          const candidate = repo.getFleetCandidate(
+            parseTicketId(input.candidateId),
+          );
+          if (!candidate) {
+            throw new NotFoundError(
+              `fleet candidate ${formatTicketId(input.candidateId)} not found`,
+            );
+          }
+          host = candidate.host;
+          path = candidate.path;
+          projectName = candidate.projectName;
+          adapter = candidate.adapter;
+          suggestedEnv = candidate.env;
+        } else {
+          host = input.host;
+          path = input.path;
+          projectName = (input.projectName ?? basenameAny(path)).slice(0, 128);
+          adapter = input.adapter;
+        }
+
+        const existing = repo.getFleetWorkspaceByHostPath(host, path);
+        if (existing) return reply.code(200).send({ workspace: existing });
+
+        const workspace = repo.createFleetWorkspace({
+          host,
+          env: uniqueFleetEnv(
+            suggestedEnv ?? fleetEnvFor(adapter, projectName),
+          ),
+          path,
+          projectName,
+          ...(adapter ? { adapter } : {}),
+        });
+        return reply.code(201).send({ workspace });
+      });
+
+      // Bridge confirms the directory is now hosted (or why it failed).
+      api.post('/fleet/desired/:id/status', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const workspace = repo.getFleetWorkspace(parseTicketId(id));
+        if (!workspace) {
+          throw new NotFoundError(`fleet workspace ${formatTicketId(id)} not found`);
+        }
+
+        const principal = request.principal;
+        if (principal?.role === 'agent') {
+          const host = fleetHostFor(request);
+          if (!host || host !== workspace.host) {
+            throw new ForbiddenError(
+              'agent token cannot update another host',
+              'HOST_FORBIDDEN',
+            );
+          }
+        }
+
+        const input = fleetWorkspaceStatusInputSchema.parse(request.body ?? {});
+        const updated = repo.updateFleetWorkspace(parseTicketId(workspace.id), {
+          status: input.status,
+          error: input.status === 'APPLIED' ? null : (input.error ?? '未知错误'),
+          // The bridge has already written a working token (or failed before
+          // receiving one); never keep the plaintext copy in the hub.
+          token: null,
+        });
+        return { workspace: updated };
+      });
+
+      api.post('/fleet/workspaces/:id/retry', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const workspace = repo.updateFleetWorkspace(parseTicketId(id), {
+          status: 'PENDING',
+          error: null,
+          token: null,
+        });
+        if (!workspace) {
+          throw new NotFoundError(`fleet workspace ${formatTicketId(id)} not found`);
+        }
+        return { workspace };
+      });
+
+      api.delete('/fleet/workspaces/:id', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const workspace = repo.deleteFleetWorkspace(parseTicketId(id));
+        if (!workspace) {
+          throw new NotFoundError(`fleet workspace ${formatTicketId(id)} not found`);
+        }
+        // The env was provisioned for this association; free it so the same
+        // directory can be re-associated without a `-2` suffix.
+        repo.deleteAgent(workspace.env);
+        return { workspace };
+      });
+
       // GLOBAL_RULES.md online editing.
       api.get('/rules', async (request) => {
         requireAdmin(request);
@@ -2306,7 +2743,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     (await loadPlugins(config.plugins, {
       config,
       logger: app.log,
-      version: APP_VERSION,
+      version: SERVER_VERSION,
     }));
 
   for (const notifier of notifiers) {
