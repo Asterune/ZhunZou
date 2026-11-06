@@ -39,6 +39,7 @@ npx zhunzou-bridge init --hub-url https://hub.example.com --code ABCDE-FGHIJ --y
 
 ```bash
 npx zhunzou-bridge fleet add D:\work\erp D:\work\crm --code ABCDE-FGHIJ
+npx zhunzou-bridge fleet scan --add --code ABCDE-FGHIJ   # 扫描 Cursor 最近工作区并登记
 npx zhunzou-bridge fleet list
 npx zhunzou-bridge fleet remove cursor-erp
 npx zhunzou-bridge service restart

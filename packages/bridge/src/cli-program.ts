@@ -36,6 +36,10 @@ import {
   WAKE_ADAPTERS,
   type WakeAdapterName,
 } from './wake/index.js';
+import {
+  scanRecentWorkspaces,
+  type EditorFlavor,
+} from './workspaces.js';
 
 const DEFAULT_HUB_URL = 'http://127.0.0.1:8787';
 const DEFAULT_INTERVAL_MS = 15_000;
@@ -139,6 +143,150 @@ async function mintAgentToken(
     | { token?: unknown }
     | null;
   return typeof body?.token === 'string' && body.token ? body.token : null;
+}
+
+/** Options shared by `fleet add` and `fleet scan --add`. */
+interface AddProjectsOptions {
+  env?: string;
+  project?: string;
+  adapter?: string;
+  token?: string;
+  code?: string;
+  adminToken?: string;
+  hubUrl?: string;
+  file?: string;
+  restart?: boolean;
+}
+
+/**
+ * Shared implementation for `fleet add` and `fleet scan --add`. Returns the
+ * process exit code; prints human-readable progress to stdout.
+ */
+async function addProjectsFromPaths(
+  paths: string[],
+  options: AddProjectsOptions,
+  command?: Command,
+): Promise<number> {
+  if (options.env && paths.length > 1) {
+    process.stderr.write('[zhunzou] --env 只能和单个目录一起用\n');
+    return 1;
+  }
+  if (
+    options.adapter &&
+    !(WAKE_ADAPTERS as readonly string[]).includes(options.adapter)
+  ) {
+    process.stderr.write(
+      `[zhunzou] 未知 adapter ${options.adapter}；可选 ${WAKE_ADAPTERS.join(', ')}\n`,
+    );
+    return 1;
+  }
+
+  const configPath = fleetConfigPathOf(options, command);
+  let file;
+  try {
+    file = readFleetFile(configPath);
+  } catch (error) {
+    process.stderr.write(`[zhunzou] ${(error as Error).message}\n`);
+    return 1;
+  }
+
+  const hubUrl = (
+    options.hubUrl ??
+    file.hubUrl ??
+    process.env.HUB_URL ??
+    DEFAULT_HUB_URL
+  ).replace(/\/+$/, '');
+  const adminToken =
+    options.adminToken ?? file.adminToken ?? process.env.HUB_SECRET_TOKEN ?? '';
+
+  const entries: FleetProjectEntry[] = [];
+  for (const raw of paths) {
+    const absolute = resolve(expandHome(raw));
+    if (!existsSync(absolute)) {
+      process.stderr.write(`[zhunzou] 目录不存在：${absolute}\n`);
+      return 1;
+    }
+    const project =
+      options.project ?? detectWorkspaceProject(absolute) ?? basename(absolute);
+    const adapter = options.adapter ?? 'auto';
+    const env =
+      options.env ??
+      `${ADAPTER_ENV_PREFIX[adapter] ?? 'agent'}-${envSlug(project) || 'project'}`;
+
+    let token =
+      options.token ?? file.projects.find((item) => item.env === env)?.token;
+    if (!token && options.code) {
+      try {
+        token = await exchangeEnrollment(
+          hubUrl,
+          options.code,
+          env,
+          agentKindForAdapter(adapter as WakeAdapterName),
+          project,
+        );
+      } catch (error) {
+        process.stderr.write(
+          `[zhunzou] ${env} 兑换接入码失败：${(error as Error).message}\n`,
+        );
+        return 1;
+      }
+    }
+    if (!token && adminToken) {
+      token =
+        (await mintAgentToken(hubUrl, env, adminToken).catch(() => null)) ??
+        undefined;
+    }
+
+    entries.push({
+      env,
+      path: absolute,
+      project,
+      adapter,
+      ...(token ? { token } : {}),
+    });
+  }
+
+  const result = addFleetProjects({ projects: entries, hubUrl, configPath });
+  for (const project of result.added) {
+    process.stdout.write(
+      `✓ 已添加 ${project.env} → ${project.path}（项目 ${project.project}，adapter ${project.adapter}）\n`,
+    );
+  }
+  for (const project of result.updated) {
+    process.stdout.write(
+      `✓ 已更新 ${project.env} → ${project.path}（项目 ${project.project}，adapter ${project.adapter}）\n`,
+    );
+  }
+  const missing = entries.filter((entry) => !entry.token);
+  if (missing.length > 0) {
+    process.stdout.write(
+      `· ${missing.map((entry) => entry.env).join('、')} 还没有专属 Token：` +
+        '加 --code（看板接入码）或 --admin-token，或签发后用 --token 重跑\n',
+    );
+  }
+  process.stdout.write(`· 配置：${result.configPath}\n`);
+
+  if (options.restart !== false) {
+    const stored = readServiceConfig();
+    if (!stored) {
+      process.stdout.write(
+        '· 常驻服务未安装；先运行 init --service，或直接 zhunzou-bridge fleet\n',
+      );
+    } else {
+      const primary = result.file.projects[0];
+      const restarted = installService({
+        ...stored,
+        mode: 'fleet',
+        fleetConfig: result.configPath,
+        hubUrl,
+        ...(primary ? { env: primary.env } : {}),
+        ...(primary?.token ? { token: primary.token } : {}),
+      });
+      process.stdout.write(`✓ ${restarted.message}\n`);
+    }
+  }
+
+  return 0;
 }
 
 function clampInterval(raw: string): number {
@@ -541,152 +689,63 @@ export function createProgram(): Command {
     .option('--file <path>', 'fleet config file (same as fleet --config)')
     .option('--no-restart', 'do not restart the login daemon')
     .action(
+      async (paths: string[], options: AddProjectsOptions, command: Command) => {
+        process.exitCode = await addProjectsFromPaths(paths, options, command);
+      },
+    );
+
+  fleetCommand
+    .command('scan')
+    .description(
+      'Find recently opened Cursor / VS Code workspaces; `--add` registers them in fleet.json',
+    )
+    .option('--add', 'add every discovered workspace')
+    .option('--client <name>', 'cursor | code | all', 'cursor')
+    .option('--adapter <name>', `local client for dispatched tasks`)
+    .option('--code <code>', 'dashboard enrollment code; mints one scoped token per project')
+    .option('--admin-token <token>', 'admin token used to mint a scoped token')
+    .option('--token <token>', 'use this scoped token for every discovered project')
+    .option('--hub-url <url>', 'hub URL (defaults to fleet.json or HUB_URL)')
+    .option('--file <path>', 'fleet config file (same as fleet --config)')
+    .option('--no-restart', 'do not restart the login daemon')
+    .action(
       async (
-        paths: string[],
-        options: {
-          env?: string;
-          project?: string;
-          adapter?: string;
-          token?: string;
-          code?: string;
-          adminToken?: string;
-          hubUrl?: string;
-          file?: string;
-          restart?: boolean;
-        },
+        options: AddProjectsOptions & { add?: boolean; client?: string },
         command: Command,
       ) => {
-        if (options.env && paths.length > 1) {
-          process.stderr.write('[zhunzou] --env 只能和单个目录一起用\n');
+        const client = (options.client ?? 'cursor').toLowerCase();
+        if (!['cursor', 'code', 'all'].includes(client)) {
+          process.stderr.write('[zhunzou] --client 可选 cursor / code / all\n');
           process.exitCode = 1;
           return;
         }
-        if (
-          options.adapter &&
-          !(WAKE_ADAPTERS as readonly string[]).includes(options.adapter)
-        ) {
-          process.stderr.write(
-            `[zhunzou] 未知 adapter ${options.adapter}；可选 ${WAKE_ADAPTERS.join(', ')}\n`,
+        const flavors: EditorFlavor[] =
+          client === 'all' ? ['cursor', 'code'] : [client as EditorFlavor];
+        const results = scanRecentWorkspaces({ flavors });
+
+        if (results.length === 0) {
+          process.stdout.write(
+            '没有找到最近工作区：先在 Cursor 里打开过一个项目，或用 fleet add <路径> 直接指定\n',
           );
-          process.exitCode = 1;
           return;
         }
 
-        const configPath = fleetConfigPathOf(options, command);
-        let file;
-        try {
-          file = readFleetFile(configPath);
-        } catch (error) {
-          process.stderr.write(`[zhunzou] ${(error as Error).message}\n`);
-          process.exitCode = 1;
+        const paths: string[] = [];
+        for (const result of results) {
+          process.stdout.write(`${result.source}（${result.storage}）\n`);
+          for (const path of result.paths) {
+            paths.push(path);
+            process.stdout.write(`  · ${path}\n`);
+          }
+        }
+        const unique = [...new Set(paths)];
+        process.stdout.write(`共 ${unique.length} 个目录\n`);
+
+        if (!options.add) {
+          process.stdout.write('加 --add 即可登记到 fleet.json\n');
           return;
         }
-
-        const hubUrl = (
-          options.hubUrl ??
-          file.hubUrl ??
-          process.env.HUB_URL ??
-          DEFAULT_HUB_URL
-        ).replace(/\/+$/, '');
-        const adminToken =
-          options.adminToken ?? file.adminToken ?? process.env.HUB_SECRET_TOKEN ?? '';
-
-        const entries: FleetProjectEntry[] = [];
-        for (const raw of paths) {
-          const absolute = resolve(expandHome(raw));
-          if (!existsSync(absolute)) {
-            process.stderr.write(`[zhunzou] 目录不存在：${absolute}\n`);
-            process.exitCode = 1;
-            return;
-          }
-          const project =
-            options.project ??
-            detectWorkspaceProject(absolute) ??
-            basename(absolute);
-          const adapter = options.adapter ?? 'auto';
-          const env =
-            options.env ??
-            `${ADAPTER_ENV_PREFIX[adapter] ?? 'agent'}-${envSlug(project) || 'project'}`;
-
-          let token =
-            options.token ??
-            file.projects.find((item) => item.env === env)?.token;
-          if (!token && options.code) {
-            try {
-              token = await exchangeEnrollment(
-                hubUrl,
-                options.code,
-                env,
-                agentKindForAdapter(adapter as WakeAdapterName),
-                project,
-              );
-            } catch (error) {
-              process.stderr.write(
-                `[zhunzou] ${env} 兑换接入码失败：${(error as Error).message}\n`,
-              );
-              process.exitCode = 1;
-              return;
-            }
-          }
-          if (!token && adminToken) {
-            token =
-              (await mintAgentToken(hubUrl, env, adminToken).catch(
-                () => null,
-              )) ?? undefined;
-          }
-
-          entries.push({
-            env,
-            path: absolute,
-            project,
-            adapter,
-            ...(token ? { token } : {}),
-          });
-        }
-
-        const result = addFleetProjects({
-          projects: entries,
-          hubUrl,
-          configPath,
-        });
-        for (const project of result.added) {
-          process.stdout.write(
-            `✓ 已添加 ${project.env} → ${project.path}（项目 ${project.project}，adapter ${project.adapter}）\n`,
-          );
-        }
-        for (const project of result.updated) {
-          process.stdout.write(
-            `✓ 已更新 ${project.env} → ${project.path}（项目 ${project.project}，adapter ${project.adapter}）\n`,
-          );
-        }
-        const missing = entries.filter((entry) => !entry.token);
-        if (missing.length > 0) {
-          process.stdout.write(
-            `· ${missing.map((entry) => entry.env).join('、')} 还没有专属 Token：` +
-              '加 --code（看板接入码）或 --admin-token，或签发后用 --token 重跑\n',
-          );
-        }
-        process.stdout.write(`· 配置：${result.configPath}\n`);
-
-        if (options.restart !== false) {
-          const stored = readServiceConfig();
-          if (!stored) {
-            process.stdout.write(
-              '· 常驻服务未安装；先运行 init --service，或直接 zhunzou-bridge fleet\n',
-            );
-          } else {
-            const primary = result.file.projects[0];
-            const restarted = installService({
-              ...stored,
-              mode: 'fleet',
-              fleetConfig: result.configPath,
-              hubUrl,
-              ...(primary ? { env: primary.env } : {}),
-              ...(primary?.token ? { token: primary.token } : {}),
-            });
-            process.stdout.write(`✓ ${restarted.message}\n`);
-          }
-        }
+        process.exitCode = await addProjectsFromPaths(unique, options, command);
       },
     );
 

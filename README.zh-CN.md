@@ -524,6 +524,10 @@ Codex 只读用户级配置 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.
 npx zhunzou-bridge fleet add D:\work\erp D:\work\crm --code ABCDE-FGHIJ
 npx zhunzou-bridge fleet list                          # 查看 env / 目录 / 项目 / Token
 npx zhunzou-bridge fleet remove cursor-erp             # 按 env 移除
+
+# 不想手敲路径：扫描本机 Cursor 最近打开的工作区
+npx zhunzou-bridge fleet scan
+npx zhunzou-bridge fleet scan --add --code ABCDE-FGHIJ # 全部登记（VS Code 加 --client code）
 ```
 
 `fleet add` 会自动推断项目名（git 根目录）、写 `~/.zhunzou/fleet.json`；带 `--code` 时用看板接入码为每个项目签发 scoped Token（不需要管理员 Token），也可以用 `--admin-token` 或 `--token`。已经安装常驻服务的话会自动切到 `fleet` 模式并重启，让新项目立刻可被下发任务。

@@ -167,13 +167,14 @@ node cli.mjs wait --ticket 104
 
 ```powershell
 node cli.mjs fleet add D:\work\erp D:\work\crm --code ABCDE-FGHIJ
+node cli.mjs fleet scan --add --code ABCDE-FGHIJ
 node cli.mjs fleet list
 node cli.mjs fleet remove cursor-erp
 node cli.mjs service status
 node cli.mjs service restart
 ```
 
-`fleet add` 会推断项目名、写 `~\.zhunzou\fleet.json`；`--code` 用看板接入码为每个项目签发专属 Token，不需要管理员 Token。已安装常驻服务时会自动重启用新配置。
+`fleet scan` 读取本机 Cursor 的最近工作区列表（只读，加 `--add` 才写配置）；`fleet add` 会推断项目名并写 `~\.zhunzou\fleet.json`。两者都支持 `--code` 用看板接入码签发专属 Token，不需要管理员 Token。
 
 ## 8. 常见问题
 

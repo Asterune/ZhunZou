@@ -165,6 +165,10 @@ To keep a project online without opening an editor, register the directory with 
 npx zhunzou-bridge fleet add D:\work\erp D:\work\crm --code ABCDE-FGHIJ
 npx zhunzou-bridge fleet list                          # env / path / project / token
 npx zhunzou-bridge fleet remove cursor-erp             # remove by env
+
+# No paths to type: scan the workspaces this machine already opened
+npx zhunzou-bridge fleet scan
+npx zhunzou-bridge fleet scan --add --code ABCDE-FGHIJ # register all (VS Code: --client code)
 ```
 
 `fleet add` infers the project from the git root and writes `~/.zhunzou/fleet.json`; with `--code` it trades a dashboard enrollment code for one scoped token per project (no admin token needed), and `--admin-token` / `--token` also work. If the login daemon is installed it switches to `fleet` and restarts, so the new project can receive tasks immediately.
