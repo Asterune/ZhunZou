@@ -495,9 +495,28 @@ curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash
 irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 ```
 
-这条命令会自动完成：准备 Node 20+（没装 Node 时下载便携运行时并校验 SHA256）、从 hub 拉取对应版本的 bridge、用一次性接入码换取该设备专属的 scoped Token、写入用户级 Cursor / OpenCode / Claude Code 配置、安装登录自启守护进程。用户不需要管理员 `HUB_SECRET_TOKEN`，也不需要克隆仓库。
+这条命令会自动完成：准备 Node 20+（没装 Node 时下载便携运行时并校验 SHA256）、从 hub 拉取对应版本的 bridge、用接入码为**每个客户端**换取专属 scoped Token、写入用户级 Cursor / OpenCode / Claude Code / Codex 配置、安装登录自启守护进程。用户不需要管理员 `HUB_SECRET_TOKEN`，也不需要克隆仓库。
 
-接入码默认 15 分钟有效、只能使用一次；泄漏后重新生成即可。设备上线后会自动出现在「接入端」页。命令里带 `--no-service` 可以跳过常驻服务，只在编辑器打开时在线。
+接入码默认 15 分钟有效，最多可在**同一台电脑**上兑换 10 次（一次安装会为 4 个客户端各兑换一次）；第一次兑换会把接入码绑定到该主机，换台电脑无法复用。设备上线后会自动出现在「接入端」页。命令里带 `--no-service` 可以跳过常驻服务，只在编辑器打开时在线。
+
+### 一台电脑，多个客户端
+
+`init --target all` 不再让所有客户端共用一个 `AGENT_ENV`，而是各自派生独立身份：
+
+| 客户端 | 环境（AGENT_ENV） | 客户端类型 |
+| --- | --- | --- |
+| Cursor | `cursor-<项目或主机名>` | `cursor` |
+| OpenCode | `opencode-<项目或主机名>` | `opencode` |
+| Claude Code | `claude-<项目或主机名>` | `claude-code` |
+| Codex | `codex-<项目或主机名>` | `codex` |
+
+每个 env 有自己的 Token 和看板卡片，心跳不再互相覆盖；同一个项目可以被多个 env 绑定。常驻服务会自动改用 `fleet` 守护这几个 env（`~/.zhunzou/fleet.json`）。
+
+想回到「一个 env 写进所有客户端」的旧行为，显式传 `--env` 或 `--agent-kind` 即可。
+
+生成接入码时把「环境标识」留空，各客户端会按 `<kind>-<项目或主机>` 自动命名；若填了环境名，它会作为这台设备的基础名，后续客户端依次得到 `-2`、`-3` 后缀。
+
+Codex 只读用户级配置 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`），`init` 会写入或替换其中的 `[mcp_servers.zhunzou]` 段，不影响其它 server。
 
 ### 手动接入（开发者）
 
@@ -508,7 +527,7 @@ npm 包内置 esbuild 单文件 bundle（`dependencies` 为空），`npx zhunzou
 
 ```bash
 npx zhunzou-bridge init
-# 非交互：--hub-url ... --token ... --env ... --target cursor|opencode|claude|all --yes
+# 非交互：--hub-url ... --token ... --env ... --target cursor|opencode|claude|codex|all --yes
 # 一次性接入码：--hub-url ... --code ABCDE-FGHIJ --yes --global --service
 # 只预览不落盘：--dry-run
 # 仓库内未发布 npm 时：pnpm build && node packages/bridge/bin/cli.js init
@@ -773,15 +792,24 @@ pm2 save
 
 ### Windows 外部电脑
 
-在 Mac/Linux 上生成零依赖包：
+**推荐**：直接用一键接入（PowerShell）：
+
+```powershell
+irm 'https://hub.l1uqi.com/install.ps1?code=ABCDE-FGHIJ' | iex
+```
+
+会自动准备 Node、下载 bridge、为 Cursor / OpenCode / Claude Code / Codex 各写一份配置，
+并用计划任务 `ZhunzouBridge` 做登录自启（多客户端时走 `fleet` 守护）。
+
+离线或内网环境仍然可以用零依赖包——在 Mac/Linux 上生成：
 
 ```bash
 pnpm package:bridge:windows
 # 产物：release/zhunzou-bridge-windows.zip
 ```
 
-Windows 只需安装 Node.js 20+，解压 zip 后按包内 `README-WINDOWS.md` 配置
-`.cursor/mcp.json`。包内含 `mcp.mjs` / `cli.mjs`，无需 npm install、无需克隆仓库。
+Windows 只需安装 Node.js 20+，解压 zip 后按包内 `README-WINDOWS.md` 配置。
+包内含 `mcp.mjs` / `cli.mjs`，无需 npm install、无需克隆仓库。
 
 发布新版本到 hub（服务端会以 `/releases/bridge/` 静态托管；解压版客户端默认自动更新，
 也可手动 `node cli.mjs upgrade`）：

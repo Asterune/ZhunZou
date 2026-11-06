@@ -269,7 +269,8 @@ const zh: Record<string, string> = {
   'agents.oneClickProjectPlaceholder': '例如 yikuaomed-erp',
   'agents.oneClickGenerate': '生成接入命令',
   'agents.oneClickGenerating': '生成中…',
-  'agents.oneClickExpires': '有效期至 {time}，仅可使用一次',
+  'agents.oneClickExpires':
+    '有效期至 {time}；同一台电脑可接入 Cursor / OpenCode / Claude Code / Codex，各成一张卡',
   'agents.oneClickUnix': 'macOS / Linux',
   'agents.oneClickWindows': 'Windows（PowerShell）',
   'agents.oneClickCopy': '复制命令',
@@ -777,7 +778,8 @@ const en: Record<string, string> = {
   'agents.oneClickProjectPlaceholder': 'e.g. yikuaomed-erp',
   'agents.oneClickGenerate': 'Generate command',
   'agents.oneClickGenerating': 'Generating…',
-  'agents.oneClickExpires': 'Valid until {time}; single use',
+  'agents.oneClickExpires':
+    'Valid until {time}; one machine can enroll Cursor / OpenCode / Claude Code / Codex as separate cards',
   'agents.oneClickUnix': 'macOS / Linux',
   'agents.oneClickWindows': 'Windows (PowerShell)',
   'agents.oneClickCopy': 'Copy command',

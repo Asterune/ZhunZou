@@ -29,6 +29,13 @@ export interface ServiceConfig {
   cliPath: string;
   nodePath: string;
   projectName?: string;
+  /**
+   * `wake` keeps one env online; `fleet` supervises one loop per client env
+   * from `fleet.json`, which is what a machine with several editors needs.
+   */
+  mode?: 'wake' | 'fleet';
+  /** fleet.json path, only used when mode is `fleet`. */
+  fleetConfig?: string;
 }
 
 export interface ServiceInstallResult {
@@ -89,8 +96,34 @@ function run(command: string, args: string[], allowFailure = false): boolean {
   }
 }
 
+/**
+ * CLI arguments after `node <cliPath>`. `wake` is one env; `fleet` reads a
+ * generated fleet.json and keeps every client env online at once.
+ */
+function serviceCommand(config: ServiceConfig): string[] {
+  if (config.mode === 'fleet') {
+    return [
+      config.cliPath,
+      'fleet',
+      '--config',
+      config.fleetConfig ?? join(homedir(), '.zhunzou', 'fleet.json'),
+    ];
+  }
+  return [config.cliPath, 'wake', '--cwd', config.cwd];
+}
+
+function serviceCwd(config: ServiceConfig): string {
+  return config.mode === 'fleet' ? homedir() : config.cwd;
+}
+
+/** Human hint so a fleet install is distinguishable from a single wake loop. */
+function modeSuffix(config: ServiceConfig): string {
+  return config.mode === 'fleet' ? '，fleet 多客户端' : '';
+}
+
 function macPlist(config: ServiceConfig): string {
   const logs = join(homedir(), 'Library', 'Logs');
+  const command = serviceCommand(config);
   const environment: Array<[string, string]> = [
     ['HUB_URL', config.hubUrl],
     ['HUB_TOKEN', config.token],
@@ -108,12 +141,9 @@ function macPlist(config: ServiceConfig): string {
   <key>ProgramArguments</key>
   <array>
     <string>${xmlEscape(config.nodePath)}</string>
-    <string>${xmlEscape(config.cliPath)}</string>
-    <string>wake</string>
-    <string>--cwd</string>
-    <string>${xmlEscape(config.cwd)}</string>
+${command.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')}
   </array>
-  <key>WorkingDirectory</key><string>${xmlEscape(config.cwd)}</string>
+  <key>WorkingDirectory</key><string>${xmlEscape(serviceCwd(config))}</string>
   <key>EnvironmentVariables</key>
   <dict>
 ${environment
@@ -151,8 +181,10 @@ After=network-online.target
 [Service]
 Type=simple
 ${environment}
-WorkingDirectory=${config.cwd}
-ExecStart=${systemdValue(config.nodePath)} ${systemdValue(config.cliPath)} wake --cwd ${systemdValue(config.cwd)}
+WorkingDirectory=${serviceCwd(config)}
+ExecStart=${[config.nodePath, ...serviceCommand(config)]
+    .map(systemdValue)
+    .join(' ')}
 Restart=always
 RestartSec=5
 
@@ -162,6 +194,9 @@ WantedBy=default.target
 }
 
 function windowsCommand(config: ServiceConfig): string {
+  const command = [config.nodePath, ...serviceCommand(config)]
+    .map((arg) => `"${arg}"`)
+    .join(' ');
   const lines = [
     '@echo off',
     `set "HUB_URL=${config.hubUrl}"`,
@@ -171,8 +206,8 @@ function windowsCommand(config: ServiceConfig): string {
     ...(config.projectName
       ? [`set "ZHUNZOU_PROJECT=${config.projectName}"`]
       : []),
-    `cd /d "${config.cwd}"`,
-    `"${config.nodePath}" "${config.cliPath}" wake --cwd "${config.cwd}"`,
+    `cd /d "${serviceCwd(config)}"`,
+    command,
   ];
   return `${lines.join('\r\n')}\r\n`;
 }
@@ -192,7 +227,7 @@ export function installService(config: ServiceConfig): ServiceInstallResult {
       file,
       started,
       message: started
-        ? `已注册开机自启（launchd: ${MAC_LABEL}）`
+        ? `已注册开机自启（launchd: ${MAC_LABEL}${modeSuffix(config)}）`
         : `已写入 ${file}，但 launchctl 加载失败；可手动执行 launchctl load -w "${file}"`,
     };
   }
@@ -219,7 +254,7 @@ export function installService(config: ServiceConfig): ServiceInstallResult {
       file,
       started,
       message: started
-        ? '已注册开机自启（systemd --user）'
+        ? `已注册开机自启（systemd --user${modeSuffix(config)}）`
         : `已启用 ${SYSTEMD_UNIT}，但启动失败；查看 journalctl --user -u ${SYSTEMD_UNIT}`,
     };
   }
@@ -239,7 +274,7 @@ export function installService(config: ServiceConfig): ServiceInstallResult {
       file,
       started,
       message: started
-        ? '已注册登录时自启（计划任务 ZhunzouBridge）'
+        ? `已注册登录时自启（计划任务 ZhunzouBridge${modeSuffix(config)}）`
         : `已写入 ${file}，但 schtasks 创建失败；可手动把它加入启动项`,
     };
   }

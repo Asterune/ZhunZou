@@ -81,6 +81,9 @@ CREATE TABLE IF NOT EXISTS enrollment_codes (
   used_at INTEGER,
   used_env TEXT,
   used_host TEXT,
+  max_uses INTEGER NOT NULL DEFAULT 1,
+  use_count INTEGER NOT NULL DEFAULT 0,
+  used_envs TEXT,
   created_at INTEGER NOT NULL
 );
 
@@ -289,6 +292,21 @@ export function createDatabase(dbPath: string): {
   ensureColumn(sqlite, 'chat_messages', 'origin', "TEXT NOT NULL DEFAULT 'human'");
   ensureColumn(sqlite, 'chat_messages', 'rationale', 'TEXT');
   ensureColumn(sqlite, 'chat_messages', 'decision', 'TEXT');
+  // One code may enroll several clients on the same machine (Cursor,
+  // OpenCode, Claude Code, Codex) instead of forcing one code per client.
+  ensureColumn(sqlite, 'enrollment_codes', 'max_uses', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(sqlite, 'enrollment_codes', 'use_count', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(sqlite, 'enrollment_codes', 'used_envs', 'TEXT');
+  // Codes created before multi-client enrollment were single-use; without this
+  // backfill they would look unused (use_count = 0) and could be replayed.
+  sqlite.exec(`
+    UPDATE enrollment_codes
+       SET use_count = 1
+     WHERE used_at IS NOT NULL AND use_count = 0;
+    UPDATE enrollment_codes
+       SET used_envs = '["' || used_env || '"]'
+     WHERE used_env IS NOT NULL AND used_envs IS NULL;
+  `);
 
   const db = drizzle(sqlite, { schema });
   return { sqlite, db };

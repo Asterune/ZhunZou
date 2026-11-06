@@ -137,6 +137,11 @@ export const enrollmentCodes = sqliteTable(
     usedAt: integer('used_at'),
     usedEnv: text('used_env'),
     usedHost: text('used_host'),
+    /** One machine, several clients: each redemption consumes one slot. */
+    maxUses: integer('max_uses').notNull().default(1),
+    useCount: integer('use_count').notNull().default(0),
+    /** JSON array of envs this code has produced, for auditing. */
+    usedEnvs: text('used_envs'),
     createdAt: integer('created_at').notNull(),
   },
   (table) => [

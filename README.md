@@ -138,9 +138,26 @@ curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash
 irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 ```
 
-The command provisions Node 20+ (a portable runtime with SHA256 verification when Node is missing), downloads the matching bridge release, exchanges the single-use code for a scoped device token, writes user-level Cursor / OpenCode / Claude Code config, and registers a login daemon. The end user never sees `HUB_SECRET_TOKEN` and never clones the repo.
+The command provisions Node 20+ (a portable runtime with SHA256 verification when Node is missing), downloads the matching bridge release, exchanges the code for one scoped token per client, writes user-level Cursor / OpenCode / Claude Code / Codex config, and registers a login daemon. The end user never sees `HUB_SECRET_TOKEN` and never clones the repo.
 
-Codes expire after 15 minutes and can be redeemed once. Add `--no-service` to skip the daemon and stay online only while the editor is open.
+Codes expire after 15 minutes and can enroll up to 10 clients on the same machine (the first redemption binds the code to that host). Add `--no-service` to skip the daemon and stay online only while the editor is open.
+
+### Several clients on one machine
+
+`init --target all` gives every client its own identity instead of sharing one `AGENT_ENV`:
+
+| Client | Env | Agent kind |
+| --- | --- | --- |
+| Cursor | `cursor-<project or host>` | `cursor` |
+| OpenCode | `opencode-<project or host>` | `opencode` |
+| Claude Code | `claude-<project or host>` | `claude-code` |
+| Codex | `codex-<project or host>` | `codex` |
+
+Each env gets its own token and dashboard card, so heartbeats no longer overwrite each other; one project can be bound to several envs. The login daemon switches to `fleet` and keeps every env online (`~/.zhunzou/fleet.json`). Pass `--env` or `--agent-kind` to pin one shared identity instead.
+
+Leave the enrollment dialog's environment field empty so each client derives `<kind>-<project or host>`; if you set it, that name becomes the base and later clients get `-2`, `-3` suffixes.
+
+Codex only reads the user-level `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`); `init` writes or replaces `[mcp_servers.zhunzou]` and leaves other servers untouched.
 
 ### Manual setup (developers)
 

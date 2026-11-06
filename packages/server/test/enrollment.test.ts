@@ -50,10 +50,10 @@ describe('one-click enrollment', () => {
     }
   });
 
-  it('exchanges a code for a scoped token exactly once', async () => {
+  it('exchanges a code for a scoped token exactly once when maxUses is 1', async () => {
     const ctx = await createTestContext();
     try {
-      const created = await createCode(ctx);
+      const created = await createCode(ctx, { maxUses: 1 });
       const response = await redeem(ctx, {
         code: created.enrollment.code,
         host: 'lq-desktop',
@@ -88,9 +88,112 @@ describe('one-click enrollment', () => {
       });
       expect(forbidden.statusCode).toBe(403);
 
-      // A code is single-use.
+      // maxUses:1 keeps this code strictly single-use.
       const replay = await redeem(ctx, { code: created.enrollment.code });
-      expect(replay.statusCode).toBe(404);
+      expect(replay.statusCode).toBe(410);
+      expect(replay.json().error.code).toBe('ENROLLMENT_USED');
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('enrolls several clients on one machine from a single code', async () => {
+    const ctx = await createTestContext();
+    try {
+      const created = await createCode(ctx, { maxUses: 5 });
+      const kinds = [
+        ['cursor', 'cursor-win'],
+        ['opencode', 'opencode-win'],
+        ['claude-code', 'claude-win'],
+        ['codex', 'codex-win'],
+      ] as const;
+
+      const envs: string[] = [];
+      for (const [kind, env] of kinds) {
+        const response = await redeem(ctx, {
+          code: created.enrollment.code,
+          host: 'lq-desktop',
+          os: 'win32-x64',
+          kind,
+          env,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json() as EnrollResponse;
+        expect(body.env).toBe(env);
+        expect(body.agent.kind).toBe(kind);
+        expect(body.token.startsWith('zz_')).toBe(true);
+        envs.push(body.env);
+      }
+      expect(new Set(envs).size).toBe(4);
+
+      // Host comparison is case-insensitive: macOS reports
+      // `QideMacBook-Pro.local`, a shell may send `qidemacbook-pro.local`.
+      const sameHost = await redeem(ctx, {
+        code: created.enrollment.code,
+        host: 'LQ-DESKTOP',
+        kind: 'gemini',
+        env: 'gemini-win',
+      });
+      expect(sameHost.statusCode).toBe(200);
+
+      // The budget is per code, and the code stays bound to the first host.
+      const extra = await redeem(ctx, {
+        code: created.enrollment.code,
+        host: 'lq-desktop',
+        kind: 'windsurf',
+        env: 'windsurf-win',
+      });
+      expect(extra.statusCode).toBe(410);
+      expect(extra.json().error.code).toBe('ENROLLMENT_USED');
+
+      const otherHost = await createCode(ctx, { maxUses: 4 });
+      await redeem(ctx, {
+        code: otherHost.enrollment.code,
+        host: 'lq-desktop',
+        kind: 'cursor',
+        env: 'cursor-lq',
+      });
+      const hijack = await redeem(ctx, {
+        code: otherHost.enrollment.code,
+        host: 'someone-else',
+        kind: 'opencode',
+        env: 'opencode-lq',
+      });
+      expect(hijack.statusCode).toBe(403);
+      expect(hijack.json().error.code).toBe('ENROLLMENT_HOST_MISMATCH');
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('re-running the installer refreshes the same envs instead of adding ghosts', async () => {
+    const ctx = await createTestContext();
+    try {
+      const created = await createCode(ctx, { maxUses: 8 });
+      const enroll = async (env: string) => {
+        const response = await redeem(ctx, {
+          code: created.enrollment.code,
+          host: 'lq-desktop',
+          kind: 'cursor',
+          env,
+        });
+        expect(response.statusCode).toBe(200);
+        return response.json() as EnrollResponse;
+      };
+
+      const first = await enroll('cursor-lq');
+      const again = await enroll('cursor-lq');
+      expect(again.env).toBe(first.env);
+      expect(again.token).not.toBe(first.token);
+
+      const agents = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/agents',
+        headers: ctx.auth,
+      });
+      expect((agents.json().agents as Agent[]).map((agent) => agent.env)).toEqual([
+        'cursor-lq',
+      ]);
     } finally {
       await ctx.close();
     }
@@ -131,19 +234,19 @@ describe('one-click enrollment', () => {
     }
   });
 
-  it('rejects unknown and expired codes', async () => {
+  it('rejects unknown codes and codes that are already used up', async () => {
     const ctx = await createTestContext();
     try {
       const invalid = await redeem(ctx, { code: 'AAAAA-BBBBB' });
       expect(invalid.statusCode).toBe(404);
       expect(invalid.json().error.code).toBe('ENROLLMENT_INVALID');
 
-      const created = await createCode(ctx, { ttlMinutes: 1 });
+      const created = await createCode(ctx, { ttlMinutes: 1, maxUses: 1 });
       const code = created.enrollment.code;
       const response = await redeem(ctx, { code });
       expect(response.statusCode).toBe(200);
       const replay = await redeem(ctx, { code });
-      expect(replay.statusCode).toBe(404);
+      expect(replay.statusCode).toBe(410);
     } finally {
       await ctx.close();
     }

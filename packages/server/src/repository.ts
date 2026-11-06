@@ -123,6 +123,8 @@ export interface CreateEnrollmentCodeInput {
   label?: string;
   projectName?: string;
   kind?: AgentKind;
+  /** Client slots; defaults to 1 for a strict one-shot code. */
+  maxUses?: number;
 }
 
 /** Enrollment code as stored; never carries the plaintext secret. */
@@ -134,6 +136,24 @@ export interface StoredEnrollment {
   kind?: AgentKind;
   expiresAt: number;
   createdAt: number;
+  maxUses: number;
+  useCount: number;
+  /** Machine this code is bound to after the first redemption. */
+  usedHost?: string;
+  /** Envs already produced by this code (same machine, several clients). */
+  usedEnvs: string[];
+}
+
+function parseUsedEnvs(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string')
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 function toEnrollment(row: EnrollmentRow): StoredEnrollment {
@@ -145,6 +165,10 @@ function toEnrollment(row: EnrollmentRow): StoredEnrollment {
     ...(row.kind ? { kind: row.kind } : {}),
     expiresAt: row.expiresAt,
     createdAt: row.createdAt,
+    maxUses: row.maxUses ?? 1,
+    useCount: row.useCount ?? 0,
+    ...(row.usedHost ? { usedHost: row.usedHost } : {}),
+    usedEnvs: parseUsedEnvs(row.usedEnvs ?? null),
   };
 }
 /** Per-env history cap for mirrored IDE exchanges. */
@@ -474,7 +498,11 @@ export interface TicketStore {
     now?: number,
   ): StoredEnrollment;
   findEnrollmentByHash(codeHash: string): StoredEnrollment | null;
-  /** Atomically burn a code; false when it expired or was already used. */
+  /**
+   * Claim one redemption slot. Multiple clients on the same machine may share
+   * a single code, so callers must check `useCount` / `maxUses` and host
+   * binding before spending a slot. False when no slot is left.
+   */
   consumeEnrollmentCode(
     id: number,
     usedEnv: string,
@@ -1122,6 +1150,8 @@ export class TicketRepository implements TicketStore {
         ...(input.projectName ? { projectName: input.projectName } : {}),
         ...(input.kind ? { kind: input.kind } : {}),
         expiresAt: now + input.ttlMs,
+        maxUses: input.maxUses ?? 1,
+        useCount: 0,
         createdAt: now,
       })
       .returning()
@@ -1145,17 +1175,43 @@ export class TicketRepository implements TicketStore {
     usedHost: string | undefined,
     now = Date.now(),
   ): boolean {
+    const row = this.db
+      .select()
+      .from(enrollmentCodes)
+      .where(eq(enrollmentCodes.id, id))
+      .get();
+    if (!row) return false;
+    if (row.expiresAt <= now) return false;
+
+    const useCount = row.useCount ?? 0;
+    if (useCount >= (row.maxUses ?? 1)) return false;
+    // A code belongs to one machine. Reusing it from another host would let a
+    // leaked link enroll someone else's computer, so keep the first host.
+    // Host names are case-insensitive; compare them normalized.
+    if (
+      row.usedHost &&
+      usedHost &&
+      row.usedHost.trim().toLowerCase() !== usedHost.trim().toLowerCase()
+    ) {
+      return false;
+    }
+
+    const usedEnvs = parseUsedEnvs(row.usedEnvs ?? null);
+    if (!usedEnvs.includes(usedEnv)) usedEnvs.push(usedEnv);
+
     const result = this.db
       .update(enrollmentCodes)
       .set({
         usedAt: now,
         usedEnv,
         ...(usedHost ? { usedHost } : {}),
+        useCount: useCount + 1,
+        usedEnvs: JSON.stringify(usedEnvs),
       })
       .where(
         and(
           eq(enrollmentCodes.id, id),
-          sql`${enrollmentCodes.usedAt} IS NULL`,
+          eq(enrollmentCodes.useCount, useCount),
           gt(enrollmentCodes.expiresAt, now),
         ),
       )

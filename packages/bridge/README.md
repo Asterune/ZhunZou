@@ -22,11 +22,18 @@ curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash
 irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 ```
 
-脚本会自动准备 Node、下载 bridge、用一次性接入码换 scoped Token、写用户级配置并注册常驻服务。也可以直接调用 init：
+脚本会自动准备 Node、下载 bridge、用接入码为每个客户端换取 scoped Token、写用户级配置并注册常驻服务。也可以直接调用 init：
 
 ```bash
 npx zhunzou-bridge init --hub-url https://hub.example.com --code ABCDE-FGHIJ --yes --global --service
 ```
+
+`--target all`（默认的全局安装就是它）会为 Cursor / OpenCode / Claude Code / Codex 各派生一个 env
+（`cursor-<项目>`、`opencode-<项目>`、`claude-<项目>`、`codex-<项目>`）和独立 Token，
+所以四个编辑器在看板上是四张卡，心跳不会互相覆盖。显式传 `--env` 或 `--agent-kind` 可退回到共用同一个 env。
+
+> Codex 的配置写在 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的
+> `[mcp_servers.zhunzou]` 段，`init` 只替换这一段。
 
 ### 交互式接入向导
 
@@ -34,8 +41,8 @@ npx zhunzou-bridge init --hub-url https://hub.example.com --code ABCDE-FGHIJ --y
 npx zhunzou-bridge init
 ```
 
-向导会询问 `HUB_URL` / `HUB_TOKEN` / `AGENT_ENV` / 项目名，检测 Cursor / OpenCode / Claude Code，
-写入对应 MCP 配置（保留其他 server），安装决策规则（Cursor 复制 `.cursorrules`，OpenCode 写入或追加 `AGENTS.md`），并校验服务端连通性。
+向导会询问 `HUB_URL` / `HUB_TOKEN` / `AGENT_ENV` / 项目名，检测 Cursor / OpenCode / Claude Code / Codex，
+写入对应 MCP 配置（保留其他 server），安装决策规则（Cursor 复制 `.cursorrules`，其余写入或追加 `AGENTS.md`），并校验服务端连通性。
 
 > 在仓库内本地使用（尚未发布 npm）时：先 `pnpm build`，再运行
 > `node packages/bridge/bin/cli.js init`。

@@ -267,6 +267,15 @@ export const listAgentsQuerySchema = z.object({
 /** Default lifetime of a one-click enrollment code. */
 export const ENROLLMENT_CODE_TTL_MS = 15 * 60 * 1000;
 
+/**
+ * How many client slots a code may enroll on one machine by default.
+ *
+ * One command installs Cursor, OpenCode, Claude Code and Codex; each client
+ * needs its own env (and therefore its own token), so a single-use code would
+ * force users to generate one code per editor.
+ */
+export const ENROLLMENT_CODE_MAX_USES = 10;
+
 export const enrollmentCodeSchema = z
   .string()
   .trim()
@@ -285,6 +294,12 @@ export const createEnrollmentSchema = z.object({
   kind: z.enum(AGENT_KINDS).optional(),
   /** Override the 15-minute default. */
   ttlMinutes: z.number().int().min(1).max(24 * 60).optional(),
+  /**
+   * How many client slots one code may enroll on the same host: 1 for a
+   * single client, up to 10 so one machine can attach Cursor / OpenCode /
+   * Claude Code / Codex with a single install command.
+   */
+  maxUses: z.number().int().min(1).max(50).optional(),
 });
 
 /** Public exchange: the code is the capability. */
@@ -308,6 +323,10 @@ export const enrollmentSchema = z.object({
   kind: z.enum(AGENT_KINDS).optional(),
   expiresAt: z.number().int().nonnegative(),
   createdAt: z.number().int().nonnegative(),
+  /** Redemption budget for this code (one per client on the same host). */
+  maxUses: z.number().int().positive(),
+  /** How many times the code has already been redeemed. */
+  useCount: z.number().int().nonnegative(),
 });
 
 export const enrollmentResponseSchema = z.object({

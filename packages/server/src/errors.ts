@@ -46,3 +46,10 @@ export class ConflictError extends ApiError {
     this.name = 'ConflictError';
   }
 }
+
+export class GoneError extends ApiError {
+  constructor(message: string, code = 'GONE') {
+    super(410, code, message);
+    this.name = 'GoneError';
+  }
+}

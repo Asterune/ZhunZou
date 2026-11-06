@@ -43,6 +43,7 @@ import {
   listTerminalsQuerySchema,
   listTicketsQuerySchema,
   listWorkspaceProjectsQuerySchema,
+  ENROLLMENT_CODE_MAX_USES,
   ENROLLMENT_CODE_TTL_MS,
   nextChatMessageQuerySchema,
   nextTaskQuerySchema,
@@ -87,6 +88,8 @@ import {
   ApiError,
   BadRequestError,
   ConflictError,
+  ForbiddenError,
+  GoneError,
   NotFoundError,
 } from './errors.js';
 import { SyncEventBus, TaskEventBus, SessionEventBus, TicketEventBus } from './events.js';
@@ -808,6 +811,25 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         'ENROLLMENT_INVALID',
       );
     }
+    if (enrollment.useCount >= enrollment.maxUses) {
+      throw new GoneError(
+        '这个接入码已经用完了；请在控制台重新生成。',
+        'ENROLLMENT_USED',
+      );
+    }
+    // A code belongs to one machine. Host names are case-insensitive in
+    // practice (`QideMacBook-Pro.local` vs `qidemacbook-pro.local`), so
+    // compare them normalized.
+    if (
+      enrollment.usedHost &&
+      input.host &&
+      enrollment.usedHost.trim().toLowerCase() !== input.host.trim().toLowerCase()
+    ) {
+      throw new ForbiddenError(
+        `这个接入码已绑定到 ${enrollment.usedHost}，不能在其他电脑上使用。`,
+        'ENROLLMENT_HOST_MISMATCH',
+      );
+    }
 
     const kind = input.kind ?? enrollment.kind ?? 'other';
     const projectName = input.projectName ?? enrollment.projectName;
@@ -816,13 +838,18 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       input.env ??
       `${kind}-${slugifyHost(input.host) || 'device'}`;
 
-    // Reusing an env would steal another machine's identity; add a suffix.
+    // Re-running the installer on the same machine should refresh the existing
+    // cards, not create `cursor-host-2` ghosts. An env this code already
+    // produced is safe to reuse; everything else gets a collision suffix so a
+    // leaked code cannot take over another machine's identity.
     let env = baseEnv.slice(0, 64);
-    for (let suffix = 2; repo.getAgent(env) && suffix < 100; suffix += 1) {
-      env = `${baseEnv.slice(0, 60)}-${suffix}`;
-    }
-    if (repo.getAgent(env)) {
-      env = `${baseEnv.slice(0, 55)}-${randomBytes(3).toString('hex')}`;
+    if (!enrollment.usedEnvs.includes(env)) {
+      for (let suffix = 2; repo.getAgent(env) && suffix < 100; suffix += 1) {
+        env = `${baseEnv.slice(0, 60)}-${suffix}`;
+      }
+      if (repo.getAgent(env)) {
+        env = `${baseEnv.slice(0, 55)}-${randomBytes(3).toString('hex')}`;
+      }
     }
 
     if (!repo.consumeEnrollmentCode(enrollment.id, env, input.host, now)) {
@@ -2029,6 +2056,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           codeHash: hashEnrollmentCode(code),
           codePrefix: code.slice(0, 5),
           ttlMs,
+          maxUses: input.maxUses ?? ENROLLMENT_CODE_MAX_USES,
           ...(input.env ? { env: input.env } : {}),
           ...(input.label ? { label: input.label } : {}),
           ...(input.projectName ? { projectName: input.projectName } : {}),
@@ -2047,6 +2075,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
             ...(enrollment.kind ? { kind: enrollment.kind } : {}),
             expiresAt: enrollment.expiresAt,
             createdAt: enrollment.createdAt,
+            maxUses: enrollment.maxUses,
+            useCount: enrollment.useCount,
           },
           commands: {
             unix: `curl -fsSL '${origin}/install.sh?code=${code}' | bash`,

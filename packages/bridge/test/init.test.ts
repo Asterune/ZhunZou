@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildMcpEnv,
   buildSettings,
+  codexServerBlock,
   mergeClaudeConfig,
+  mergeCodexConfig,
   mergeCursorConfig,
   mergeOpenCodeConfig,
   runInit,
@@ -132,6 +134,48 @@ describe('config merging', () => {
       command: settings.mcpCommand[0],
       args: settings.mcpCommand.slice(1),
     });
+  });
+
+  it('renders a Codex TOML block and preserves other sections', () => {
+    const existing = [
+      'model = "gpt-5"',
+      '',
+      '[mcp_servers.other]',
+      'command = "other"',
+      '',
+      '[mcp_servers.zhunzou]',
+      'command = "stale"',
+      '',
+    ].join('\n');
+
+    const merged = mergeCodexConfig(existing, settings);
+    expect(merged).toContain('model = "gpt-5"');
+    expect(merged).toContain('[mcp_servers.other]');
+    expect(merged).toContain('[mcp_servers.zhunzou]');
+    expect(merged).toContain('command = "node"');
+    expect(merged).toContain('HUB_URL = "https://hub.example.com"');
+    expect(merged).toContain('AGENT_ENV = "company-cursor"');
+    expect(merged).not.toContain('command = "stale"');
+    expect(merged.match(/\[mcp_servers\.zhunzou\]/g)).toHaveLength(1);
+  });
+
+  it('replaces nested zhunzou tables too', () => {
+    const existing = [
+      '[mcp_servers.zhunzou]',
+      'command = "old"',
+      '',
+      '[mcp_servers.zhunzou.env]',
+      'HUB_URL = "old"',
+      '',
+      '[other]',
+      'keep = true',
+      '',
+    ].join('\n');
+    const merged = mergeCodexConfig(existing, settings);
+    expect(merged).not.toContain('command = "old"');
+    expect(merged).not.toContain('HUB_URL = "old"');
+    expect(merged).toContain('[other]');
+    expect(merged.endsWith(codexServerBlock(settings))).toBe(true);
   });
 });
 
@@ -343,6 +387,180 @@ describe('OpenCode instructions', () => {
       expect(env.ZHUNZOU_AGENT_KIND).toBe('opencode');
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+describe('one code, several clients', () => {
+  const dirs: string[] = [];
+
+  function tempDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'zhunzou-multi-'));
+    dirs.push(dir);
+    return dir;
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('derives one env and token per client from a single install', async () => {
+    const home = tempDir();
+    const dir = tempDir();
+    const previous = {
+      HOME: process.env.HOME,
+      XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+      CODEX_HOME: process.env.CODEX_HOME,
+    };
+    process.env.HOME = home;
+    process.env.XDG_CONFIG_HOME = join(home, '.config');
+    process.env.CODEX_HOME = join(home, '.codex');
+
+    const received: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let raw = '';
+      request.on('data', (chunk) => {
+        raw += chunk;
+      });
+      request.on('end', () => {
+        const body = JSON.parse(raw) as Record<string, unknown>;
+        received.push(body);
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(
+          JSON.stringify({
+            hubUrl: 'http://127.0.0.1',
+            token: `zz_${String(body.kind)}`,
+            env: body.env,
+            agent: { env: body.env, kind: body.kind },
+          }),
+        );
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as AddressInfo;
+
+    try {
+      const code = await runInit({
+        dir,
+        hubUrl: `http://127.0.0.1:${address.port}`,
+        code: 'ABCDE-FGHIJ',
+        target: 'all',
+        global: true,
+        yes: true,
+      });
+      expect(code).toBe(0);
+
+      expect(received.map((body) => body.kind)).toEqual([
+        'cursor',
+        'opencode',
+        'claude-code',
+        'codex',
+      ]);
+      const envs = received.map((body) => String(body.env));
+      expect(new Set(envs).size).toBe(4);
+      expect(envs[0]).toMatch(/^cursor-/);
+      expect(envs[3]).toMatch(/^codex-/);
+
+      const cursor = JSON.parse(
+        readFileSync(join(home, '.cursor', 'mcp.json'), 'utf8'),
+      ) as { mcpServers: { zhunzou: { env: Record<string, string> } } };
+      expect(cursor.mcpServers.zhunzou.env).toMatchObject({
+        HUB_TOKEN: 'zz_cursor',
+        ZHUNZOU_AGENT_KIND: 'cursor',
+      });
+
+      const opencode = JSON.parse(
+        readFileSync(join(home, '.config', 'opencode', 'opencode.json'), 'utf8'),
+      ) as {
+        mcp: { servers: { zhunzou: { environment: Record<string, string> } } };
+      };
+      expect(opencode.mcp.servers.zhunzou.environment).toMatchObject({
+        HUB_TOKEN: 'zz_opencode',
+        ZHUNZOU_AGENT_KIND: 'opencode',
+      });
+
+      const claude = JSON.parse(
+        readFileSync(join(home, '.claude.json'), 'utf8'),
+      ) as { mcpServers: { zhunzou: { env: Record<string, string> } } };
+      expect(claude.mcpServers.zhunzou.env).toMatchObject({
+        HUB_TOKEN: 'zz_claude-code',
+        ZHUNZOU_AGENT_KIND: 'claude-code',
+      });
+
+      const codex = readFileSync(join(home, '.codex', 'config.toml'), 'utf8');
+      expect(codex).toContain('[mcp_servers.zhunzou]');
+      expect(codex).toContain('HUB_TOKEN = "zz_codex"');
+      expect(codex).toContain('ZHUNZOU_AGENT_KIND = "codex"');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      process.env.HOME = previous.HOME ?? '';
+      if (previous.HOME === undefined) delete process.env.HOME;
+      if (previous.XDG_CONFIG_HOME === undefined) {
+        delete process.env.XDG_CONFIG_HOME;
+      } else {
+        process.env.XDG_CONFIG_HOME = previous.XDG_CONFIG_HOME;
+      }
+      if (previous.CODEX_HOME === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previous.CODEX_HOME;
+      }
+    }
+  });
+
+  it('keeps a single shared env when --env is pinned', async () => {
+    const home = tempDir();
+    const dir = tempDir();
+    const previous = {
+      HOME: process.env.HOME,
+      XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+      CODEX_HOME: process.env.CODEX_HOME,
+    };
+    process.env.HOME = home;
+    process.env.XDG_CONFIG_HOME = join(home, '.config');
+    process.env.CODEX_HOME = join(home, '.codex');
+
+    try {
+      const code = await runInit({
+        dir,
+        hubUrl: 'https://hub.example.com',
+        token: 'admin-token',
+        env: 'company-windows',
+        target: 'all',
+        global: true,
+        yes: true,
+        skipCheck: true,
+        noAgentToken: true,
+      });
+      expect(code).toBe(0);
+
+      for (const file of [
+        join(home, '.cursor', 'mcp.json'),
+        join(home, '.config', 'opencode', 'opencode.json'),
+        join(home, '.claude.json'),
+      ]) {
+        const text = readFileSync(file, 'utf8');
+        expect(text).toContain('company-windows');
+        expect(text).toContain('"ZHUNZOU_AGENT_KIND": "other"');
+      }
+      const codex = readFileSync(join(home, '.codex', 'config.toml'), 'utf8');
+      expect(codex).toContain('AGENT_ENV = "company-windows"');
+      expect(codex).toContain('ZHUNZOU_AGENT_KIND = "other"');
+    } finally {
+      if (previous.HOME === undefined) delete process.env.HOME;
+      else process.env.HOME = previous.HOME;
+      if (previous.XDG_CONFIG_HOME === undefined) {
+        delete process.env.XDG_CONFIG_HOME;
+      } else {
+        process.env.XDG_CONFIG_HOME = previous.XDG_CONFIG_HOME;
+      }
+      if (previous.CODEX_HOME === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previous.CODEX_HOME;
+      }
     }
   });
 });

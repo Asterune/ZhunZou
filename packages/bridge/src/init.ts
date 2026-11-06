@@ -15,7 +15,17 @@ import type { AgentKind } from '@zhunzou/shared';
 import { installService } from './service.js';
 import { BRIDGE_VERSION } from './version.js';
 
-export type InitTarget = 'cursor' | 'opencode' | 'claude' | 'all';
+export type InitTarget = 'cursor' | 'opencode' | 'claude' | 'codex' | 'all';
+
+/** Targets that own a config file; `all` expands to these. */
+export type ClientTarget = Exclude<InitTarget, 'all'>;
+
+const CLIENT_TARGETS: readonly ClientTarget[] = [
+  'cursor',
+  'opencode',
+  'claude',
+  'codex',
+];
 
 export interface InitSettings {
   hubUrl: string;
@@ -215,6 +225,228 @@ function writeJson(path: string, data: unknown, dryRun: boolean): void {
   process.stdout.write(`✓ 已写入 ${path}\n`);
 }
 
+/* ------------------------------------------------------------------ */
+/* Codex CLI (TOML)                                                    */
+/* ------------------------------------------------------------------ */
+
+/** TOML basic string; Windows paths need their backslashes escaped. */
+function tomlString(value: string): string {
+  return `"${value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')}"`;
+}
+
+export function codexServerBlock(settings: InitSettings): string {
+  const env = Object.entries(buildMcpEnv(settings))
+    .map(([key, value]) => `${key} = ${tomlString(value)}`)
+    .join(', ');
+  const args = settings.mcpCommand.slice(1).map(tomlString).join(', ');
+  return [
+    '[mcp_servers.zhunzou]',
+    `command = ${tomlString(settings.mcpCommand[0] ?? 'node')}`,
+    `args = [${args}]`,
+    `env = { ${env} }`,
+    '',
+  ].join('\n');
+}
+
+const CODEX_ZHUNZOU_SECTION =
+  /^\[mcp_servers\.zhunzou(?:\.[^\]]*)?\]\s*(?:#.*)?$/;
+
+/**
+ * Codex has no JSON config: it reads `$CODEX_HOME/config.toml`.
+ *
+ * The bridge does not bundle a TOML parser, so replace only our own section
+ * and keep every other line byte-for-byte. Dotted keys such as
+ * `mcp_servers.zhunzou.env.X = "…"` are not recognised; the block written
+ * here uses an inline table instead.
+ */
+export function mergeCodexConfig(
+  existing: string,
+  settings: InitSettings,
+): string {
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of existing.split(/\r?\n/)) {
+    if (CODEX_ZHUNZOU_SECTION.test(line)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping) {
+      if (/^\s*\[/.test(line)) skipping = false;
+      else continue;
+    }
+    kept.push(line);
+  }
+  while (kept.length > 0 && kept[kept.length - 1]!.trim() === '') kept.pop();
+  const head = kept.join('\n');
+  return `${head}${head ? '\n\n' : ''}${codexServerBlock(settings)}`;
+}
+
+function readText(path: string): string {
+  if (!existsSync(path)) return '';
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (error) {
+    throw new Error(`${path} 读取失败：${(error as Error).message}`);
+  }
+}
+
+function writeText(path: string, text: string, dryRun: boolean): void {
+  if (dryRun) {
+    process.stdout.write(`\n--- ${path} ---\n${text}`);
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text, 'utf8');
+  process.stdout.write(`✓ 已写入 ${path}\n`);
+}
+
+interface InitIdentity {
+  target: ClientTarget;
+  kind: AgentKind;
+  env: string;
+  token: string;
+}
+
+/** Write exactly one client's MCP config (the per-client mode calls it N times). */
+function writeClientConfig(
+  target: ClientTarget,
+  settings: InitSettings,
+  options: InitOptions,
+  dir: string,
+): void {
+  const dryRun = Boolean(options.dryRun);
+  if (target === 'cursor') {
+    const path = options.global
+      ? globalConfigFile('cursor')
+      : join(dir, '.cursor', 'mcp.json');
+    writeJson(
+      path,
+      mergeCursorConfig(readJson(path), settings),
+      dryRun,
+    );
+    // Cursor user rules live in the app settings, not a file; project
+    // installs can still drop .cursorrules next to the workspace.
+    if (!options.global) copyCursorRules(dir, dryRun);
+    return;
+  }
+
+  if (target === 'opencode') {
+    const path = options.global
+      ? globalConfigFile('opencode')
+      : join(dir, 'opencode.json');
+    writeJson(
+      path,
+      mergeOpenCodeConfig(readJson(path), settings),
+      dryRun,
+    );
+    if (options.global) {
+      const instruction = globalInstructionFile('opencode')!;
+      upsertInstructionFile(
+        instruction.dir,
+        instruction.file,
+        instruction.template,
+        dryRun,
+      );
+    } else {
+      upsertInstructionFile(dir, 'AGENTS.md', 'AGENTS.md', dryRun);
+    }
+    return;
+  }
+
+  if (target === 'claude') {
+    const path = options.global
+      ? globalConfigFile('claude')
+      : join(dir, '.mcp.json');
+    writeJson(
+      path,
+      mergeClaudeConfig(readJson(path), settings),
+      dryRun,
+    );
+    if (options.global) {
+      const instruction = globalInstructionFile('claude')!;
+      upsertInstructionFile(
+        instruction.dir,
+        instruction.file,
+        instruction.template,
+        dryRun,
+      );
+    }
+    return;
+  }
+
+  // Codex only reads `$CODEX_HOME/config.toml` (default ~/.codex), even for a
+  // workspace install, so the file is always user-level.
+  const path = globalConfigFile('codex');
+  writeText(path, mergeCodexConfig(readText(path), settings), dryRun);
+  if (options.global) {
+    const instruction = globalInstructionFile('codex')!;
+    upsertInstructionFile(
+      instruction.dir,
+      instruction.file,
+      instruction.template,
+      dryRun,
+    );
+  } else {
+    upsertInstructionFile(dir, 'AGENTS.md', 'AGENTS.md', dryRun);
+  }
+}
+
+/**
+ * One daemon, several client envs: `fleet` already knows how to keep one wake
+ * loop per env, so the login service points at a generated fleet.json instead
+ * of a single `wake --cwd`.
+ *
+ * Existing projects are preserved; entries are upserted by env.
+ */
+function writeFleetConfig(
+  identities: InitIdentity[],
+  hubUrl: string,
+  cwd: string,
+  projectName: string | undefined,
+): string {
+  const path = join(homedir(), '.zhunzou', 'fleet.json');
+  let base: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+      if (isRecord(parsed)) base = parsed;
+    } catch {
+      process.stdout.write(`! ${path} 不是合法 JSON，已重建\n`);
+    }
+  }
+
+  const projects = Array.isArray(base.projects)
+    ? base.projects.filter(isRecord)
+    : [];
+  const byEnv = new Map<string, Record<string, unknown>>();
+  for (const project of projects) {
+    if (typeof project.env === 'string') byEnv.set(project.env, project);
+  }
+  for (const identity of identities) {
+    byEnv.set(identity.env, {
+      env: identity.env,
+      path: cwd,
+      adapter: 'auto',
+      token: identity.token,
+      ...(projectName ? { project: projectName } : {}),
+    });
+  }
+
+  const next = {
+    ...base,
+    hubUrl: hubUrl.replace(/\/+$/, ''),
+    projects: [...byEnv.values()],
+  };
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  process.stdout.write(`✓ 已写入 ${path}（${byEnv.size} 个客户端）\n`);
+  return path;
+}
+
 function detectTarget(dir: string): InitTarget {
   if (existsSync(join(dir, '.cursor'))) return 'cursor';
   if (existsSync(join(dir, 'opencode.json'))) return 'opencode';
@@ -225,16 +457,25 @@ function detectTarget(dir: string): InitTarget {
 function parseTarget(raw: string | undefined, fallback: InitTarget): InitTarget {
   if (!raw) return fallback;
   const value = raw.toLowerCase();
-  if (value === 'cursor' || value === 'opencode' || value === 'claude' || value === 'all') {
+  if (
+    value === 'cursor' ||
+    value === 'opencode' ||
+    value === 'claude' ||
+    value === 'codex' ||
+    value === 'all'
+  ) {
     return value;
   }
-  throw new Error(`未知 target "${raw}"，可选 cursor / opencode / claude / all`);
+  throw new Error(
+    `未知 target "${raw}"，可选 cursor / opencode / claude / codex / all`,
+  );
 }
 
 function kindForTarget(target: InitTarget): AgentKind {
   if (target === 'cursor') return 'cursor';
   if (target === 'opencode') return 'opencode';
   if (target === 'claude') return 'claude-code';
+  if (target === 'codex') return 'codex';
   return 'other';
 }
 
@@ -247,16 +488,22 @@ function envSlug(value: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-/** `cursor-yikuaomed-erp`, so each workspace becomes a separate agent. */
-function defaultAgentEnv(target: InitTarget, project: string): string {
+/** `cursor-yikuaomed-erp`, so each client/workspace becomes a separate agent. */
+function defaultAgentEnv(kind: AgentKind, project: string): string {
   const prefix =
-    target === 'cursor'
+    kind === 'cursor'
       ? 'cursor'
-      : target === 'opencode'
+      : kind === 'opencode'
         ? 'opencode'
-        : target === 'claude'
+        : kind === 'claude-code'
           ? 'claude'
-          : 'agent';
+          : kind === 'codex'
+            ? 'codex'
+            : kind === 'gemini'
+              ? 'gemini'
+              : kind === 'windsurf'
+                ? 'windsurf'
+                : 'agent';
   const slug = envSlug(project) || envSlug(hostname()) || 'agent';
   return `${prefix}-${slug}`.slice(0, 64);
 }
@@ -366,12 +613,19 @@ async function exchangeEnrollmentCode(input: {
   };
 }
 
+/** Codex keeps a single user-level config; CODEX_HOME relocates it. */
+function codexHome(): string {
+  const raw = process.env.CODEX_HOME?.trim();
+  return raw ? resolve(raw) : join(homedir(), '.codex');
+}
+
 /** Global (user-level) config locations, so one install covers all projects. */
 function globalTargetDir(target: Exclude<InitTarget, 'all'>): string {
   const configHome =
     process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
   if (target === 'cursor') return join(homedir(), '.cursor');
   if (target === 'opencode') return join(configHome, 'opencode');
+  if (target === 'codex') return codexHome();
   return homedir();
 }
 
@@ -380,6 +634,7 @@ function globalConfigFile(target: Exclude<InitTarget, 'all'>): string {
   if (target === 'opencode') {
     return join(globalTargetDir(target), 'opencode.json');
   }
+  if (target === 'codex') return join(globalTargetDir(target), 'config.toml');
   return join(homedir(), '.claude.json');
 }
 
@@ -389,6 +644,13 @@ function globalInstructionFile(target: Exclude<InitTarget, 'all'>): {
   template: string;
 } | null {
   if (target === 'opencode') {
+    return {
+      dir: globalTargetDir(target),
+      file: 'AGENTS.md',
+      template: 'AGENTS.md',
+    };
+  }
+  if (target === 'codex') {
     return {
       dir: globalTargetDir(target),
       file: 'AGENTS.md',
@@ -484,6 +746,7 @@ function upsertInstructionFile(
       process.stdout.write(`\n--- ${target} ---\n${block}\n`);
       return;
     }
+    mkdirSync(dir, { recursive: true });
     writeFileSync(target, `${block}\n`, 'utf8');
     process.stdout.write(`✓ 已写入 ${target}\n`);
     return;
@@ -559,23 +822,34 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
       targetFallback,
     );
 
-    const agentKind =
-      parseAgentKind(options.agentKind) ?? kindForTarget(target);
+    const explicitKind = parseAgentKind(options.agentKind);
+    const agentKind = explicitKind ?? kindForTarget(target);
 
-    let token = options.token ?? '';
+    // `--target all` now means "every client on this machine". Each client
+    // needs its own env (and therefore its own token): four editors sharing
+    // one env would overwrite each other's heartbeat and collapse into a
+    // single card. Pin `--env` / `--agent-kind` to keep the old behaviour.
+    const perClient =
+      target === 'all' &&
+      options.env === undefined &&
+      explicitKind === undefined;
+    const targets: ClientTarget[] =
+      target === 'all' ? [...CLIENT_TARGETS] : [target];
+
+    let adminToken = options.token ?? '';
     let projectName = options.project;
 
     // Workspace installs default the project to the folder name; global
     // installs leave it empty until the first heartbeat reports a workspace.
     if (!enrollmentCode) {
-      if (!token && rl) {
-        token = await ask(
+      if (!adminToken && rl) {
+        adminToken = await ask(
           rl,
           'HUB_SECRET_TOKEN（管理员 Token，用于签发该工作区的专属 Token）',
           '',
         );
       }
-      if (!token) {
+      if (!adminToken) {
         throw new Error('缺少 HUB_TOKEN；请加 --token 或在交互模式下输入');
       }
       if (projectName === undefined) {
@@ -588,68 +862,52 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
       }
     }
 
-    // Cursor spawns one MCP server per opened workspace. If every workspace
-    // shares one AGENT_ENV, their heartbeats overwrite each other and the
-    // dashboard only ever shows the most recently active project. Deriving the
-    // env from the project keeps each workspace visible as its own agent.
-    const envPrefix =
-      agentKind === 'cursor'
-        ? 'cursor'
-        : agentKind === 'opencode'
-          ? 'opencode'
-          : agentKind === 'claude-code'
-            ? 'claude'
-            : 'agent';
-    const defaultEnv = enrollmentCode
-      ? `${envPrefix}-${envSlug(projectName || hostname()) || 'device'}`.slice(0, 64)
-      : defaultAgentEnv(target, projectName || basename(dir));
-    let agentEnv =
-      options.env ??
-      (rl
-        ? await ask(
-            rl,
-            '环境标识 AGENT_ENV（每个工作区应不同）',
-            defaultEnv,
-          )
-        : defaultEnv);
-
-    // One-click path: swap the code for a scoped token before anything is
-    // written. This also proves the hub is reachable, so the separate
-    // /api/status check is unnecessary.
-    if (enrollmentCode) {
-      const exchanged = await exchangeEnrollmentCode({
-        hubUrl,
-        code: enrollmentCode,
-        env: agentEnv,
-        host: hostname(),
-        os: `${platform()}-${arch()}`,
-        kind: agentKind,
-        ...(projectName ? { projectName } : {}),
-        version: BRIDGE_VERSION,
-      });
-      token = exchanged.token;
-      agentEnv = exchanged.env;
-      projectName = exchanged.projectName ?? projectName;
-      process.stdout.write('✓ 接入码已兑换，已签发专属 Agent Token\n');
+    // A single identity is still what `--env`/`--agent-kind` ask for: one
+    // workspace, one env, written into every selected client.
+    let singleEnv: string | undefined;
+    if (!perClient) {
+      const defaultEnv = defaultAgentEnv(
+        agentKind,
+        projectName || (enrollmentCode ? hostname() : basename(dir)) || hostname(),
+      );
+      singleEnv =
+        options.env ??
+        (rl
+          ? await ask(
+              rl,
+              '环境标识 AGENT_ENV（每个工作区应不同）',
+              defaultEnv,
+            )
+          : defaultEnv);
     }
 
-    const settings = buildSettings({
-      hubUrl,
-      token,
-      agentEnv,
-      ...(projectName ? { projectName } : {}),
-      agentKind,
+    // Per-client mode derives `cursor-<project>`, `opencode-<project>`, … so
+    // the dashboard shows one card per client with the right type.
+    const identities: InitIdentity[] = targets.map((item) => {
+      const kind = perClient ? kindForTarget(item) : agentKind;
+      const env =
+        singleEnv ?? defaultAgentEnv(kind, projectName || hostname());
+      return { target: item, kind, env, token: adminToken };
     });
 
     if (rl) {
+      const preview = buildSettings({
+        hubUrl,
+        token: identities[0]!.token,
+        agentEnv: identities[0]!.env,
+        ...(projectName ? { projectName } : {}),
+        agentKind: identities[0]!.kind,
+      });
       process.stdout.write(
         [
           '',
-          `云端：${settings.hubUrl}`,
-          `环境：${settings.agentEnv}`,
-          `项目：${settings.projectName ?? '（未设置）'}`,
-          `目标：${target}`,
-          `MCP 命令：${settings.mcpCommand.join(' ')}`,
+          `云端：${preview.hubUrl}`,
+          `项目：${preview.projectName ?? '（未设置，按打开的工作区自动识别）'}`,
+          ...identities.map(
+            (identity) => `环境：${identity.env}（${identity.kind}）`,
+          ),
+          `目标：${targets.join(' / ')}`,
+          `MCP 命令：${preview.mcpCommand.join(' ')}`,
           '',
         ].join('\n'),
       );
@@ -662,7 +920,15 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
 
     if (!options.skipCheck && !enrollmentCode) {
       try {
-        const message = await checkHub(settings);
+        const message = await checkHub(
+          buildSettings({
+            hubUrl,
+            token: adminToken,
+            agentEnv: identities[0]!.env,
+            ...(projectName ? { projectName } : {}),
+            agentKind: identities[0]!.kind,
+          }),
+        );
         process.stdout.write(`✓ ${message}\n`);
       } catch (error) {
         process.stdout.write(
@@ -674,87 +940,89 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
       }
     }
 
-    // Provision a scoped token after the admin-token connectivity check.
-    // The admin token stays in the terminal; the project config gets `zz_…`.
-    // Enrollment already did this, so never rotate the freshly issued token.
-    if (!enrollmentCode && !options.dryRun && !options.noAgentToken) {
-      try {
-        const issued = await provisionAgentToken(settings);
-        if (issued) {
-          settings.token = issued;
-          process.stdout.write('✓ 已签发专属 Agent Token（只显示一次，已写入配置）\n');
-        } else {
-          process.stdout.write(
-            '· 未能签发专属 Token（服务端较旧或无权限），继续使用 HUB_TOKEN\n',
+    // One code, several clients: every target spends one redemption slot.
+    // The server binds the code to this host, so a leaked link still cannot
+    // enroll another machine.
+    if (enrollmentCode) {
+      for (const identity of identities) {
+        let exchanged: { token: string; env: string; projectName?: string };
+        try {
+          exchanged = await exchangeEnrollmentCode({
+            hubUrl,
+            code: enrollmentCode,
+            env: identity.env,
+            host: hostname(),
+            os: `${platform()}-${arch()}`,
+            kind: identity.kind,
+            ...(projectName ? { projectName } : {}),
+            version: BRIDGE_VERSION,
+          });
+        } catch (error) {
+          const message = (error as Error).message;
+          throw new Error(
+            identities.length > 1
+              ? `${message}\n提示：一台电脑接入多个客户端需要能多次兑换的接入码（新版默认 10 次）。也可以改用 --target cursor|opencode|claude|codex 逐个接入。`
+              : message,
           );
         }
-      } catch (error) {
+        identity.token = exchanged.token;
+        identity.env = exchanged.env;
+        projectName = exchanged.projectName ?? projectName;
         process.stdout.write(
-          `· 签发专属 Token 失败：${(error as Error).message}；继续使用 HUB_TOKEN\n`,
+          `✓ ${identity.kind}: 已签发专属 Agent Token（${identity.env}）\n`,
         );
       }
     }
 
-    const targets: Exclude<InitTarget, 'all'>[] =
-      target === 'all' ? ['cursor', 'opencode', 'claude'] : [target];
-
-    for (const item of targets) {
-      if (item === 'cursor') {
-        const path = options.global
-          ? globalConfigFile('cursor')
-          : join(dir, '.cursor', 'mcp.json');
-        writeJson(
-          path,
-          mergeCursorConfig(readJson(path), settings),
-          Boolean(options.dryRun),
-        );
-        // Cursor user rules live in the app settings, not a file; project
-        // installs can still drop .cursorrules next to the workspace.
-        if (!options.global) copyCursorRules(dir, Boolean(options.dryRun));
-      } else if (item === 'opencode') {
-        const path = options.global
-          ? globalConfigFile('opencode')
-          : join(dir, 'opencode.json');
-        writeJson(
-          path,
-          mergeOpenCodeConfig(readJson(path), settings),
-          Boolean(options.dryRun),
-        );
-        if (options.global) {
-          const instruction = globalInstructionFile('opencode')!;
-          upsertInstructionFile(
-            instruction.dir,
-            instruction.file,
-            instruction.template,
-            Boolean(options.dryRun),
+    // Admin-token path: the admin secret stays in the terminal; every client
+    // env gets its own scoped `zz_…` token.
+    if (!enrollmentCode && !options.dryRun && !options.noAgentToken) {
+      for (const identity of identities) {
+        try {
+          const issued = await provisionAgentToken(
+            buildSettings({
+              hubUrl,
+              token: adminToken,
+              agentEnv: identity.env,
+              ...(projectName ? { projectName } : {}),
+              agentKind: identity.kind,
+            }),
           );
-        } else {
-          upsertInstructionFile(
-            dir,
-            'AGENTS.md',
-            'AGENTS.md',
-            Boolean(options.dryRun),
-          );
-        }
-      } else {
-        const path = options.global
-          ? globalConfigFile('claude')
-          : join(dir, '.mcp.json');
-        writeJson(
-          path,
-          mergeClaudeConfig(readJson(path), settings),
-          Boolean(options.dryRun),
-        );
-        if (options.global) {
-          const instruction = globalInstructionFile('claude')!;
-          upsertInstructionFile(
-            instruction.dir,
-            instruction.file,
-            instruction.template,
-            Boolean(options.dryRun),
+          if (issued) {
+            identity.token = issued;
+            process.stdout.write(
+              `✓ ${identity.kind}: 已签发专属 Agent Token（${identity.env}）\n`,
+            );
+          } else {
+            process.stdout.write(
+              `· ${identity.env} 未能签发专属 Token（服务端较旧或无权限），继续使用 HUB_TOKEN\n`,
+            );
+          }
+        } catch (error) {
+          process.stdout.write(
+            `· ${identity.env} 签发专属 Token 失败：${(error as Error).message}；继续使用 HUB_TOKEN\n`,
           );
         }
       }
+    }
+
+    const settingsList = identities.map((identity) =>
+      buildSettings({
+        hubUrl,
+        token: identity.token,
+        agentEnv: identity.env,
+        ...(projectName ? { projectName } : {}),
+        agentKind: identity.kind,
+      }),
+    );
+
+    for (let index = 0; index < identities.length; index += 1) {
+      writeClientConfig(
+        identities[index]!.target,
+        settingsList[index]!,
+        options,
+        dir,
+      );
     }
 
     // Keep the machine online when the editor is closed. Service failures are
@@ -762,17 +1030,43 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
     let serviceMessage: string | null = null;
     if (options.service && !options.dryRun) {
       try {
-        const installed = installService({
-          env: settings.agentEnv,
-          hubUrl: settings.hubUrl,
-          token: settings.token,
-          cwd: dir,
-          adapter: 'auto',
-          cliPath:
-            process.argv[1] ?? join(homedir(), '.zhunzou', 'bridge', 'cli.mjs'),
-          nodePath: process.execPath,
-          ...(settings.projectName ? { projectName: settings.projectName } : {}),
-        });
+        const cliPath =
+          process.argv[1] ??
+          join(homedir(), '.zhunzou', 'bridge', 'cli.mjs');
+        const primary = settingsList[0]!;
+        const installed =
+          identities.length > 1
+            ? installService({
+                mode: 'fleet',
+                fleetConfig: writeFleetConfig(
+                  identities,
+                  primary.hubUrl,
+                  dir,
+                  projectName,
+                ),
+                env: primary.agentEnv,
+                hubUrl: primary.hubUrl,
+                token: primary.token,
+                cwd: dir,
+                adapter: 'auto',
+                cliPath,
+                nodePath: process.execPath,
+                ...(primary.projectName
+                  ? { projectName: primary.projectName }
+                  : {}),
+              })
+            : installService({
+                env: primary.agentEnv,
+                hubUrl: primary.hubUrl,
+                token: primary.token,
+                cwd: dir,
+                adapter: 'auto',
+                cliPath,
+                nodePath: process.execPath,
+                ...(primary.projectName
+                  ? { projectName: primary.projectName }
+                  : {}),
+              });
         serviceMessage = installed.message;
         process.stdout.write(
           `${installed.started ? '✓' : '·'} ${installed.message}\n`,
@@ -790,6 +1084,13 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
         '1. 重启对应客户端，或重新加载 MCP Server。',
         '2. 在新会话里调用 agent_hub_resume，恢复未决奏折与任务。',
         '3. Token 会写入本地配置，请勿把 .cursor/mcp.json / .mcp.json 提交到公开仓库。',
+        ...(identities.length > 1
+          ? [
+              `· 已按客户端分别接入：${identities
+                .map((identity) => `${identity.kind} → ${identity.env}`)
+                .join('、')}`,
+            ]
+          : []),
         options.global
           ? '4. 本次写入的是用户级配置，所有项目共用；如需按项目区分环境，可在项目里再运行一次 init。'
           : '4. 每个工作区单独运行一次 init；AGENT_ENV 默认按项目名区分。多个工作区共用同一个 env 时，看板只会显示最后心跳的那个项目。',

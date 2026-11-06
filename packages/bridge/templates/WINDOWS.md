@@ -1,6 +1,14 @@
-# 准奏 Windows 接入包（Cursor / MCP）
+# 准奏 Windows 接入包（Cursor / OpenCode / Claude Code / Codex）
 
 这个文件夹已经打好包，**不需要安装 npm 依赖，也不需要克隆源码**。Windows 上只需要 Node.js。
+
+> **更省事的方式**：看板「接入端 → 一键接入」生成 PowerShell 命令，在目标电脑直接执行
+> ```powershell
+> irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
+> ```
+> 它会自动准备 Node、下载 bridge，并为 Cursor / OpenCode / Claude Code / Codex
+> 各写一份配置（一台电脑 4 张卡，互不覆盖心跳），然后注册登录自启。
+> 下面 2~4 节是**手动解压版**的做法。
 
 ## 1. 安装 Node.js
 
@@ -94,6 +102,21 @@ MCP 启动后会立即上报一次心跳，并每 30 秒续期。因此看板里
 `company-windows` 应在几秒内变为「在线 / 空闲」，不需要先提交工单。
 Agent 开始做事时调用 `agent_hub_report_task`，看板就会显示真实任务，
 而不是一直停留在「MCP 已连接」。
+
+### Codex（可选）
+
+Codex 只读用户级配置 `C:\Users\<你>\.codex\config.toml`（可用 `CODEX_HOME` 改位置）。
+在文件末尾追加（或让它覆盖已有的 `[mcp_servers.zhunzou]` 段）：
+
+```toml
+[mcp_servers.zhunzou]
+command = "node"
+args = ["C:/Users/你的用户名/zhunzou-bridge/mcp.mjs"]
+env = { HUB_URL = "https://hub.l1uqi.com", HUB_TOKEN = "zz_xxx", AGENT_ENV = "codex-my-project", ZHUNZOU_PROJECT = "my-project", ZHUNZOU_AGENT_KIND = "codex", ZHUNZOU_FALLBACK = "cli" }
+```
+
+每个客户端用**不同的 `AGENT_ENV` 和 Token**（看板「接入端」里给每个 env 单独签发），
+否则多开时心跳会互相覆盖，看板只剩一张卡。
 
 ## 4. 给项目加行为约束
 
