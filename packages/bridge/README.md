@@ -35,6 +35,17 @@ npx zhunzou-bridge init --hub-url https://hub.example.com --code ABCDE-FGHIJ --y
 > Codex 的配置写在 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的
 > `[mcp_servers.zhunzou]` 段，`init` 只替换这一段。
 
+不开编辑器、只想让某个目录常驻领取任务时：
+
+```bash
+npx zhunzou-bridge fleet add D:\work\erp D:\work\crm --code ABCDE-FGHIJ
+npx zhunzou-bridge fleet list
+npx zhunzou-bridge fleet remove cursor-erp
+npx zhunzou-bridge service restart
+```
+
+会写 `~/.zhunzou/fleet.json`；`--code` 用看板接入码为每个项目签发 Token，`--admin-token` / `--token` 亦可。
+
 ### 交互式接入向导
 
 ```bash

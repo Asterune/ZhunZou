@@ -159,6 +159,16 @@ Leave the enrollment dialog's environment field empty so each client derives `<k
 
 Codex only reads the user-level `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`); `init` writes or replaces `[mcp_servers.zhunzou]` and leaves other servers untouched.
 
+To keep a project online without opening an editor, register the directory with `fleet` (no JSON editing):
+
+```bash
+npx zhunzou-bridge fleet add D:\work\erp D:\work\crm --code ABCDE-FGHIJ
+npx zhunzou-bridge fleet list                          # env / path / project / token
+npx zhunzou-bridge fleet remove cursor-erp             # remove by env
+```
+
+`fleet add` infers the project from the git root and writes `~/.zhunzou/fleet.json`; with `--code` it trades a dashboard enrollment code for one scoped token per project (no admin token needed), and `--admin-token` / `--token` also work. If the login daemon is installed it switches to `fleet` and restarts, so the new project can receive tasks immediately.
+
 ### Manual setup (developers)
 
 ```bash

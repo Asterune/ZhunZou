@@ -214,6 +214,163 @@ export function loadFleetConfig(path = DEFAULT_CONFIG_PATH): FleetConfig {
 }
 
 /* ------------------------------------------------------------------ */
+/* Editing fleet.json without an editor                                */
+/* ------------------------------------------------------------------ */
+
+/** One project entry as stored on disk (token is optional). */
+export interface FleetProjectEntry {
+  env: string;
+  path: string;
+  project?: string;
+  adapter?: string;
+  token?: string;
+}
+
+export interface FleetFile {
+  hubUrl?: string;
+  adminToken?: string;
+  adapter?: string;
+  tokenCache?: string;
+  projects: FleetProjectEntry[];
+  /** Untouched top-level keys, so hand-written files keep their extras. */
+  extra: Record<string, unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Permissive read (missing file is an empty config, bad JSON is an error). */
+export function readFleetFile(path = DEFAULT_CONFIG_PATH): FleetFile {
+  const absolute = resolve(expandHome(path));
+  if (!existsSync(absolute)) return { projects: [], extra: {} };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(absolute, 'utf8'));
+  } catch (error) {
+    throw new Error(
+      `fleet 配置不是合法 JSON：${absolute}\n${(error as Error).message}`,
+    );
+  }
+  if (!isRecord(parsed)) {
+    throw new Error(`fleet 配置必须是 JSON 对象：${absolute}`);
+  }
+
+  const projects: FleetProjectEntry[] = Array.isArray(parsed.projects)
+    ? parsed.projects.filter(isRecord).map((project) => ({
+        env: String(project.env ?? ''),
+        path: String(project.path ?? ''),
+        ...(typeof project.project === 'string'
+          ? { project: project.project }
+          : {}),
+        ...(typeof project.adapter === 'string'
+          ? { adapter: project.adapter }
+          : {}),
+        ...(typeof project.token === 'string'
+          ? { token: project.token }
+          : {}),
+      }))
+    : [];
+
+  const extra = { ...parsed };
+  delete extra.projects;
+  delete extra.hubUrl;
+  delete extra.adminToken;
+  delete extra.adapter;
+  delete extra.tokenCache;
+
+  return {
+    ...(typeof parsed.hubUrl === 'string' ? { hubUrl: parsed.hubUrl } : {}),
+    ...(typeof parsed.adminToken === 'string'
+      ? { adminToken: parsed.adminToken }
+      : {}),
+    ...(typeof parsed.adapter === 'string' ? { adapter: parsed.adapter } : {}),
+    ...(typeof parsed.tokenCache === 'string'
+      ? { tokenCache: parsed.tokenCache }
+      : {}),
+    projects,
+    extra,
+  };
+}
+
+export function writeFleetFile(file: FleetFile, path = DEFAULT_CONFIG_PATH): void {
+  const absolute = resolve(expandHome(path));
+  mkdirSync(dirname(absolute), { recursive: true });
+  const payload = {
+    ...file.extra,
+    ...(file.hubUrl ? { hubUrl: file.hubUrl } : {}),
+    ...(file.adminToken ? { adminToken: file.adminToken } : {}),
+    ...(file.adapter ? { adapter: file.adapter } : {}),
+    ...(file.tokenCache ? { tokenCache: file.tokenCache } : {}),
+    projects: file.projects,
+  };
+  // Tokens live in this file (mode 0600): do not let other users read them.
+  writeFileSync(absolute, `${JSON.stringify(payload, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+}
+
+export interface FleetAddResult {
+  added: FleetProjectEntry[];
+  updated: FleetProjectEntry[];
+  file: FleetFile;
+  configPath: string;
+}
+
+/**
+ * Upsert projects by env. Re-adding the same env updates its path/token
+ * instead of duplicating it, so the command is safe to re-run.
+ */
+export function addFleetProjects(input: {
+  projects: FleetProjectEntry[];
+  hubUrl?: string;
+  configPath?: string;
+}): FleetAddResult {
+  const configPath = resolve(expandHome(input.configPath ?? DEFAULT_CONFIG_PATH));
+  const file = readFleetFile(configPath);
+  const added: FleetProjectEntry[] = [];
+  const updated: FleetProjectEntry[] = [];
+  const byEnv = new Map(file.projects.map((project) => [project.env, project]));
+
+  for (const project of input.projects) {
+    const existing = byEnv.get(project.env);
+    const merged: FleetProjectEntry = {
+      ...existing,
+      ...project,
+      // Keep a previously issued token when the caller did not supply one.
+      ...(project.token ?? existing?.token
+        ? { token: project.token ?? existing!.token! }
+        : {}),
+    };
+    byEnv.set(project.env, merged);
+    if (existing) updated.push(merged);
+    else added.push(merged);
+  }
+
+  const next: FleetFile = {
+    ...file,
+    ...(input.hubUrl ? { hubUrl: input.hubUrl } : {}),
+    projects: [...byEnv.values()],
+  };
+  writeFleetFile(next, configPath);
+  return { added, updated, file: next, configPath };
+}
+
+export function removeFleetProject(
+  env: string,
+  configPath = DEFAULT_CONFIG_PATH,
+): boolean {
+  const absolute = resolve(expandHome(configPath));
+  const file = readFleetFile(absolute);
+  const projects = file.projects.filter((project) => project.env !== env);
+  if (projects.length === file.projects.length) return false;
+  writeFleetFile({ ...file, projects }, absolute);
+  return true;
+}
+
+/* ------------------------------------------------------------------ */
 /* Token provisioning                                                  */
 /* ------------------------------------------------------------------ */
 

@@ -9,12 +9,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentTask } from '@zhunzou/shared';
 
 import {
+  addFleetProjects,
   agentKindForAdapter,
   buildFleetRuntimes,
   buildLaunchdPlist,
   loadFleetConfig,
+  readFleetFile,
+  removeFleetProject,
   resolveFleetTokens,
   runFleet,
+  writeFleetFile,
 } from '../src/fleet.js';
 
 const dirs: string[] = [];
@@ -317,5 +321,84 @@ describe('runFleet', () => {
     } finally {
       await hub.close();
     }
+  });
+});
+
+describe('editing fleet.json', () => {
+  it('adds projects, preserves unknown keys and upserts by env', () => {
+    const dir = tempDir();
+    const path = join(dir, 'fleet.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        hubUrl: 'https://hub.example.com',
+        adminToken: 'admin',
+        adapter: 'auto',
+        custom: 'keep-me',
+        projects: [{ env: 'cursor-a', path: '/work/a', token: 'zz_old' }],
+      }),
+    );
+
+    const first = addFleetProjects({
+      configPath: path,
+      projects: [
+        { env: 'agent-b', path: '/work/b', project: 'b', adapter: 'auto' },
+      ],
+    });
+    expect(first.added.map((project) => project.env)).toEqual(['agent-b']);
+
+    const second = addFleetProjects({
+      configPath: path,
+      projects: [
+        { env: 'cursor-a', path: '/work/a2', project: 'a2', adapter: 'claude' },
+      ],
+    });
+    expect(second.updated.map((project) => project.env)).toEqual(['cursor-a']);
+    expect(second.updated[0]!.token).toBe('zz_old');
+
+    const file = readFleetFile(path);
+    expect(file.hubUrl).toBe('https://hub.example.com');
+    expect(file.extra.custom).toBe('keep-me');
+    expect(file.projects.map((project) => project.env).sort()).toEqual([
+      'agent-b',
+      'cursor-a',
+    ]);
+    expect(file.projects.find((project) => project.env === 'cursor-a')).toMatchObject({
+      path: '/work/a2',
+      project: 'a2',
+      adapter: 'claude',
+    });
+
+    // The written file must still be loadable by the runtime.
+    expect(loadFleetConfig(path).projects).toHaveLength(2);
+  });
+
+  it('removes a project and reports whether anything changed', () => {
+    const dir = tempDir();
+    const path = join(dir, 'fleet.json');
+    writeFleetFile(
+      {
+        hubUrl: 'https://hub.example.com',
+        projects: [
+          { env: 'a', path: '/a' },
+          { env: 'b', path: '/b' },
+        ],
+        extra: {},
+      },
+      path,
+    );
+
+    expect(removeFleetProject('a', path)).toBe(true);
+    expect(removeFleetProject('missing', path)).toBe(false);
+    expect(readFleetFile(path).projects.map((project) => project.env)).toEqual([
+      'b',
+    ]);
+  });
+
+  it('refuses to clobber a broken fleet.json', () => {
+    const dir = tempDir();
+    const path = join(dir, 'fleet.json');
+    writeFileSync(path, '{ not json');
+    expect(() => readFleetFile(path)).toThrow(/合法 JSON/);
   });
 });

@@ -518,6 +518,16 @@ irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 
 Codex 只读用户级配置 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`），`init` 会写入或替换其中的 `[mcp_servers.zhunzou]` 段，不影响其它 server。
 
+不想打开编辑器、但要让某个项目常驻在线时，用 `fleet` 把目录登记进来即可（不需要懂 JSON）：
+
+```bash
+npx zhunzou-bridge fleet add D:\work\erp D:\work\crm --code ABCDE-FGHIJ
+npx zhunzou-bridge fleet list                          # 查看 env / 目录 / 项目 / Token
+npx zhunzou-bridge fleet remove cursor-erp             # 按 env 移除
+```
+
+`fleet add` 会自动推断项目名（git 根目录）、写 `~/.zhunzou/fleet.json`；带 `--code` 时用看板接入码为每个项目签发 scoped Token（不需要管理员 Token），也可以用 `--admin-token` 或 `--token`。已经安装常驻服务的话会自动切到 `fleet` 模式并重启，让新项目立刻可被下发任务。
+
 ### 手动接入（开发者）
 
 `packages/bridge` 提供两个入口，均为纯 JS/TS + `fetch`，无原生编译依赖。

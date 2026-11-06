@@ -163,6 +163,18 @@ node cli.mjs wait --ticket 104
 
 它会阻塞到审批完成，把决定打印到终端，退出码为 0。
 
+不开编辑器、只想让某个目录常驻领取任务：
+
+```powershell
+node cli.mjs fleet add D:\work\erp D:\work\crm --code ABCDE-FGHIJ
+node cli.mjs fleet list
+node cli.mjs fleet remove cursor-erp
+node cli.mjs service status
+node cli.mjs service restart
+```
+
+`fleet add` 会推断项目名、写 `~\.zhunzou\fleet.json`；`--code` 用看板接入码为每个项目签发专属 Token，不需要管理员 Token。已安装常驻服务时会自动重启用新配置。
+
 ## 8. 常见问题
 
 | 现象 | 处理 |

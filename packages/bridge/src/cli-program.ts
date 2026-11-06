@@ -1,21 +1,28 @@
 import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { arch, hostname, platform } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Command } from 'commander';
 
-import { loadBridgeConfig } from './config.js';
+import { loadBridgeConfig, detectWorkspaceProject } from './config.js';
 import {
+  addFleetProjects,
+  agentKindForAdapter,
   buildLaunchdPlist,
   defaultFleetConfigPath,
   expandHome,
   loadFleetConfig,
+  readFleetFile,
+  removeFleetProject,
   runFleet,
+  type FleetProjectEntry,
 } from './fleet.js';
 import { createHubApi } from './hub.js';
 import { runInit } from './init.js';
 import {
   installService,
+  readServiceConfig,
   serviceStatus,
   uninstallService,
 } from './service.js';
@@ -34,6 +41,105 @@ const DEFAULT_HUB_URL = 'http://127.0.0.1:8787';
 const DEFAULT_INTERVAL_MS = 15_000;
 const MIN_INTERVAL_MS = 1_000;
 const MAX_INTERVAL_MS = 55_000;
+
+/** Env prefix that matches `init` (`opencode-…`, `claude-…`, `agent-…`). */
+const ADAPTER_ENV_PREFIX: Record<string, string> = {
+  opencode: 'opencode',
+  'opencode-run': 'opencode',
+  claude: 'claude',
+  codex: 'codex',
+  gemini: 'gemini',
+  'cursor-agent': 'cursor',
+};
+
+function envSlug(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s/\\]+/g, '-')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+}
+
+/**
+ * The parent `fleet` command owns `--config`; commander consumes it before the
+ * subcommand sees it, so read both places. `--file` is the subcommand alias.
+ */
+function fleetConfigPathOf(
+  options: { file?: string; config?: string },
+  command?: Command,
+): string {
+  const parentOptions = command?.parent?.opts() as
+    | { config?: string }
+    | undefined;
+  return resolve(
+    expandHome(
+      options.file ??
+        options.config ??
+        parentOptions?.config ??
+        defaultFleetConfigPath(),
+    ),
+  );
+}
+
+/** Exchange a dashboard enrollment code for a scoped token for one env. */
+async function exchangeEnrollment(
+  hubUrl: string,
+  code: string,
+  env: string,
+  kind: string,
+  project?: string,
+): Promise<string> {
+  const response = await fetch(`${hubUrl.replace(/\/+$/, '')}/api/enroll`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      code: code.trim(),
+      env,
+      kind,
+      host: hostname(),
+      os: `${platform()}-${arch()}`,
+      ...(project ? { projectName: project } : {}),
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const body = (await response.json().catch(() => null)) as
+    | { token?: unknown; env?: unknown; error?: { message?: unknown } }
+    | null;
+  if (!response.ok) {
+    const message =
+      typeof body?.error?.message === 'string'
+        ? body.error.message
+        : `接入码兑换失败（HTTP ${response.status}）`;
+    throw new Error(message);
+  }
+  if (typeof body?.token !== 'string' || !body.token) {
+    throw new Error('服务端未返回 Token');
+  }
+  return body.token;
+}
+
+/** Mint a scoped `zz_…` token; null when the hub rejects the admin token. */
+async function mintAgentToken(
+  hubUrl: string,
+  env: string,
+  adminToken: string,
+): Promise<string | null> {
+  const response = await fetch(
+    `${hubUrl.replace(/\/+$/, '')}/api/agents/${encodeURIComponent(env)}/token`,
+    {
+      method: 'POST',
+      headers: { authorization: `Bearer ${adminToken}` },
+      signal: AbortSignal.timeout(8_000),
+    },
+  );
+  if (!response.ok) return null;
+  const body = (await response.json().catch(() => null)) as
+    | { token?: unknown }
+    | null;
+  return typeof body?.token === 'string' && body.token ? body.token : null;
+}
 
 function clampInterval(raw: string): number {
   const parsed = Number.parseInt(raw, 10);
@@ -222,9 +328,9 @@ export function createProgram(): Command {
   program
     .command('service')
     .description(
-      'Manage the login-time daemon: install | uninstall | status',
+      'Manage the login-time daemon: install | uninstall | status | restart',
     )
-    .argument('[action]', 'install | uninstall | status', 'status')
+    .argument('[action]', 'install | uninstall | status | restart', 'status')
     .action((action: string) => {
       if (action === 'status') {
         process.stdout.write(`[zhunzou] ${serviceStatus()}\n`);
@@ -235,9 +341,22 @@ export function createProgram(): Command {
         process.stdout.write(`[zhunzou] ${result.message}\n`);
         return;
       }
+      if (action === 'restart') {
+        const stored = readServiceConfig();
+        if (!stored) {
+          process.stderr.write(
+            '[zhunzou] 未安装常驻服务；先运行 init --service 或 fleet add <path>\n',
+          );
+          process.exitCode = 1;
+          return;
+        }
+        const restarted = installService(stored);
+        process.stdout.write(`[zhunzou] ${restarted.message}\n`);
+        return;
+      }
       if (action !== 'install') {
         process.stderr.write(
-          `[zhunzou] 未知操作 ${action}；可选 install / uninstall / status\n`,
+          `[zhunzou] 未知操作 ${action}；可选 install / uninstall / status / restart\n`,
         );
         process.exitCode = 1;
         return;
@@ -340,7 +459,7 @@ export function createProgram(): Command {
       },
     );
 
-  program
+  const fleetCommand = program
     .command('fleet')
     .description(
       'Run one wake daemon per project on this machine (hub dispatches, no editor needed)',
@@ -400,6 +519,239 @@ export function createProgram(): Command {
           process.stderr.write(`[zhunzou] fleet failed: ${(error as Error).message}\n`);
           process.exitCode = 1;
         }
+      },
+    );
+
+  fleetCommand
+    .command('add')
+    .description(
+      'Add one or more project directories to fleet.json (registers the project without opening an editor)',
+    )
+    .argument('<path...>', 'project directory')
+    .option('--env <name>', 'agent env (only with a single path; derived from the project otherwise)')
+    .option('--project <name>', 'project name reported to the hub')
+    .option(
+      '--adapter <name>',
+      `local client that handles dispatched tasks: ${WAKE_ADAPTERS.join(' | ')}`,
+    )
+    .option('--token <token>', 'scoped agent token (otherwise minted with an admin token)')
+    .option('--code <code>', 'dashboard enrollment code; mints one scoped token per project')
+    .option('--admin-token <token>', 'admin token used to mint a scoped token')
+    .option('--hub-url <url>', 'hub URL (defaults to fleet.json or HUB_URL)')
+    .option('--file <path>', 'fleet config file (same as fleet --config)')
+    .option('--no-restart', 'do not restart the login daemon')
+    .action(
+      async (
+        paths: string[],
+        options: {
+          env?: string;
+          project?: string;
+          adapter?: string;
+          token?: string;
+          code?: string;
+          adminToken?: string;
+          hubUrl?: string;
+          file?: string;
+          restart?: boolean;
+        },
+        command: Command,
+      ) => {
+        if (options.env && paths.length > 1) {
+          process.stderr.write('[zhunzou] --env 只能和单个目录一起用\n');
+          process.exitCode = 1;
+          return;
+        }
+        if (
+          options.adapter &&
+          !(WAKE_ADAPTERS as readonly string[]).includes(options.adapter)
+        ) {
+          process.stderr.write(
+            `[zhunzou] 未知 adapter ${options.adapter}；可选 ${WAKE_ADAPTERS.join(', ')}\n`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+
+        const configPath = fleetConfigPathOf(options, command);
+        let file;
+        try {
+          file = readFleetFile(configPath);
+        } catch (error) {
+          process.stderr.write(`[zhunzou] ${(error as Error).message}\n`);
+          process.exitCode = 1;
+          return;
+        }
+
+        const hubUrl = (
+          options.hubUrl ??
+          file.hubUrl ??
+          process.env.HUB_URL ??
+          DEFAULT_HUB_URL
+        ).replace(/\/+$/, '');
+        const adminToken =
+          options.adminToken ?? file.adminToken ?? process.env.HUB_SECRET_TOKEN ?? '';
+
+        const entries: FleetProjectEntry[] = [];
+        for (const raw of paths) {
+          const absolute = resolve(expandHome(raw));
+          if (!existsSync(absolute)) {
+            process.stderr.write(`[zhunzou] 目录不存在：${absolute}\n`);
+            process.exitCode = 1;
+            return;
+          }
+          const project =
+            options.project ??
+            detectWorkspaceProject(absolute) ??
+            basename(absolute);
+          const adapter = options.adapter ?? 'auto';
+          const env =
+            options.env ??
+            `${ADAPTER_ENV_PREFIX[adapter] ?? 'agent'}-${envSlug(project) || 'project'}`;
+
+          let token =
+            options.token ??
+            file.projects.find((item) => item.env === env)?.token;
+          if (!token && options.code) {
+            try {
+              token = await exchangeEnrollment(
+                hubUrl,
+                options.code,
+                env,
+                agentKindForAdapter(adapter as WakeAdapterName),
+                project,
+              );
+            } catch (error) {
+              process.stderr.write(
+                `[zhunzou] ${env} 兑换接入码失败：${(error as Error).message}\n`,
+              );
+              process.exitCode = 1;
+              return;
+            }
+          }
+          if (!token && adminToken) {
+            token =
+              (await mintAgentToken(hubUrl, env, adminToken).catch(
+                () => null,
+              )) ?? undefined;
+          }
+
+          entries.push({
+            env,
+            path: absolute,
+            project,
+            adapter,
+            ...(token ? { token } : {}),
+          });
+        }
+
+        const result = addFleetProjects({
+          projects: entries,
+          hubUrl,
+          configPath,
+        });
+        for (const project of result.added) {
+          process.stdout.write(
+            `✓ 已添加 ${project.env} → ${project.path}（项目 ${project.project}，adapter ${project.adapter}）\n`,
+          );
+        }
+        for (const project of result.updated) {
+          process.stdout.write(
+            `✓ 已更新 ${project.env} → ${project.path}（项目 ${project.project}，adapter ${project.adapter}）\n`,
+          );
+        }
+        const missing = entries.filter((entry) => !entry.token);
+        if (missing.length > 0) {
+          process.stdout.write(
+            `· ${missing.map((entry) => entry.env).join('、')} 还没有专属 Token：` +
+              '加 --code（看板接入码）或 --admin-token，或签发后用 --token 重跑\n',
+          );
+        }
+        process.stdout.write(`· 配置：${result.configPath}\n`);
+
+        if (options.restart !== false) {
+          const stored = readServiceConfig();
+          if (!stored) {
+            process.stdout.write(
+              '· 常驻服务未安装；先运行 init --service，或直接 zhunzou-bridge fleet\n',
+            );
+          } else {
+            const primary = result.file.projects[0];
+            const restarted = installService({
+              ...stored,
+              mode: 'fleet',
+              fleetConfig: result.configPath,
+              hubUrl,
+              ...(primary ? { env: primary.env } : {}),
+              ...(primary?.token ? { token: primary.token } : {}),
+            });
+            process.stdout.write(`✓ ${restarted.message}\n`);
+          }
+        }
+      },
+    );
+
+  fleetCommand
+    .command('list')
+    .description('List the projects in fleet.json')
+    .option('--file <path>', 'fleet config file (same as fleet --config)')
+    .action((options: { file?: string }, command: Command) => {
+      const configPath = fleetConfigPathOf(options, command);
+      let file;
+      try {
+        file = readFleetFile(configPath);
+      } catch (error) {
+        process.stderr.write(`[zhunzou] ${(error as Error).message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      if (file.projects.length === 0) {
+        process.stdout.write(
+          `fleet.json 里还没有项目（${configPath}）；用 zhunzou-bridge fleet add <path> 添加\n`,
+        );
+        return;
+      }
+      process.stdout.write(`hub: ${file.hubUrl ?? '(未设置)'}\n`);
+      for (const project of file.projects) {
+        const token = project.token ? `${project.token.slice(0, 10)}…` : '（未签发）';
+        process.stdout.write(
+          `${project.env}\t${project.path}\t${project.project ?? '-'}\t${project.adapter ?? file.adapter ?? 'auto'}\t${token}\n`,
+        );
+      }
+    });
+
+  fleetCommand
+    .command('remove')
+    .description('Remove a project from fleet.json by env')
+    .argument('<env>', 'agent env to remove')
+    .option('--file <path>', 'fleet config file (same as fleet --config)')
+    .option('--no-restart', 'do not restart the login daemon')
+    .action(
+      (env: string, options: { file?: string; restart?: boolean }, command: Command) => {
+        const configPath = fleetConfigPathOf(options, command);
+        const removed = removeFleetProject(env, configPath);
+        if (!removed) {
+          process.stderr.write(`[zhunzou] fleet.json 里没有 ${env}\n`);
+          process.exitCode = 1;
+          return;
+        }
+        process.stdout.write(`✓ 已从 ${configPath} 移除 ${env}\n`);
+
+        if (options.restart === false) return;
+        const stored = readServiceConfig();
+        if (!stored) return;
+        const remaining = readFleetFile(configPath).projects;
+        if (remaining.length === 0) {
+          process.stdout.write(
+            '· 已无项目，常驻服务未重启；可运行 zhunzou-bridge service uninstall 停掉它\n',
+          );
+          return;
+        }
+        const restarted = installService({
+          ...stored,
+          mode: 'fleet',
+          fleetConfig: configPath,
+        });
+        process.stdout.write(`✓ ${restarted.message}\n`);
       },
     );
 
