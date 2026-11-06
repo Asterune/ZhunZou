@@ -1183,8 +1183,13 @@ export class TicketRepository implements TicketStore {
     if (!row) return false;
     if (row.expiresAt <= now) return false;
 
+    const usedEnvs = parseUsedEnvs(row.usedEnvs ?? null);
+    // Re-installing a client this code already enrolled is idempotent: rotate
+    // its token without spending another slot, so repeated runs never exhaust
+    // the code and never create `-2` ghosts.
+    const already = usedEnvs.includes(usedEnv);
     const useCount = row.useCount ?? 0;
-    if (useCount >= (row.maxUses ?? 1)) return false;
+    if (!already && useCount >= (row.maxUses ?? 1)) return false;
     // A code belongs to one machine. Reusing it from another host would let a
     // leaked link enroll someone else's computer, so keep the first host.
     // Host names are case-insensitive; compare them normalized.
@@ -1196,8 +1201,7 @@ export class TicketRepository implements TicketStore {
       return false;
     }
 
-    const usedEnvs = parseUsedEnvs(row.usedEnvs ?? null);
-    if (!usedEnvs.includes(usedEnv)) usedEnvs.push(usedEnv);
+    if (!already) usedEnvs.push(usedEnv);
 
     const result = this.db
       .update(enrollmentCodes)
@@ -1205,7 +1209,7 @@ export class TicketRepository implements TicketStore {
         usedAt: now,
         usedEnv,
         ...(usedHost ? { usedHost } : {}),
-        useCount: useCount + 1,
+        useCount: already ? useCount : useCount + 1,
         usedEnvs: JSON.stringify(usedEnvs),
       })
       .where(

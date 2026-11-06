@@ -155,7 +155,7 @@ Codes expire after 15 minutes and can enroll up to 10 clients on the same machin
 
 Each env gets its own token and dashboard card, so heartbeats no longer overwrite each other; one project can be bound to several envs. The login daemon switches to `fleet` and keeps every env online (`~/.zhunzou/fleet.json`). Pass `--env` or `--agent-kind` to pin one shared identity instead.
 
-Leave the enrollment dialog's environment field empty so each client derives `<kind>-<project or host>`; if you set it, that name becomes the base and later clients get `-2`, `-3` suffixes.
+Leave the enrollment dialog's environment field empty so each client derives `<kind>-<project or host>`; if you set it (for example `office`), each client becomes `office-cursor`, `office-opencode`, `office-claude`, `office-codex`, and re-running the installer refreshes that card instead of adding `-2`.
 
 Codex only reads the user-level `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`); `init` writes or replaces `[mcp_servers.zhunzou]` and leaves other servers untouched.
 

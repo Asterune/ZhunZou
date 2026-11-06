@@ -166,10 +166,10 @@ describe('one-click enrollment', () => {
     }
   });
 
-  it('re-running the installer refreshes the same envs instead of adding ghosts', async () => {
+  it('re-running the installer refreshes the same envs without spending slots', async () => {
     const ctx = await createTestContext();
     try {
-      const created = await createCode(ctx, { maxUses: 8 });
+      const created = await createCode(ctx, { maxUses: 2 });
       const enroll = async (env: string) => {
         const response = await redeem(ctx, {
           code: created.enrollment.code,
@@ -186,14 +186,43 @@ describe('one-click enrollment', () => {
       expect(again.env).toBe(first.env);
       expect(again.token).not.toBe(first.token);
 
+      // A repeat does not burn the budget: one slot is still available.
+      const second = await enroll('cursor-lq-two');
+      expect(second.env).toBe('cursor-lq-two');
+
       const agents = await ctx.app.inject({
         method: 'GET',
         url: '/api/agents',
         headers: ctx.auth,
       });
-      expect((agents.json().agents as Agent[]).map((agent) => agent.env)).toEqual([
-        'cursor-lq',
-      ]);
+      expect(
+        (agents.json().agents as Agent[]).map((agent) => agent.env).sort(),
+      ).toEqual(['cursor-lq', 'cursor-lq-two']);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('splits a bound env per client when the code has several slots', async () => {
+    const ctx = await createTestContext();
+    try {
+      const created = await createCode(ctx, { env: '公司', maxUses: 6 });
+      const enroll = async (kind: string) => {
+        const response = await redeem(ctx, {
+          code: created.enrollment.code,
+          host: 'lq-desktop',
+          kind,
+        });
+        expect(response.statusCode).toBe(200);
+        return (response.json() as EnrollResponse).env;
+      };
+
+      expect(await enroll('cursor')).toBe('公司-cursor');
+      expect(await enroll('opencode')).toBe('公司-opencode');
+      expect(await enroll('claude-code')).toBe('公司-claude');
+      expect(await enroll('codex')).toBe('公司-codex');
+      // Same client again: same env, not `公司-cursor-2`.
+      expect(await enroll('cursor')).toBe('公司-cursor');
     } finally {
       await ctx.close();
     }
@@ -202,7 +231,7 @@ describe('one-click enrollment', () => {
   it('respects the env bound to the code and suffixes collisions', async () => {
     const ctx = await createTestContext();
     try {
-      const first = await createCode(ctx, { env: 'company-windows' });
+      const first = await createCode(ctx, { env: 'company-windows', maxUses: 1 });
       const one = await redeem(ctx, {
         code: first.enrollment.code,
         env: 'ignored-by-server',
@@ -212,7 +241,7 @@ describe('one-click enrollment', () => {
       expect(one.statusCode).toBe(200);
       expect((one.json() as EnrollResponse).env).toBe('company-windows');
 
-      const second = await createCode(ctx, { env: 'company-windows' });
+      const second = await createCode(ctx, { env: 'company-windows', maxUses: 1 });
       const two = await redeem(ctx, {
         code: second.enrollment.code,
         host: 'lq',

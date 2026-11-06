@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -7,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, platform } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, win32 } from 'node:path';
 
 /**
  * Optional开机常驻: keep one `wake` loop running so a machine stays online
@@ -193,10 +194,31 @@ WantedBy=default.target
 `;
 }
 
-function windowsCommand(config: ServiceConfig): string {
-  const command = [config.nodePath, ...serviceCommand(config)]
-    .map((arg) => `"${arg}"`)
-    .join(' ');
+/** Per-user Startup shortcut, used when schtasks is unavailable. */
+export function windowsStartupPath(
+  appData = process.env.APPDATA,
+): string | null {
+  if (!appData) return null;
+  // Always Windows separators: this path only exists on win32, and win32.join
+  // keeps the function testable from macOS/Linux CI.
+  return win32.join(
+    appData,
+    'Microsoft',
+    'Windows',
+    'Start Menu',
+    'Programs',
+    'Startup',
+    'zhunzou-bridge.cmd',
+  );
+}
+
+export function renderWindowsServiceCommand(config: ServiceConfig): string {
+  const node = `"${config.nodePath}"`;
+  const cli = `"${config.cliPath}"`;
+  const run =
+    config.mode === 'fleet'
+      ? `${node} ${cli} fleet --config "${config.fleetConfig ?? join(homedir(), '.zhunzou', 'fleet.json')}"`
+      : `${node} ${cli} wake --cwd "${config.cwd}"`;
   const lines = [
     '@echo off',
     `set "HUB_URL=${config.hubUrl}"`,
@@ -207,7 +229,7 @@ function windowsCommand(config: ServiceConfig): string {
       ? [`set "ZHUNZOU_PROJECT=${config.projectName}"`]
       : []),
     `cd /d "${serviceCwd(config)}"`,
-    command,
+    run,
   ];
   return `${lines.join('\r\n')}\r\n`;
 }
@@ -262,20 +284,45 @@ export function installService(config: ServiceConfig): ServiceInstallResult {
   if (os === 'win32') {
     const file = join(homedir(), '.zhunzou', 'bridge-service.cmd');
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, windowsCommand(config), 'utf8');
+    writeFileSync(file, renderWindowsServiceCommand(config), 'utf8');
     run('schtasks', ['/Delete', '/TN', WINDOWS_TASK, '/F'], true);
     const started = run(
       'schtasks',
       ['/Create', '/F', '/SC', 'ONLOGON', '/TN', WINDOWS_TASK, '/TR', `"${file}"`],
       true,
     );
+    if (started) {
+      return {
+        platform: os,
+        file,
+        started,
+        message: `已注册登录时自启（计划任务 ZhunzouBridge${modeSuffix(config)}）`,
+      };
+    }
+
+    // Locked-down machines (or non-admin sessions) reject schtasks. The
+    // per-user Startup folder needs no elevation and is the next best thing.
+    const shortcut = windowsStartupPath();
+    if (shortcut) {
+      try {
+        mkdirSync(dirname(shortcut), { recursive: true });
+        copyFileSync(file, shortcut);
+        return {
+          platform: os,
+          file: shortcut,
+          started: true,
+          message: `计划任务不可用，已加入启动文件夹（下次登录生效；立即启动：start "" "${file}"${modeSuffix(config)}）`,
+        };
+      } catch {
+        // Fall through to the manual instruction below.
+      }
+    }
+
     return {
       platform: os,
       file,
-      started,
-      message: started
-        ? `已注册登录时自启（计划任务 ZhunzouBridge${modeSuffix(config)}）`
-        : `已写入 ${file}，但 schtasks 创建失败；可手动把它加入启动项`,
+      started: false,
+      message: `已写入 ${file}，但 schtasks 创建失败；可在“运行”里执行 shell:startup，把该文件放进启动文件夹`,
     };
   }
 
@@ -308,7 +355,9 @@ export function uninstallService(): ServiceInstallResult {
     const file = join(homedir(), '.zhunzou', 'bridge-service.cmd');
     run('schtasks', ['/Delete', '/TN', WINDOWS_TASK, '/F'], true);
     rmSync(file, { force: true });
-    return { platform: os, file, started: false, message: '已移除登录自启（计划任务）' };
+    const startup = windowsStartupPath();
+    if (startup) rmSync(startup, { force: true });
+    return { platform: os, file, started: false, message: '已移除登录自启（计划任务 / 启动文件夹）' };
   }
   return { platform: os, started: false, message: '当前系统没有可移除的常驻服务。' };
 }
@@ -332,9 +381,12 @@ export function serviceStatus(): string {
   }
   if (os === 'win32') {
     const file = join(homedir(), '.zhunzou', 'bridge-service.cmd');
-    return existsSync(file)
-      ? `已安装：计划任务 ${WINDOWS_TASK}（env=${config.env}）`
-      : '配置存在但未找到启动脚本。';
+    if (!existsSync(file)) return '配置存在但未找到启动脚本。';
+    const startup = windowsStartupPath();
+    const viaStartup = startup ? existsSync(startup) : false;
+    return viaStartup
+      ? `已安装：启动文件夹 zhunzou-bridge.cmd（env=${config.env}）`
+      : `已安装：计划任务 ${WINDOWS_TASK}（env=${config.env}）`;
   }
   return `配置存在，但 ${os} 不支持自动常驻。`;
 }

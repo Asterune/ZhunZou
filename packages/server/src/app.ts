@@ -74,6 +74,7 @@ import { createAuthHook, hashToken, requireAdmin, requireEnvAccess } from './aut
 import type { ServerConfig } from './config.js';
 import { createDatabase } from './db/client.js';
 import {
+  clientPrefix,
   createEnrollmentRateLimiter,
   generateEnrollmentCode,
   hashEnrollmentCode,
@@ -833,10 +834,16 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
     const kind = input.kind ?? enrollment.kind ?? 'other';
     const projectName = input.projectName ?? enrollment.projectName;
-    const baseEnv =
-      enrollment.env ??
-      input.env ??
-      `${kind}-${slugifyHost(input.host) || 'device'}`;
+
+    // A code with a bound env ("公司") is the machine's display name, not an
+    // identity shared by every client. With several slots each client gets
+    // `<env>-<client>`; single-use codes keep the exact name for compatibility.
+    const boundEnv = enrollment.env;
+    const baseEnv = boundEnv
+      ? enrollment.maxUses > 1
+        ? `${boundEnv}-${clientPrefix(kind)}`.slice(0, 64)
+        : boundEnv
+      : input.env ?? `${kind}-${slugifyHost(input.host) || 'device'}`;
 
     // Re-running the installer on the same machine should refresh the existing
     // cards, not create `cursor-host-2` ghosts. An env this code already

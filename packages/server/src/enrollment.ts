@@ -39,6 +39,21 @@ export function slugifyHost(raw: string | undefined): string {
     .slice(0, 40);
 }
 
+const CLIENT_PREFIXES: Record<string, string> = {
+  cursor: 'cursor',
+  opencode: 'opencode',
+  'claude-code': 'claude',
+  codex: 'codex',
+  gemini: 'gemini',
+  windsurf: 'windsurf',
+  other: 'agent',
+};
+
+/** Short, stable suffix for `公司-<client>` when several clients share a code. */
+export function clientPrefix(kind: string): string {
+  return CLIENT_PREFIXES[kind] ?? 'agent';
+}
+
 /**
  * Small in-memory brute-force guard for the public exchange endpoint.
  * Single-process deployment is an explicit design constraint of the hub, so a

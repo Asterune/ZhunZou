@@ -514,7 +514,7 @@ irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 
 想回到「一个 env 写进所有客户端」的旧行为，显式传 `--env` 或 `--agent-kind` 即可。
 
-生成接入码时把「环境标识」留空，各客户端会按 `<kind>-<项目或主机>` 自动命名；若填了环境名，它会作为这台设备的基础名，后续客户端依次得到 `-2`、`-3` 后缀。
+生成接入码时把「环境标识」留空，各客户端会按 `<kind>-<项目或主机>` 自动命名；若填了环境名（例如「公司」），每个客户端会得到 `公司-cursor`、`公司-opencode`、`公司-claude`、`公司-codex`，同一客户端重跑会复用原卡而不会产生 `-2`。
 
 Codex 只读用户级配置 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`），`init` 会写入或替换其中的 `[mcp_servers.zhunzou]` 段，不影响其它 server。
 
