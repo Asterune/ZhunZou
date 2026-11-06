@@ -124,6 +124,26 @@ The image serves the dashboard and API from one port and persists SQLite + rules
 
 ## Connect an agent
 
+### One-click (recommended for end users)
+
+Open **Agents → One-click connect** in the dashboard, optionally name the environment, and copy one of the generated commands:
+
+```bash
+# macOS / Linux
+curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash
+```
+
+```powershell
+# Windows PowerShell
+irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
+```
+
+The command provisions Node 20+ (a portable runtime with SHA256 verification when Node is missing), downloads the matching bridge release, exchanges the single-use code for a scoped device token, writes user-level Cursor / OpenCode / Claude Code config, and registers a login daemon. The end user never sees `HUB_SECRET_TOKEN` and never clones the repo.
+
+Codes expire after 15 minutes and can be redeemed once. Add `--no-service` to skip the daemon and stay online only while the editor is open.
+
+### Manual setup (developers)
+
 ```bash
 npx -y zhunzou-bridge init
 ```

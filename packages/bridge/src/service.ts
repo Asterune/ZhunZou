@@ -1,0 +1,307 @@
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, platform } from 'node:os';
+import { dirname, join } from 'node:path';
+
+/**
+ * Optional开机常驻: keep one `wake` loop running so a machine stays online
+ * even when the editor is closed.
+ *
+ * This is deliberately small: one service per machine, config cached in
+ * `~/.zhunzou/service.json`, and the platform's native supervisor does the
+ * rest (launchd / systemd --user / Scheduled Task). Failures are reported but
+ * never abort the MCP setup — a missing service only means "online while the
+ * editor is open".
+ */
+
+export interface ServiceConfig {
+  env: string;
+  hubUrl: string;
+  token: string;
+  cwd: string;
+  adapter: string;
+  cliPath: string;
+  nodePath: string;
+  projectName?: string;
+}
+
+export interface ServiceInstallResult {
+  platform: NodeJS.Platform;
+  /** File written to disk, for `--print` / debugging. */
+  file?: string;
+  started: boolean;
+  message: string;
+}
+
+const MAC_LABEL = 'com.zhunzou.bridge';
+const SYSTEMD_UNIT = 'zhunzou-bridge.service';
+const WINDOWS_TASK = 'ZhunzouBridge';
+
+export function serviceConfigPath(): string {
+  return join(homedir(), '.zhunzou', 'service.json');
+}
+
+export function readServiceConfig(): ServiceConfig | null {
+  const path = serviceConfigPath();
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as ServiceConfig;
+  } catch {
+    return null;
+  }
+}
+
+function writeServiceConfig(config: ServiceConfig): void {
+  const path = serviceConfigPath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** systemd Environment= handling: quote anything with whitespace/quotes. */
+function systemdValue(value: string): string {
+  if (/[\s"'\\]/.test(value)) {
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  }
+  return value;
+}
+
+function run(command: string, args: string[], allowFailure = false): boolean {
+  try {
+    execFileSync(command, args, { stdio: 'ignore' });
+    return true;
+  } catch (error) {
+    if (allowFailure) return false;
+    throw error;
+  }
+}
+
+function macPlist(config: ServiceConfig): string {
+  const logs = join(homedir(), 'Library', 'Logs');
+  const environment: Array<[string, string]> = [
+    ['HUB_URL', config.hubUrl],
+    ['HUB_TOKEN', config.token],
+    ['AGENT_ENV', config.env],
+    ['ZHUNZOU_WAKE_ADAPTER', config.adapter],
+    ...(config.projectName
+      ? ([['ZHUNZOU_PROJECT', config.projectName]] as Array<[string, string]>)
+      : []),
+  ];
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${MAC_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${xmlEscape(config.nodePath)}</string>
+    <string>${xmlEscape(config.cliPath)}</string>
+    <string>wake</string>
+    <string>--cwd</string>
+    <string>${xmlEscape(config.cwd)}</string>
+  </array>
+  <key>WorkingDirectory</key><string>${xmlEscape(config.cwd)}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+${environment
+  .map(
+    ([key, value]) =>
+      `    <key>${key}</key><string>${xmlEscape(value)}</string>`,
+  )
+  .join('\n')}
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>${xmlEscape(join(logs, 'zhunzou-bridge.out.log'))}</string>
+  <key>StandardErrorPath</key><string>${xmlEscape(join(logs, 'zhunzou-bridge.err.log'))}</string>
+</dict>
+</plist>
+`;
+}
+
+function systemdUnit(config: ServiceConfig): string {
+  const environment = [
+    `Environment=HUB_URL=${systemdValue(config.hubUrl)}`,
+    `Environment=HUB_TOKEN=${systemdValue(config.token)}`,
+    `Environment=AGENT_ENV=${systemdValue(config.env)}`,
+    `Environment=ZHUNZOU_WAKE_ADAPTER=${systemdValue(config.adapter)}`,
+    ...(config.projectName
+      ? [`Environment=ZHUNZOU_PROJECT=${systemdValue(config.projectName)}`]
+      : []),
+  ].join('\n');
+
+  return `[Unit]
+Description=Zhunzou bridge (${config.env})
+After=network-online.target
+
+[Service]
+Type=simple
+${environment}
+WorkingDirectory=${config.cwd}
+ExecStart=${systemdValue(config.nodePath)} ${systemdValue(config.cliPath)} wake --cwd ${systemdValue(config.cwd)}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+function windowsCommand(config: ServiceConfig): string {
+  const lines = [
+    '@echo off',
+    `set "HUB_URL=${config.hubUrl}"`,
+    `set "HUB_TOKEN=${config.token}"`,
+    `set "AGENT_ENV=${config.env}"`,
+    `set "ZHUNZOU_WAKE_ADAPTER=${config.adapter}"`,
+    ...(config.projectName
+      ? [`set "ZHUNZOU_PROJECT=${config.projectName}"`]
+      : []),
+    `cd /d "${config.cwd}"`,
+    `"${config.nodePath}" "${config.cliPath}" wake --cwd "${config.cwd}"`,
+  ];
+  return `${lines.join('\r\n')}\r\n`;
+}
+
+export function installService(config: ServiceConfig): ServiceInstallResult {
+  writeServiceConfig(config);
+  const os = platform();
+
+  if (os === 'darwin') {
+    const file = join(homedir(), 'Library', 'LaunchAgents', `${MAC_LABEL}.plist`);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, macPlist(config), 'utf8');
+    run('launchctl', ['unload', '-w', file], true);
+    const started = run('launchctl', ['load', '-w', file], true);
+    return {
+      platform: os,
+      file,
+      started,
+      message: started
+        ? `已注册开机自启（launchd: ${MAC_LABEL}）`
+        : `已写入 ${file}，但 launchctl 加载失败；可手动执行 launchctl load -w "${file}"`,
+    };
+  }
+
+  if (os === 'linux') {
+    const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+    const file = join(configHome, 'systemd', 'user', SYSTEMD_UNIT);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, systemdUnit(config), 'utf8');
+
+    const hasSystemd = run('systemctl', ['--user', 'daemon-reload'], true);
+    if (!hasSystemd) {
+      return {
+        platform: os,
+        file,
+        started: false,
+        message: `已写入 ${file}，但当前环境没有 systemd --user；可手动用 systemctl --user enable --now ${SYSTEMD_UNIT} 启动`,
+      };
+    }
+    run('systemctl', ['--user', 'enable', SYSTEMD_UNIT], true);
+    const started = run('systemctl', ['--user', 'restart', SYSTEMD_UNIT], true);
+    return {
+      platform: os,
+      file,
+      started,
+      message: started
+        ? '已注册开机自启（systemd --user）'
+        : `已启用 ${SYSTEMD_UNIT}，但启动失败；查看 journalctl --user -u ${SYSTEMD_UNIT}`,
+    };
+  }
+
+  if (os === 'win32') {
+    const file = join(homedir(), '.zhunzou', 'bridge-service.cmd');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, windowsCommand(config), 'utf8');
+    run('schtasks', ['/Delete', '/TN', WINDOWS_TASK, '/F'], true);
+    const started = run(
+      'schtasks',
+      ['/Create', '/F', '/SC', 'ONLOGON', '/TN', WINDOWS_TASK, '/TR', `"${file}"`],
+      true,
+    );
+    return {
+      platform: os,
+      file,
+      started,
+      message: started
+        ? '已注册登录时自启（计划任务 ZhunzouBridge）'
+        : `已写入 ${file}，但 schtasks 创建失败；可手动把它加入启动项`,
+    };
+  }
+
+  return {
+    platform: os,
+    started: false,
+    message: `当前系统 ${os} 暂不支持自动常驻；设备只在编辑器打开时在线。`,
+  };
+}
+
+export function uninstallService(): ServiceInstallResult {
+  const os = platform();
+  if (os === 'darwin') {
+    const file = join(homedir(), 'Library', 'LaunchAgents', `${MAC_LABEL}.plist`);
+    if (existsSync(file)) {
+      run('launchctl', ['unload', '-w', file], true);
+      rmSync(file, { force: true });
+    }
+    return { platform: os, file, started: false, message: '已移除开机自启（launchd）' };
+  }
+  if (os === 'linux') {
+    const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+    const file = join(configHome, 'systemd', 'user', SYSTEMD_UNIT);
+    run('systemctl', ['--user', 'disable', '--now', SYSTEMD_UNIT], true);
+    rmSync(file, { force: true });
+    run('systemctl', ['--user', 'daemon-reload'], true);
+    return { platform: os, file, started: false, message: '已移除开机自启（systemd）' };
+  }
+  if (os === 'win32') {
+    const file = join(homedir(), '.zhunzou', 'bridge-service.cmd');
+    run('schtasks', ['/Delete', '/TN', WINDOWS_TASK, '/F'], true);
+    rmSync(file, { force: true });
+    return { platform: os, file, started: false, message: '已移除登录自启（计划任务）' };
+  }
+  return { platform: os, started: false, message: '当前系统没有可移除的常驻服务。' };
+}
+
+export function serviceStatus(): string {
+  const config = readServiceConfig();
+  if (!config) return '未安装常驻服务（仅编辑器打开时在线）。';
+  const os = platform();
+  if (os === 'darwin') {
+    const file = join(homedir(), 'Library', 'LaunchAgents', `${MAC_LABEL}.plist`);
+    return existsSync(file)
+      ? `已安装：launchd ${MAC_LABEL}（env=${config.env}）`
+      : '配置存在但未找到 launchd plist。';
+  }
+  if (os === 'linux') {
+    const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+    const file = join(configHome, 'systemd', 'user', SYSTEMD_UNIT);
+    return existsSync(file)
+      ? `已安装：systemd --user ${SYSTEMD_UNIT}（env=${config.env}）`
+      : '配置存在但未找到 systemd unit。';
+  }
+  if (os === 'win32') {
+    const file = join(homedir(), '.zhunzou', 'bridge-service.cmd');
+    return existsSync(file)
+      ? `已安装：计划任务 ${WINDOWS_TASK}（env=${config.env}）`
+      : '配置存在但未找到启动脚本。';
+  }
+  return `配置存在，但 ${os} 不支持自动常驻。`;
+}
+
+

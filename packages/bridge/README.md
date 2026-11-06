@@ -11,7 +11,24 @@ pnpm install
 pnpm build          # 构建 shared + server + bridge
 ```
 
-### 一键接入向导
+### 一键接入（接入码）
+
+在控制台「接入端 → 一键接入」生成命令后，目标机器只需运行一条：
+
+```bash
+# macOS / Linux
+curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash
+# Windows PowerShell
+irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
+```
+
+脚本会自动准备 Node、下载 bridge、用一次性接入码换 scoped Token、写用户级配置并注册常驻服务。也可以直接调用 init：
+
+```bash
+npx zhunzou-bridge init --hub-url https://hub.example.com --code ABCDE-FGHIJ --yes --global --service
+```
+
+### 交互式接入向导
 
 ```bash
 npx zhunzou-bridge init

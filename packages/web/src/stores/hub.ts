@@ -4,8 +4,10 @@ import type {
   Agent,
   AgentTask,
   CreateAgentInput,
+  CreateEnrollmentInput,
   CreateTaskInput,
   DecisionTicket,
+  EnrollmentResponse,
   EnvHeartbeat,
   Exchange,
   ResolveTicketInput,
@@ -653,6 +655,18 @@ export function createHubStore(api: HubApi = hubApi) {
     }
   }
 
+  /** Mint a one-time code + one-line commands for a new device. */
+  async function createEnrollment(
+    input: CreateEnrollmentInput = {},
+  ): Promise<EnrollmentResponse | null> {
+    try {
+      return await api.createEnrollment(token.value, input);
+    } catch (error) {
+      fail(error, t('store.enrollmentCreateFailed'));
+      return null;
+    }
+  }
+
   async function updateAgent(
     env: string,
     patch: UpdateAgentInput,
@@ -876,6 +890,7 @@ export function createHubStore(api: HubApi = hubApi) {
     bindProject,
     unbindProject,
     registerAgent,
+    createEnrollment,
     updateAgent,
     deleteAgent,
     issueAgentToken,

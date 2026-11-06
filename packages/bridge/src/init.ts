@@ -1,4 +1,4 @@
-import { hostname } from 'node:os';
+import { arch, homedir, hostname, platform } from 'node:os';
 import {
   copyFileSync,
   existsSync,
@@ -11,6 +11,9 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 import type { AgentKind } from '@zhunzou/shared';
+
+import { installService } from './service.js';
+import { BRIDGE_VERSION } from './version.js';
 
 export type InitTarget = 'cursor' | 'opencode' | 'claude' | 'all';
 
@@ -41,6 +44,12 @@ export interface InitOptions {
   agentKind?: string;
   /** Keep using the admin token instead of provisioning a scoped one. */
   noAgentToken?: boolean;
+  /** One-time code from the dashboard; replaces HUB_TOKEN entirely. */
+  code?: string;
+  /** Write editor configs into the user's global config, not the workspace. */
+  global?: boolean;
+  /** Register a login-time daemon so the device stays online. */
+  service?: boolean;
 }
 
 const DEFAULT_HUB_URL = 'http://127.0.0.1:8787';
@@ -52,9 +61,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function localBin(name: 'mcp' | 'cli'): string | null {
-  const path = fileURLToPath(new URL(`../bin/${name}.js`, import.meta.url));
-  // npx caches are temporary; prefer the stable npm package name there.
-  return existsSync(path) && !path.includes('_npx') ? path : null;
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Layouts we may be running from:
+  //   standalone one-click bundle → <dir>/mcp.mjs (flat)
+  //   source / npm package        → <dir>/../bin/mcp.js
+  const candidates = [
+    join(here, `${name}.mjs`),
+    join(here, '..', 'bin', `${name}.js`),
+  ];
+  for (const candidate of candidates) {
+    // npx caches are temporary; prefer the stable npm package name there.
+    if (existsSync(candidate) && !candidate.includes('_npx')) return candidate;
+  }
+  return null;
 }
 
 export function buildSettings(
@@ -67,8 +86,10 @@ export function buildSettings(
     agentKind?: AgentKind;
   },
 ): InitSettings {
-  const mcpBin = localBin('mcp');
-  const cliBin = localBin('cli');
+  // The one-click bootstrap pins the stable root entry points so an upgrade
+  // can flip `current.json` without rewriting editor configs.
+  const mcpBin = process.env.ZHUNZOU_MCP_BIN || localBin('mcp');
+  const cliBin = process.env.ZHUNZOU_CLI_BIN || localBin('cli');
 
   return {
     hubUrl: input.hubUrl.trim().replace(/\/+$/, ''),
@@ -281,6 +302,109 @@ async function provisionAgentToken(
   return typeof body?.token === 'string' && body.token ? body.token : null;
 }
 
+/**
+ * Exchange a one-time dashboard code for a scoped agent token.
+ *
+ * This is the only network call a one-click install needs before writing
+ * configs: it both proves connectivity and removes the admin token from the
+ * end user's machine.
+ */
+async function exchangeEnrollmentCode(input: {
+  hubUrl: string;
+  code: string;
+  env: string;
+  host: string;
+  os: string;
+  kind: AgentKind;
+  projectName?: string;
+  version?: string;
+}): Promise<{ token: string; env: string; projectName?: string }> {
+  const response = await fetch(
+    `${input.hubUrl.replace(/\/+$/, '')}/api/enroll`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        code: input.code.trim(),
+        env: input.env,
+        host: input.host,
+        os: input.os,
+        kind: input.kind,
+        ...(input.projectName ? { projectName: input.projectName } : {}),
+        ...(input.version ? { version: input.version } : {}),
+      }),
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+
+  const body = (await response.json().catch(() => null)) as
+    | {
+        token?: unknown;
+        env?: unknown;
+        projectName?: unknown;
+        error?: { message?: unknown };
+      }
+    | null;
+
+  if (!response.ok) {
+    const message =
+      typeof body?.error?.message === 'string'
+        ? body.error.message
+        : `接入码兑换失败（HTTP ${response.status}）`;
+    throw new Error(message);
+  }
+  if (typeof body?.token !== 'string' || !body.token) {
+    throw new Error('服务端未返回 Token，请确认 hub 已升级到支持一键接入的版本');
+  }
+
+  return {
+    token: body.token,
+    env: typeof body.env === 'string' && body.env ? body.env : input.env,
+    ...(typeof body.projectName === 'string' && body.projectName
+      ? { projectName: body.projectName }
+      : {}),
+  };
+}
+
+/** Global (user-level) config locations, so one install covers all projects. */
+function globalTargetDir(target: Exclude<InitTarget, 'all'>): string {
+  const configHome =
+    process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+  if (target === 'cursor') return join(homedir(), '.cursor');
+  if (target === 'opencode') return join(configHome, 'opencode');
+  return homedir();
+}
+
+function globalConfigFile(target: Exclude<InitTarget, 'all'>): string {
+  if (target === 'cursor') return join(globalTargetDir(target), 'mcp.json');
+  if (target === 'opencode') {
+    return join(globalTargetDir(target), 'opencode.json');
+  }
+  return join(homedir(), '.claude.json');
+}
+
+function globalInstructionFile(target: Exclude<InitTarget, 'all'>): {
+  dir: string;
+  file: string;
+  template: string;
+} | null {
+  if (target === 'opencode') {
+    return {
+      dir: globalTargetDir(target),
+      file: 'AGENTS.md',
+      template: 'AGENTS.md',
+    };
+  }
+  if (target === 'claude') {
+    return {
+      dir: join(homedir(), '.claude'),
+      file: 'CLAUDE.md',
+      template: 'AGENTS.md',
+    };
+  }
+  return null;
+}
+
 async function checkHub(settings: InitSettings): Promise<string> {
   const signal = AbortSignal.timeout(5_000);
 
@@ -406,7 +530,10 @@ async function ask(
 
 export async function runInit(options: InitOptions = {}): Promise<number> {
   const dir = resolve(options.dir ?? process.cwd());
-  const interactive = !options.yes;
+  const enrollmentCode = options.code?.trim();
+  // A code is a complete, non-interactive setup: the installer must not stop
+  // and ask questions on a machine whose owner has never heard of Node.
+  const interactive = !options.yes && !enrollmentCode;
   const rl = interactive
     ? createInterface({ input: process.stdin, output: process.stdout })
     : null;
@@ -418,42 +545,65 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
       options.hubUrl ??
       (rl ? await ask(rl, '云端地址 HUB_URL', DEFAULT_HUB_URL) : DEFAULT_HUB_URL);
 
-    let token = options.token ?? '';
-    if (!token && rl) {
-      token = await ask(
-        rl,
-        'HUB_SECRET_TOKEN（管理员 Token，用于签发该工作区的专属 Token）',
-        '',
-      );
-    }
-    if (!token) {
-      throw new Error('缺少 HUB_TOKEN；请加 --token 或在交互模式下输入');
-    }
-
-    let projectName = options.project;
-    if (projectName === undefined) {
-      // Default to the workspace directory name (the folder the editor opened),
-      // so the dashboard project dropdown is populated without manual input.
-      const defaultProject = basename(dir);
-      projectName = rl
-        ? await ask(rl, '项目名 ZHUNZOU_PROJECT（回车使用工作区目录名）', defaultProject)
-        : defaultProject;
-    }
-
+    // Global installs have no workspace to inspect, so default to all clients.
+    const targetFallback = options.global ? 'all' : detectTarget(dir);
     const target = parseTarget(
       options.target ??
         (rl
-          ? await ask(rl, '写入哪个客户端 cursor / opencode / claude / all', detectTarget(dir))
-          : detectTarget(dir)),
-      detectTarget(dir),
+          ? await ask(
+              rl,
+              '写入哪个客户端 cursor / opencode / claude / all',
+              targetFallback,
+            )
+          : targetFallback),
+      targetFallback,
     );
+
+    const agentKind =
+      parseAgentKind(options.agentKind) ?? kindForTarget(target);
+
+    let token = options.token ?? '';
+    let projectName = options.project;
+
+    // Workspace installs default the project to the folder name; global
+    // installs leave it empty until the first heartbeat reports a workspace.
+    if (!enrollmentCode) {
+      if (!token && rl) {
+        token = await ask(
+          rl,
+          'HUB_SECRET_TOKEN（管理员 Token，用于签发该工作区的专属 Token）',
+          '',
+        );
+      }
+      if (!token) {
+        throw new Error('缺少 HUB_TOKEN；请加 --token 或在交互模式下输入');
+      }
+      if (projectName === undefined) {
+        // Default to the workspace directory name (the folder the editor opened),
+        // so the dashboard project dropdown is populated without manual input.
+        const defaultProject = basename(dir);
+        projectName = rl
+          ? await ask(rl, '项目名 ZHUNZOU_PROJECT（回车使用工作区目录名）', defaultProject)
+          : defaultProject;
+      }
+    }
 
     // Cursor spawns one MCP server per opened workspace. If every workspace
     // shares one AGENT_ENV, their heartbeats overwrite each other and the
     // dashboard only ever shows the most recently active project. Deriving the
     // env from the project keeps each workspace visible as its own agent.
-    const defaultEnv = defaultAgentEnv(target, projectName || basename(dir));
-    const agentEnv =
+    const envPrefix =
+      agentKind === 'cursor'
+        ? 'cursor'
+        : agentKind === 'opencode'
+          ? 'opencode'
+          : agentKind === 'claude-code'
+            ? 'claude'
+            : 'agent';
+    const defaultEnv = enrollmentCode
+      ? `${envPrefix}-${envSlug(projectName || hostname()) || 'device'}`.slice(0, 64)
+      : defaultAgentEnv(target, projectName || basename(dir));
+    let agentEnv =
       options.env ??
       (rl
         ? await ask(
@@ -463,12 +613,32 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
           )
         : defaultEnv);
 
+    // One-click path: swap the code for a scoped token before anything is
+    // written. This also proves the hub is reachable, so the separate
+    // /api/status check is unnecessary.
+    if (enrollmentCode) {
+      const exchanged = await exchangeEnrollmentCode({
+        hubUrl,
+        code: enrollmentCode,
+        env: agentEnv,
+        host: hostname(),
+        os: `${platform()}-${arch()}`,
+        kind: agentKind,
+        ...(projectName ? { projectName } : {}),
+        version: BRIDGE_VERSION,
+      });
+      token = exchanged.token;
+      agentEnv = exchanged.env;
+      projectName = exchanged.projectName ?? projectName;
+      process.stdout.write('✓ 接入码已兑换，已签发专属 Agent Token\n');
+    }
+
     const settings = buildSettings({
       hubUrl,
       token,
       agentEnv,
       ...(projectName ? { projectName } : {}),
-      agentKind: parseAgentKind(options.agentKind) ?? kindForTarget(target),
+      agentKind,
     });
 
     if (rl) {
@@ -490,7 +660,7 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
       }
     }
 
-    if (!options.skipCheck) {
+    if (!options.skipCheck && !enrollmentCode) {
       try {
         const message = await checkHub(settings);
         process.stdout.write(`✓ ${message}\n`);
@@ -506,7 +676,8 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
 
     // Provision a scoped token after the admin-token connectivity check.
     // The admin token stays in the terminal; the project config gets `zz_…`.
-    if (!options.dryRun && !options.noAgentToken) {
+    // Enrollment already did this, so never rotate the freshly issued token.
+    if (!enrollmentCode && !options.dryRun && !options.noAgentToken) {
       try {
         const issued = await provisionAgentToken(settings);
         if (issued) {
@@ -529,33 +700,86 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
 
     for (const item of targets) {
       if (item === 'cursor') {
-        const path = join(dir, '.cursor', 'mcp.json');
+        const path = options.global
+          ? globalConfigFile('cursor')
+          : join(dir, '.cursor', 'mcp.json');
         writeJson(
           path,
           mergeCursorConfig(readJson(path), settings),
           Boolean(options.dryRun),
         );
-        copyCursorRules(dir, Boolean(options.dryRun));
+        // Cursor user rules live in the app settings, not a file; project
+        // installs can still drop .cursorrules next to the workspace.
+        if (!options.global) copyCursorRules(dir, Boolean(options.dryRun));
       } else if (item === 'opencode') {
-        const path = join(dir, 'opencode.json');
+        const path = options.global
+          ? globalConfigFile('opencode')
+          : join(dir, 'opencode.json');
         writeJson(
           path,
           mergeOpenCodeConfig(readJson(path), settings),
           Boolean(options.dryRun),
         );
-        upsertInstructionFile(
-          dir,
-          'AGENTS.md',
-          'AGENTS.md',
-          Boolean(options.dryRun),
-        );
+        if (options.global) {
+          const instruction = globalInstructionFile('opencode')!;
+          upsertInstructionFile(
+            instruction.dir,
+            instruction.file,
+            instruction.template,
+            Boolean(options.dryRun),
+          );
+        } else {
+          upsertInstructionFile(
+            dir,
+            'AGENTS.md',
+            'AGENTS.md',
+            Boolean(options.dryRun),
+          );
+        }
       } else {
-        const path = join(dir, '.mcp.json');
+        const path = options.global
+          ? globalConfigFile('claude')
+          : join(dir, '.mcp.json');
         writeJson(
           path,
           mergeClaudeConfig(readJson(path), settings),
           Boolean(options.dryRun),
         );
+        if (options.global) {
+          const instruction = globalInstructionFile('claude')!;
+          upsertInstructionFile(
+            instruction.dir,
+            instruction.file,
+            instruction.template,
+            Boolean(options.dryRun),
+          );
+        }
+      }
+    }
+
+    // Keep the machine online when the editor is closed. Service failures are
+    // non-fatal: the MCP config above already connects the editor.
+    let serviceMessage: string | null = null;
+    if (options.service && !options.dryRun) {
+      try {
+        const installed = installService({
+          env: settings.agentEnv,
+          hubUrl: settings.hubUrl,
+          token: settings.token,
+          cwd: dir,
+          adapter: 'auto',
+          cliPath:
+            process.argv[1] ?? join(homedir(), '.zhunzou', 'bridge', 'cli.mjs'),
+          nodePath: process.execPath,
+          ...(settings.projectName ? { projectName: settings.projectName } : {}),
+        });
+        serviceMessage = installed.message;
+        process.stdout.write(
+          `${installed.started ? '✓' : '·'} ${installed.message}\n`,
+        );
+      } catch (error) {
+        serviceMessage = `常驻服务安装失败：${(error as Error).message}`;
+        process.stdout.write(`! ${serviceMessage}\n`);
       }
     }
 
@@ -566,7 +790,10 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
         '1. 重启对应客户端，或重新加载 MCP Server。',
         '2. 在新会话里调用 agent_hub_resume，恢复未决奏折与任务。',
         '3. Token 会写入本地配置，请勿把 .cursor/mcp.json / .mcp.json 提交到公开仓库。',
-        '4. 每个工作区单独运行一次 init；AGENT_ENV 默认按项目名区分。多个工作区共用同一个 env 时，看板只会显示最后心跳的那个项目。',
+        options.global
+          ? '4. 本次写入的是用户级配置，所有项目共用；如需按项目区分环境，可在项目里再运行一次 init。'
+          : '4. 每个工作区单独运行一次 init；AGENT_ENV 默认按项目名区分。多个工作区共用同一个 env 时，看板只会显示最后心跳的那个项目。',
+        ...(serviceMessage ? [`5. ${serviceMessage}`] : []),
         '',
       ].join('\n'),
     );

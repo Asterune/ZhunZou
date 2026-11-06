@@ -135,6 +135,80 @@ describe('config merging', () => {
   });
 });
 
+describe('one-time enrollment', () => {
+  const dirs: string[] = [];
+
+  function tempDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'zhunzou-enroll-'));
+    dirs.push(dir);
+    return dir;
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('exchanges the code for a scoped token instead of asking for the admin token', async () => {
+    const received: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let raw = '';
+      request.on('data', (chunk) => {
+        raw += chunk;
+      });
+      request.on('end', () => {
+        received.push(JSON.parse(raw) as Record<string, unknown>);
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(
+          JSON.stringify({
+            hubUrl: 'http://127.0.0.1',
+            token: 'zz_scoped_token',
+            env: 'agent-test-host',
+            agent: { env: 'agent-test-host' },
+          }),
+        );
+      });
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as AddressInfo;
+    const hubUrl = `http://127.0.0.1:${address.port}`;
+
+    try {
+      const dir = tempDir();
+      const code = await runInit({
+        dir,
+        hubUrl,
+        code: 'ABCDE-FGHIJ',
+        target: 'opencode',
+        yes: true,
+      });
+      expect(code).toBe(0);
+
+      expect(received).toHaveLength(1);
+      expect(received[0]).toMatchObject({
+        code: 'ABCDE-FGHIJ',
+        kind: 'opencode',
+      });
+      expect(received[0]).not.toHaveProperty('token');
+
+      const config = JSON.parse(
+        readFileSync(join(dir, 'opencode.json'), 'utf8'),
+      ) as Record<string, unknown>;
+      const servers = (config.mcp as Record<string, unknown>)
+        .servers as Record<string, Record<string, unknown>>;
+      expect(servers.zhunzou.environment).toMatchObject({
+        HUB_URL: hubUrl,
+        HUB_TOKEN: 'zz_scoped_token',
+        AGENT_ENV: 'agent-test-host',
+      });
+    } finally {
+      server.close();
+    }
+  });
+});
+
 describe('OpenCode instructions', () => {
   const dirs: string[] = [];
 

@@ -116,6 +116,35 @@ export const agents = sqliteTable(
   ],
 );
 
+/**
+ * One-time codes that turn "install the bridge" into a single command.
+ *
+ * Only a hash of the code is stored, so a database leak cannot be replayed.
+ * The admin creates a code from the dashboard; the installer exchanges it for
+ * a scoped agent token, which means end users never see HUB_SECRET_TOKEN.
+ */
+export const enrollmentCodes = sqliteTable(
+  'enrollment_codes',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    codeHash: text('code_hash').notNull(),
+    codePrefix: text('code_prefix').notNull(),
+    env: text('env'),
+    label: text('label'),
+    projectName: text('project_name'),
+    kind: text('kind').$type<AgentKind>(),
+    expiresAt: integer('expires_at').notNull(),
+    usedAt: integer('used_at'),
+    usedEnv: text('used_env'),
+    usedHost: text('used_host'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_enrollment_code_hash').on(table.codeHash),
+    index('idx_enrollment_expires').on(table.expiresAt),
+  ],
+);
+
 export const agentTasks = sqliteTable(  'agent_tasks',
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
@@ -321,6 +350,8 @@ export type TicketInsert = typeof tickets.$inferInsert;
 export type HeartbeatRow = typeof envHeartbeats.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentInsert = typeof agents.$inferInsert;
+export type EnrollmentRow = typeof enrollmentCodes.$inferSelect;
+export type EnrollmentInsert = typeof enrollmentCodes.$inferInsert;
 export type AgentTaskRow = typeof agentTasks.$inferSelect;
 export type AgentTaskInsert = typeof agentTasks.$inferInsert;
 export type TaskLogRow = typeof taskLogs.$inferSelect;

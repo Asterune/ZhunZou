@@ -13,6 +13,7 @@ import {
 
 import type {
   Agent,
+  AgentKind,
   AgentMeta,
   AgentTask,
   AppendChatEventInput,
@@ -30,10 +31,12 @@ import type {
   CreateChatSessionInput,
   CreateTaskInput,
   CreateTerminalInput,
+  CreateEnrollmentInput,
   CreateTicketInput,
   DecisionTicket,
   DeviceConnectionInput,
   DeviceStats,
+  Enrollment,
   EnvHeartbeat,
   Exchange,
   HeartbeatInput,
@@ -72,6 +75,7 @@ import {
   chatEvents,
   chatMessages,
   chatSessions,
+  enrollmentCodes,
   envHeartbeats,
   exchanges,
   ruleCandidates,
@@ -85,6 +89,7 @@ import {
   type ChatEventRow,
   type ChatMessageRow,
   type ChatSessionRow,
+  type EnrollmentRow,
   type ExchangeRow,
   type HeartbeatRow,
   type RuleCandidateRow,
@@ -108,6 +113,40 @@ const CHAT_PENDING_STATUSES: ChatMessageStatus[] = [
 /** Keep each task's live log bounded; older chunks are trimmed on append. */
 const MAX_TASK_LOG_BYTES = 256 * 1024;
 const MAX_CHAT_EVENT_BYTES = 256 * 1024;
+
+/** Input for minting a one-time enrollment code (plaintext stays in the API). */
+export interface CreateEnrollmentCodeInput {
+  codeHash: string;
+  codePrefix: string;
+  ttlMs: number;
+  env?: string;
+  label?: string;
+  projectName?: string;
+  kind?: AgentKind;
+}
+
+/** Enrollment code as stored; never carries the plaintext secret. */
+export interface StoredEnrollment {
+  id: number;
+  env?: string;
+  label?: string;
+  projectName?: string;
+  kind?: AgentKind;
+  expiresAt: number;
+  createdAt: number;
+}
+
+function toEnrollment(row: EnrollmentRow): StoredEnrollment {
+  return {
+    id: row.id,
+    ...(row.env ? { env: row.env } : {}),
+    ...(row.label ? { label: row.label } : {}),
+    ...(row.projectName ? { projectName: row.projectName } : {}),
+    ...(row.kind ? { kind: row.kind } : {}),
+    expiresAt: row.expiresAt,
+    createdAt: row.createdAt,
+  };
+}
 /** Per-env history cap for mirrored IDE exchanges. */
 const MAX_EXCHANGES_PER_ENV = 200;
 
@@ -428,6 +467,20 @@ export interface TicketStore {
   ): Agent | null;
   clearAgentToken(env: string, now?: number): Agent | null;
   findAgentByTokenHash(tokenHash: string): Agent | null;
+
+  /* One-time enrollment codes */
+  createEnrollmentCode(
+    input: CreateEnrollmentCodeInput,
+    now?: number,
+  ): StoredEnrollment;
+  findEnrollmentByHash(codeHash: string): StoredEnrollment | null;
+  /** Atomically burn a code; false when it expired or was already used. */
+  consumeEnrollmentCode(
+    id: number,
+    usedEnv: string,
+    usedHost: string | undefined,
+    now?: number,
+  ): boolean;
   /** Persist the hello frame from a device daemon and mark it connected. */
   recordDeviceConnection(input: DeviceConnectionInput, now?: number): Agent;
   /** Persist a heartbeat snapshot without changing capabilities. */
@@ -1049,6 +1102,65 @@ export class TicketRepository implements TicketStore {
       .where(eq(agents.tokenHash, tokenHash))
       .get();
     return row ? toAgent(row, undefined, Date.now()) : null;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* One-time enrollment codes                                        */
+  /* ---------------------------------------------------------------- */
+
+  createEnrollmentCode(
+    input: CreateEnrollmentCodeInput,
+    now = Date.now(),
+  ): StoredEnrollment {
+    const row = this.db
+      .insert(enrollmentCodes)
+      .values({
+        codeHash: input.codeHash,
+        codePrefix: input.codePrefix,
+        ...(input.env ? { env: input.env } : {}),
+        ...(input.label ? { label: input.label } : {}),
+        ...(input.projectName ? { projectName: input.projectName } : {}),
+        ...(input.kind ? { kind: input.kind } : {}),
+        expiresAt: now + input.ttlMs,
+        createdAt: now,
+      })
+      .returning()
+      .get();
+
+    return toEnrollment(row);
+  }
+
+  findEnrollmentByHash(codeHash: string): StoredEnrollment | null {
+    const row = this.db
+      .select()
+      .from(enrollmentCodes)
+      .where(eq(enrollmentCodes.codeHash, codeHash))
+      .get();
+    return row ? toEnrollment(row) : null;
+  }
+
+  consumeEnrollmentCode(
+    id: number,
+    usedEnv: string,
+    usedHost: string | undefined,
+    now = Date.now(),
+  ): boolean {
+    const result = this.db
+      .update(enrollmentCodes)
+      .set({
+        usedAt: now,
+        usedEnv,
+        ...(usedHost ? { usedHost } : {}),
+      })
+      .where(
+        and(
+          eq(enrollmentCodes.id, id),
+          sql`${enrollmentCodes.usedAt} IS NULL`,
+          gt(enrollmentCodes.expiresAt, now),
+        ),
+      )
+      .run();
+    return result.changes > 0;
   }
 
   recordDeviceConnection(

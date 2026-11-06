@@ -261,6 +261,72 @@ export const listAgentsQuerySchema = z.object({
 });
 
 /* ------------------------------------------------------------------ */
+/* One-time enrollment codes                                           */
+/* ------------------------------------------------------------------ */
+
+/** Default lifetime of a one-click enrollment code. */
+export const ENROLLMENT_CODE_TTL_MS = 15 * 60 * 1000;
+
+export const enrollmentCodeSchema = z
+  .string()
+  .trim()
+  .min(6)
+  .max(64)
+  // Accept "ABCDE-FGHIJ" as typed/copy-pasted by humans; hashing normalizes it.
+  .transform((value) => value.replace(/[\s-]+/g, '').toUpperCase());
+
+/** Admin creates a code and hands the installer one command. */
+export const createEnrollmentSchema = z.object({
+  /** Pre-bound env name; the installer derives one when omitted. */
+  env: envSchema.optional(),
+  /** Human label shown in the create response, e.g. "公司的 Windows". */
+  label: z.string().trim().max(64).optional(),
+  projectName: projectNameSchema.optional(),
+  kind: z.enum(AGENT_KINDS).optional(),
+  /** Override the 15-minute default. */
+  ttlMinutes: z.number().int().min(1).max(24 * 60).optional(),
+});
+
+/** Public exchange: the code is the capability. */
+export const redeemEnrollmentSchema = z.object({
+  code: enrollmentCodeSchema,
+  host: z.string().trim().max(120).optional(),
+  os: z.string().trim().max(60).optional(),
+  kind: z.enum(AGENT_KINDS).optional(),
+  /** Installer-derived env; falls back to the code's env or host slug. */
+  env: envSchema.optional(),
+  projectName: projectNameSchema.optional(),
+  version: z.string().trim().max(40).optional(),
+});
+
+export const enrollmentSchema = z.object({
+  /** Plaintext code; only returned when it is created. */
+  code: z.string(),
+  env: envSchema.optional(),
+  label: z.string().optional(),
+  projectName: projectNameSchema.optional(),
+  kind: z.enum(AGENT_KINDS).optional(),
+  expiresAt: z.number().int().nonnegative(),
+  createdAt: z.number().int().nonnegative(),
+});
+
+export const enrollmentResponseSchema = z.object({
+  enrollment: enrollmentSchema,
+  commands: z.object({
+    unix: z.string(),
+    windows: z.string(),
+  }),
+});
+
+export const enrollResponseSchema = z.object({
+  hubUrl: z.string(),
+  token: z.string(),
+  env: envSchema,
+  agent: agentSchema,
+  projectName: projectNameSchema.optional(),
+});
+
+/* ------------------------------------------------------------------ */
 /* Human → Agent tasks                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -847,6 +913,11 @@ export type UpdateAgentInput = z.infer<typeof updateAgentSchema>;
 export type AgentListResponse = z.infer<typeof agentListResponseSchema>;
 export type AgentResponse = z.infer<typeof agentResponseSchema>;
 export type AgentTokenResponse = z.infer<typeof agentTokenResponseSchema>;
+export type CreateEnrollmentInput = z.infer<typeof createEnrollmentSchema>;
+export type RedeemEnrollmentInput = z.infer<typeof redeemEnrollmentSchema>;
+export type Enrollment = z.infer<typeof enrollmentSchema>;
+export type EnrollmentResponse = z.infer<typeof enrollmentResponseSchema>;
+export type EnrollResponse = z.infer<typeof enrollResponseSchema>;
 export type TicketResponse = z.infer<typeof ticketResponseSchema>;
 export type TicketListResponse = z.infer<typeof ticketListResponseSchema>;
 export type WaitResponse = z.infer<typeof waitResponseSchema>;

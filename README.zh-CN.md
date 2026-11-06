@@ -481,6 +481,26 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 
 ## 端侧接入
 
+### 一键接入（推荐给普通用户）
+
+看板打开「接入端 → 一键接入」，填一个可选的环境名，点「生成接入命令」。把生成的其中一条命令发给目标电脑：
+
+```bash
+# macOS / Linux
+curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash
+```
+
+```powershell
+# Windows PowerShell
+irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
+```
+
+这条命令会自动完成：准备 Node 20+（没装 Node 时下载便携运行时并校验 SHA256）、从 hub 拉取对应版本的 bridge、用一次性接入码换取该设备专属的 scoped Token、写入用户级 Cursor / OpenCode / Claude Code 配置、安装登录自启守护进程。用户不需要管理员 `HUB_SECRET_TOKEN`，也不需要克隆仓库。
+
+接入码默认 15 分钟有效、只能使用一次；泄漏后重新生成即可。设备上线后会自动出现在「接入端」页。命令里带 `--no-service` 可以跳过常驻服务，只在编辑器打开时在线。
+
+### 手动接入（开发者）
+
 `packages/bridge` 提供两个入口，均为纯 JS/TS + `fetch`，无原生编译依赖。
 npm 包内置 esbuild 单文件 bundle（`dependencies` 为空），`npx zhunzou-bridge` 不会额外拉取 MCP SDK / zod / `@zhunzou/shared`。
 
@@ -489,6 +509,7 @@ npm 包内置 esbuild 单文件 bundle（`dependencies` 为空），`npx zhunzou
 ```bash
 npx zhunzou-bridge init
 # 非交互：--hub-url ... --token ... --env ... --target cursor|opencode|claude|all --yes
+# 一次性接入码：--hub-url ... --code ABCDE-FGHIJ --yes --global --service
 # 只预览不落盘：--dry-run
 # 仓库内未发布 npm 时：pnpm build && node packages/bridge/bin/cli.js init
 ```

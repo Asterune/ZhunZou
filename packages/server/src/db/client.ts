@@ -69,6 +69,24 @@ CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 CREATE INDEX IF NOT EXISTS idx_agents_kind ON agents(kind);
 CREATE INDEX IF NOT EXISTS idx_agents_updated ON agents(updated_at);
 
+CREATE TABLE IF NOT EXISTS enrollment_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code_hash TEXT NOT NULL,
+  code_prefix TEXT NOT NULL,
+  env TEXT,
+  label TEXT,
+  project_name TEXT,
+  kind TEXT,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  used_env TEXT,
+  used_host TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollment_code_hash ON enrollment_codes(code_hash);
+CREATE INDEX IF NOT EXISTS idx_enrollment_expires ON enrollment_codes(expires_at);
+
 CREATE TABLE IF NOT EXISTS agent_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   env TEXT NOT NULL,

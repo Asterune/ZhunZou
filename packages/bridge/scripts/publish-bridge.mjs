@@ -74,9 +74,13 @@ const walk = (dir) => {
     }
     const name = relative(sourceDir, absolute).split('\\').join('/');
     // The self-updater installs each release into a flat versions/<v>/ folder
-    // and older clients reject nested manifest entries. Keep the manifest flat;
-    // the Windows zip still ships templates/ from dist-standalone.
+    // and older clients reject nested manifest entries. Keep the manifest flat,
+    // but publish nested files too: the one-click installer fetches
+    // `templates/AGENTS.md` and never walks the manifest.
     if (name.includes('/')) {
+      const destination = join(targetDir, name);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(absolute, destination);
       skipped.push(name);
       continue;
     }
@@ -92,7 +96,9 @@ const walk = (dir) => {
 };
 walk(sourceDir);
 if (skipped.length > 0) {
-  console.log(`[publish] 跳过嵌套文件 ${skipped.length} 个（自更新只安装顶层文件）`);
+  console.log(
+    `[publish] 已发布嵌套文件 ${skipped.length} 个（不进清单，供一键安装脚本使用）`,
+  );
 }
 
 const manifest = {

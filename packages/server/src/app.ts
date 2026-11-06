@@ -21,6 +21,7 @@ import {
   completeTaskSchema,
   createAgentSchema,
   createChatSessionSchema,
+  createEnrollmentSchema,
   createTaskSchema,
   createTerminalSchema,
   createTicketSchema,
@@ -42,9 +43,11 @@ import {
   listTerminalsQuerySchema,
   listTicketsQuerySchema,
   listWorkspaceProjectsQuerySchema,
+  ENROLLMENT_CODE_TTL_MS,
   nextChatMessageQuerySchema,
   nextTaskQuerySchema,
   proposeChatReplySchema,
+  redeemEnrollmentSchema,
   releaseTaskSchema,
   reportExchangeSchema,
   resolveTicketSchema,
@@ -69,6 +72,13 @@ import {
 import { createAuthHook, hashToken, requireAdmin, requireEnvAccess } from './auth.js';
 import type { ServerConfig } from './config.js';
 import { createDatabase } from './db/client.js';
+import {
+  createEnrollmentRateLimiter,
+  generateEnrollmentCode,
+  hashEnrollmentCode,
+  renderInstallScript,
+  slugifyHost,
+} from './enrollment.js';
 import {
   evaluateDecision,
   syntheticTicket,
@@ -738,6 +748,109 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       baseUrl:
         manifest.baseUrl ?? `${origin}/releases/bridge/${manifest.version}`,
     });
+  });
+
+  // -----------------------------------------------------------------
+  // One-click enrollment (public: the one-time code is the capability)
+  // -----------------------------------------------------------------
+  const enrollmentLimiter = createEnrollmentRateLimiter();
+  const publicOrigin = (request: {
+    protocol: string;
+    headers: { host?: string };
+  }) =>
+    (
+      config.publicBaseUrl ||
+      `${request.protocol}://${request.headers.host ?? 'localhost'}`
+    ).replace(/\/+$/, '');
+
+  // Install scripts are served from the hub so `curl … | bash` and
+  // `irm … | iex` are the only commands a new user has to run.
+  for (const [path, kind] of [
+    ['/install.sh', 'sh'],
+    ['/install.ps1', 'ps1'],
+  ] as const) {
+    app.get(path, async (request, reply) => {
+      const query = z
+        .object({ code: z.string().trim().max(64).optional() })
+        .parse(request.query);
+      return reply
+        .type(kind === 'sh' ? 'application/x-sh' : 'text/plain')
+        .header('cache-control', 'no-store')
+        .send(
+          renderInstallScript(kind, {
+            hubUrl: publicOrigin(request),
+            code: query.code ?? '',
+          }),
+        );
+    });
+  }
+
+  // Exchange a code for a scoped agent token. Public by design: end users
+  // must not need HUB_SECRET_TOKEN to connect a machine.
+  app.post('/api/enroll', async (request, reply) => {
+    const input = redeemEnrollmentSchema.parse(request.body);
+    const codeHash = hashEnrollmentCode(input.code);
+
+    if (!enrollmentLimiter.allow(codeHash)) {
+      return reply.code(429).send({
+        error: {
+          code: 'ENROLL_RATE_LIMITED',
+          message: '接入码尝试次数过多，请稍后再试或重新生成。',
+        },
+      });
+    }
+
+    const enrollment = repo.findEnrollmentByHash(codeHash);
+    const now = Date.now();
+    if (!enrollment || enrollment.expiresAt <= now) {
+      throw new NotFoundError(
+        '接入码无效或已过期，请重新生成。',
+        'ENROLLMENT_INVALID',
+      );
+    }
+
+    const kind = input.kind ?? enrollment.kind ?? 'other';
+    const projectName = input.projectName ?? enrollment.projectName;
+    const baseEnv =
+      enrollment.env ??
+      input.env ??
+      `${kind}-${slugifyHost(input.host) || 'device'}`;
+
+    // Reusing an env would steal another machine's identity; add a suffix.
+    let env = baseEnv.slice(0, 64);
+    for (let suffix = 2; repo.getAgent(env) && suffix < 100; suffix += 1) {
+      env = `${baseEnv.slice(0, 60)}-${suffix}`;
+    }
+    if (repo.getAgent(env)) {
+      env = `${baseEnv.slice(0, 55)}-${randomBytes(3).toString('hex')}`;
+    }
+
+    if (!repo.consumeEnrollmentCode(enrollment.id, env, input.host, now)) {
+      throw new NotFoundError(
+        '接入码无效或已过期，请重新生成。',
+        'ENROLLMENT_INVALID',
+      );
+    }
+
+    const agent = repo.registerAgent({
+      env,
+      kind,
+      name: env,
+      ...(input.host ? { host: input.host } : {}),
+      ...(input.os ? { os: input.os } : {}),
+    });
+    const token = `zz_${randomBytes(32).toString('base64url')}`;
+    repo.setAgentToken(env, hashToken(token), token.slice(0, 10), now);
+    if (projectName) repo.bindWorkspaceProject(env, projectName, now);
+
+    enrollmentLimiter.reset(codeHash);
+    return {
+      hubUrl: publicOrigin(request),
+      token,
+      env,
+      agent: repo.getAgent(env, now) ?? agent,
+      ...(projectName ? { projectName } : {}),
+    };
   });
 
   // -----------------------------------------------------------------
@@ -1897,6 +2010,49 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           tickets: repo.listResumeTickets(query.env, since, query.limit),
           tasks: repo.listActiveTasks(query.env, query.limit),
         };
+      });
+
+      // -----------------------------------------------------------------
+      // One-time enrollment links
+      // -----------------------------------------------------------------
+
+      // The dashboard mints a code and shows the matching one-line command;
+      // the plaintext code is returned exactly once.
+      api.post('/enrollments', async (request, reply) => {
+        requireAdmin(request);
+        const input = createEnrollmentSchema.parse(request.body);
+        const code = generateEnrollmentCode();
+        const ttlMs = input.ttlMinutes
+          ? input.ttlMinutes * 60 * 1000
+          : ENROLLMENT_CODE_TTL_MS;
+        const enrollment = repo.createEnrollmentCode({
+          codeHash: hashEnrollmentCode(code),
+          codePrefix: code.slice(0, 5),
+          ttlMs,
+          ...(input.env ? { env: input.env } : {}),
+          ...(input.label ? { label: input.label } : {}),
+          ...(input.projectName ? { projectName: input.projectName } : {}),
+          ...(input.kind ? { kind: input.kind } : {}),
+        });
+        const origin = publicOrigin(request);
+
+        return reply.code(201).send({
+          enrollment: {
+            code,
+            ...(enrollment.env ? { env: enrollment.env } : {}),
+            ...(enrollment.label ? { label: enrollment.label } : {}),
+            ...(enrollment.projectName
+              ? { projectName: enrollment.projectName }
+              : {}),
+            ...(enrollment.kind ? { kind: enrollment.kind } : {}),
+            expiresAt: enrollment.expiresAt,
+            createdAt: enrollment.createdAt,
+          },
+          commands: {
+            unix: `curl -fsSL '${origin}/install.sh?code=${code}' | bash`,
+            windows: `irm '${origin}/install.ps1?code=${code}' | iex`,
+          },
+        });
       });
 
       // -----------------------------------------------------------------

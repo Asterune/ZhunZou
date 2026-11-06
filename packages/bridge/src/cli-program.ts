@@ -14,6 +14,11 @@ import {
 } from './fleet.js';
 import { createHubApi } from './hub.js';
 import { runInit } from './init.js';
+import {
+  installService,
+  serviceStatus,
+  uninstallService,
+} from './service.js';
 import { runSessionDaemon, supportsChat } from './session.js';
 import { BRIDGE_VERSION } from './version.js';
 import { defaultInstallRoot, runUpgrade } from './upgrade.js';
@@ -53,12 +58,24 @@ function resolveHubUrl(flag: string | undefined): string {
 
 /** Path of the CLI entry, for launchd ProgramArguments. */
 function currentCliPath(): string {
+  // Prefer the entry the user actually launched: the one-click installer runs
+  // a stable root bootstrap, which keeps service definitions working after an
+  // upgrade flips `current.json`.
+  const launched = process.argv[1];
+  if (
+    launched &&
+    /(^|[\\/])cli\.(mjs|js)$/.test(launched) &&
+    existsSync(launched)
+  ) {
+    return launched;
+  }
+
   const here = dirname(fileURLToPath(import.meta.url));
   for (const name of ['cli.js', 'cli.mjs']) {
     const candidate = join(here, name);
     if (existsSync(candidate)) return candidate;
   }
-  return process.argv[1] ?? join(here, 'cli.js');
+  return launched ?? join(here, 'cli.js');
 }
 
 export function createProgram(): Command {
@@ -76,6 +93,9 @@ export function createProgram(): Command {
     )
     .option('--hub-url <url>', 'Zhunzou server URL')
     .option('--token <token>', 'same value as the server HUB_SECRET_TOKEN')
+    .option('--code <code>', 'one-time enrollment code from the dashboard (no admin token needed)')
+    .option('--global', 'write user-level editor config instead of the workspace')
+    .option('--service', 'register a login-time daemon so the device stays online')
     .option('--env <name>', 'environment label shown on the dashboard')
     .option('--project <name>', 'project name reported in heartbeats')
     .option('--target <target>', 'cursor | opencode | claude | all')
@@ -93,6 +113,9 @@ export function createProgram(): Command {
         ...(typeof options.token === 'string'
           ? { token: options.token }
           : {}),
+        ...(typeof options.code === 'string' ? { code: options.code } : {}),
+        ...(options.global === true ? { global: true } : {}),
+        ...(options.service === true ? { service: true } : {}),
         ...(typeof options.env === 'string' ? { env: options.env } : {}),
         ...(typeof options.project === 'string'
           ? { project: options.project }
@@ -195,6 +218,44 @@ export function createProgram(): Command {
         }
       },
     );
+
+  program
+    .command('service')
+    .description(
+      'Manage the login-time daemon: install | uninstall | status',
+    )
+    .argument('[action]', 'install | uninstall | status', 'status')
+    .action((action: string) => {
+      if (action === 'status') {
+        process.stdout.write(`[zhunzou] ${serviceStatus()}\n`);
+        return;
+      }
+      if (action === 'uninstall') {
+        const result = uninstallService();
+        process.stdout.write(`[zhunzou] ${result.message}\n`);
+        return;
+      }
+      if (action !== 'install') {
+        process.stderr.write(
+          `[zhunzou] 未知操作 ${action}；可选 install / uninstall / status\n`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      const config = loadBridgeConfig();
+      const result = installService({
+        env: config.agentEnv,
+        hubUrl: config.hubUrl,
+        token: config.token,
+        cwd: process.cwd(),
+        adapter: 'auto',
+        cliPath: currentCliPath(),
+        nodePath: process.execPath,
+        ...(config.projectName ? { projectName: config.projectName } : {}),
+      });
+      process.stdout.write(`[zhunzou] ${result.message}\n`);
+    });
 
   program
     .command('wake')

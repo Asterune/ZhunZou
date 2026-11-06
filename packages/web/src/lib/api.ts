@@ -11,9 +11,11 @@ import type {
   ChatSessionResponse,
   CreateAgentInput,
   CreateChatSessionInput,
+  CreateEnrollmentInput,
   CreateTaskInput,
   CreateTerminalInput,
   DecisionTicket,
+  EnrollmentResponse,
   EnvHeartbeat,
   ExchangeListResponse,
   ExtendTicketInput,
@@ -66,6 +68,10 @@ export interface HubApi {
     env?: string,
   ): Promise<ExchangeListResponse>;
   createAgent(token: string, input: CreateAgentInput): Promise<AgentResponse>;
+  createEnrollment(
+    token: string,
+    input: CreateEnrollmentInput,
+  ): Promise<EnrollmentResponse>;
   updateAgent(
     token: string,
     env: string,
@@ -263,6 +269,12 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
 
     createAgent: (token, input) =>
       request<AgentResponse>(token, '/api/agents', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    createEnrollment: (token, input) =>
+      request<EnrollmentResponse>(token, '/api/enrollments', {
         method: 'POST',
         body: JSON.stringify(input),
       }),

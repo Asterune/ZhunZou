@@ -15,10 +15,16 @@ import {
   UserRoundCheck,
   UserRoundX,
   X,
+  Zap,
 } from 'lucide-vue-next';
 import { computed, reactive, ref } from 'vue';
 
-import type { Agent, AgentKind, UpdateAgentInput } from '@zhunzou/shared';
+import type {
+  Agent,
+  AgentKind,
+  EnrollmentResponse,
+  UpdateAgentInput,
+} from '@zhunzou/shared';
 
 import { relativeTime } from '../lib/format';
 import { useI18n } from '../lib/i18n';
@@ -50,6 +56,13 @@ const form = reactive({
 
 const tokenDialog = ref<{ env: string; token: string } | null>(null);
 const copied = ref(false);
+
+const enrollOpen = ref(false);
+const enrollLoading = ref(false);
+const enrollment = ref<EnrollmentResponse | null>(null);
+const enrollOs = ref<'unix' | 'windows'>('unix');
+const enrollCopied = ref(false);
+const enrollForm = reactive({ env: '', project: '' });
 
 const agentCount = computed(() => store.agents.length);
 const offlineCount = computed(
@@ -215,6 +228,51 @@ async function copyToken(): Promise<void> {
     copied.value = false;
   }
 }
+
+function openEnroll(): void {
+  enrollForm.env = '';
+  enrollForm.project = '';
+  enrollment.value = null;
+  enrollOs.value = 'unix';
+  enrollCopied.value = false;
+  enrollOpen.value = true;
+}
+
+async function generateEnrollment(): Promise<void> {
+  if (enrollLoading.value) return;
+
+  enrollLoading.value = true;
+  try {
+    const response = await store.createEnrollment({
+      ...(enrollForm.env.trim() ? { env: enrollForm.env.trim() } : {}),
+      ...(enrollForm.project.trim()
+        ? { projectName: enrollForm.project.trim() }
+        : {}),
+    });
+    if (response) {
+      enrollment.value = response;
+      enrollCopied.value = false;
+    }
+  } finally {
+    enrollLoading.value = false;
+  }
+}
+
+const enrollCommand = computed(() =>
+  enrollOs.value === 'windows'
+    ? enrollment.value?.commands.windows ?? ''
+    : enrollment.value?.commands.unix ?? '',
+);
+
+async function copyEnrollmentCommand(): Promise<void> {
+  if (!enrollCommand.value) return;
+  try {
+    await navigator.clipboard.writeText(enrollCommand.value);
+    enrollCopied.value = true;
+  } catch {
+    enrollCopied.value = false;
+  }
+}
 </script>
 
 <template>
@@ -247,11 +305,19 @@ async function copyToken(): Promise<void> {
         </button>
         <button
           type="button"
-          class="flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[11px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container"
+          class="flex h-8 items-center gap-1.5 rounded-lg px-3 text-[11px] font-medium text-on-surface-variant transition hover:bg-surface-container"
           @click="openRegister"
         >
           <Plus :size="14" />
           {{ t('agents.register') }}
+        </button>
+        <button
+          type="button"
+          class="flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[11px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container"
+          @click="openEnroll"
+        >
+          <Zap :size="14" />
+          {{ t('agents.oneClick') }}
         </button>
       </div>
     </div>
@@ -564,6 +630,150 @@ async function copyToken(): Promise<void> {
         </div>
       </article>
     </div>
+
+    <!-- One-click enrollment dialog -->
+    <Teleport to="body">
+      <div
+        v-if="enrollOpen"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4"
+        role="dialog"
+        aria-modal="true"
+        @click.self="enrollOpen = false"
+      >
+        <div
+          class="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-outline-variant/40 bg-surface p-5 shadow-xl"
+        >
+          <div class="mb-2 flex items-center justify-between">
+            <h3
+              class="flex items-center gap-2 text-lg font-semibold text-on-surface"
+              style="font-family: var(--font-serif)"
+            >
+              <Zap :size="18" class="text-primary" />
+              {{ t('agents.oneClickTitle') }}
+            </h3>
+            <button
+              type="button"
+              class="grid h-8 w-8 place-items-center rounded-lg text-on-surface-variant hover:bg-surface-container"
+              :aria-label="t('agents.close')"
+              @click="enrollOpen = false"
+            >
+              <X :size="16" />
+            </button>
+          </div>
+
+          <p class="mb-4 text-[12px] leading-5 text-on-surface-variant">
+            {{ t('agents.oneClickDesc') }}
+          </p>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class="block text-[12px] text-on-surface-variant">
+              {{ t('agents.oneClickEnv') }}
+              <input
+                v-model="enrollForm.env"
+                maxlength="64"
+                :placeholder="t('agents.oneClickEnvPlaceholder')"
+                class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2.5 font-mono text-[13px] text-on-surface outline-none focus:border-primary"
+              />
+            </label>
+            <label class="block text-[12px] text-on-surface-variant">
+              {{ t('agents.oneClickProject') }}
+              <input
+                v-model="enrollForm.project"
+                maxlength="128"
+                :placeholder="t('agents.oneClickProjectPlaceholder')"
+                class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2.5 text-[13px] text-on-surface outline-none focus:border-primary"
+              />
+            </label>
+          </div>
+
+          <div class="mt-4 flex items-center justify-end gap-2">
+            <button
+              v-if="enrollment"
+              type="button"
+              class="h-9 rounded-lg px-3 text-[12px] font-medium text-on-surface-variant hover:bg-surface-container"
+              @click="generateEnrollment"
+            >
+              {{ t('agents.oneClickRegenerate') }}
+            </button>
+            <button
+              type="button"
+              class="flex h-9 items-center gap-1.5 rounded-lg bg-primary px-4 text-[12px] font-medium text-on-primary transition hover:bg-primary-container disabled:opacity-50"
+              :disabled="enrollLoading"
+              @click="generateEnrollment"
+            >
+              <Zap :size="14" />
+              {{
+                enrollLoading
+                  ? t('agents.oneClickGenerating')
+                  : t('agents.oneClickGenerate')
+              }}
+            </button>
+          </div>
+
+          <div v-if="enrollment" class="mt-4 border-t border-outline-variant/30 pt-4">
+            <div class="mb-2 flex items-center gap-1 rounded-lg bg-surface-container p-1">
+              <button
+                type="button"
+                class="flex-1 rounded-md px-3 py-1.5 text-[12px] font-medium transition"
+                :class="
+                  enrollOs === 'unix'
+                    ? 'bg-surface text-on-surface shadow-sm'
+                    : 'text-on-surface-variant'
+                "
+                @click="enrollOs = 'unix'"
+              >
+                {{ t('agents.oneClickUnix') }}
+              </button>
+              <button
+                type="button"
+                class="flex-1 rounded-md px-3 py-1.5 text-[12px] font-medium transition"
+                :class="
+                  enrollOs === 'windows'
+                    ? 'bg-surface text-on-surface shadow-sm'
+                    : 'text-on-surface-variant'
+                "
+                @click="enrollOs = 'windows'"
+              >
+                {{ t('agents.oneClickWindows') }}
+              </button>
+            </div>
+
+            <div
+              class="flex items-start gap-2 rounded-lg border border-outline-variant/40 bg-surface-container-lowest p-2.5"
+            >
+              <code class="min-w-0 flex-1 break-all font-mono text-[12px] leading-5 text-on-surface">
+                {{ enrollCommand }}
+              </code>
+              <button
+                type="button"
+                class="flex shrink-0 items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-[11px] font-medium text-on-primary hover:bg-primary-container"
+                @click="copyEnrollmentCommand"
+              >
+                <component :is="enrollCopied ? Check : Copy" :size="13" />
+                {{
+                  enrollCopied
+                    ? t('agents.oneClickCopied')
+                    : t('agents.oneClickCopy')
+                }}
+              </button>
+            </div>
+
+            <p class="mt-2 text-[11px] leading-5 text-on-surface-variant">
+              {{
+                t('agents.oneClickExpires', {
+                  time: new Date(
+                    enrollment.enrollment.expiresAt,
+                  ).toLocaleString(),
+                })
+              }}
+            </p>
+            <p class="mt-1 text-[11px] leading-5 text-on-surface-variant/70">
+              {{ t('agents.oneClickHint') }}
+            </p>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Register / edit dialog -->
     <Teleport to="body">
