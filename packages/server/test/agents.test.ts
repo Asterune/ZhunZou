@@ -145,6 +145,57 @@ describe('agent registry', () => {
       await ctx.close();
     }
   });
+
+  it('clears presence when an agent is deleted so it leaves the status list', async () => {
+    const ctx = await createTestContext();
+    try {
+      const token = await issueToken(ctx, ENV);
+      const agentAuth = { authorization: `Bearer ${token}` };
+      expect((await heartbeat(ctx, ENV, agentAuth)).statusCode).toBe(200);
+
+      const before = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/status',
+        headers: ctx.auth,
+      });
+      expect(
+        (before.json().envs as Array<{ env: string }>).map((env) => env.env),
+      ).toContain(ENV);
+
+      const deleted = await ctx.app.inject({
+        method: 'DELETE',
+        url: `/api/agents/${ENV}`,
+        headers: ctx.auth,
+      });
+      expect(deleted.statusCode).toBe(200);
+
+      const after = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/status',
+        headers: ctx.auth,
+      });
+      expect(
+        (after.json().envs as Array<{ env: string }>).some(
+          (env) => env.env === ENV,
+        ),
+      ).toBe(false);
+
+      // The revoked token cannot revive the env with a leftover heartbeat.
+      expect((await heartbeat(ctx, ENV, agentAuth)).statusCode).toBe(401);
+      const final = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/status',
+        headers: ctx.auth,
+      });
+      expect(
+        (final.json().envs as Array<{ env: string }>).some(
+          (env) => env.env === ENV,
+        ),
+      ).toBe(false);
+    } finally {
+      await ctx.close();
+    }
+  });
 });
 
 describe('per-agent tokens', () => {

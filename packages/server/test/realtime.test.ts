@@ -245,6 +245,53 @@ describe('realtime gateway', () => {
     }
   });
 
+  it('closes a device socket when its env is deleted', async () => {
+    const ctx = await createTestContext();
+    try {
+      await ctx.app.listen({ port: 0, host: '127.0.0.1' });
+
+      const { socket, received } = await openSocket(
+        serverUrl(ctx, `/ws/device?env=${ENV}`),
+        ctx.auth,
+      );
+      await waitFor(() => received.find((frame) => frame.type === 'ready'));
+
+      socket.send(
+        JSON.stringify({
+          type: 'hello',
+          protocol: 1,
+          env: ENV,
+          capabilities: await capabilitiesPayload(),
+        }),
+      );
+      await waitFor(() => ctx.app.repo.getAgent(ENV));
+
+      const closed = new Promise<number>((resolve) => {
+        socket.once('close', (code) => resolve(code));
+      });
+
+      const deleted = await ctx.app.inject({
+        method: 'DELETE',
+        url: `/api/agents/${ENV}`,
+        headers: ctx.auth,
+      });
+      expect(deleted.statusCode).toBe(200);
+
+      // 4005 tells the daemon the env is gone, so it stops holding a zombie
+      // socket that can no longer authenticate.
+      expect(await closed).toBe(4005);
+
+      const status = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/status',
+        headers: ctx.auth,
+      });
+      expect(status.json().envs).toEqual([]);
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('rejects a dashboard socket without a valid ticket', async () => {
     const ctx = await createTestContext();
     try {

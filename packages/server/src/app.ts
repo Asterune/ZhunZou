@@ -2319,6 +2319,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         if (!repo.deleteAgent(env)) {
           throw new NotFoundError(`agent ${env} not found`);
         }
+        // Kick any live socket so the client notices immediately instead of
+        // keep-alive pings holding a zombie connection for a removed env.
+        realtime?.disconnectEnv(env);
+        refreshSyncFingerprint();
         return { deleted: true, env };
       });
 
@@ -2628,6 +2632,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         // The env was provisioned for this association; free it so the same
         // directory can be re-associated without a `-2` suffix.
         repo.deleteAgent(workspace.env);
+        realtime?.disconnectEnv(workspace.env);
+        refreshSyncFingerprint();
         return { workspace };
       });
 

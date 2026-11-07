@@ -527,6 +527,11 @@ export interface TicketStore {
   getAgent(env: string, now?: number): Agent | null;
   listAgents(query?: ListAgentsQuery, now?: number): Agent[];
   updateAgent(env: string, input: UpdateAgentInput, now?: number): Agent | null;
+  /**
+   * Remove the agent and its live presence state. Returns true when anything
+   * was deleted, so callers can clear a leftover heartbeat whose agent row is
+   * already gone.
+   */
   deleteAgent(env: string): boolean;
   setAgentToken(
     env: string,
@@ -1178,8 +1183,21 @@ export class TicketRepository implements TicketStore {
   }
 
   deleteAgent(env: string): boolean {
-    const result = this.db.delete(agents).where(eq(agents.env, env)).run();
-    return result.changes > 0;
+    const agent = this.db.delete(agents).where(eq(agents.env, env)).run();
+    // Presence rows are not history: they only describe whether the env is
+    // online right now. Without this cleanup a deleted env keeps showing up as
+    // a greyed-out "offline" card on the dashboard until the DB is wiped.
+    const heartbeat = this.db
+      .delete(envHeartbeats)
+      .where(eq(envHeartbeats.env, env))
+      .run();
+    const runner = this.db
+      .delete(envRunners)
+      .where(eq(envRunners.env, env))
+      .run();
+    return (
+      agent.changes > 0 || heartbeat.changes > 0 || runner.changes > 0
+    );
   }
 
   setAgentToken(

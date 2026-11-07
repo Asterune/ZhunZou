@@ -43,6 +43,12 @@ export interface RealtimeGateway {
   /** Send a claim response to a bridge socket, if one is attached. */
   sendToBridge(env: string, frame: RealtimeServerFrame): boolean;
   isBridgeConnected(env: string): boolean;
+  /**
+   * Drop the live device and bridge sockets for an env. Used when the env is
+   * deleted: without this the daemon keeps its socket open and never learns
+   * that its token is gone.
+   */
+  disconnectEnv(env: string, reason?: string): void;
   bridgeCount(): number;
   /** Listen for pty.* frames from devices. */
   onDeviceFrame(handler: DeviceFrameHandler): () => void;
@@ -550,6 +556,27 @@ export function attachRealtimeGateway(
     isBridgeConnected: (env) => {
       const bridge = bridges.get(env);
       return Boolean(bridge && bridge.readyState === WebSocket.OPEN);
+    },
+    disconnectEnv(env, reason = 'env was removed') {
+      const device = devices.get(env);
+      if (device) {
+        clearInterval(device.timer);
+        devices.delete(env);
+        try {
+          device.socket.close(4005, reason);
+        } catch {
+          // Already closed.
+        }
+      }
+      const bridge = bridges.get(env);
+      if (bridge) {
+        bridges.delete(env);
+        try {
+          bridge.close(4005, reason);
+        } catch {
+          // Already closed.
+        }
+      }
     },
     bridgeCount: () => bridges.size,
     onDeviceFrame(handler) {
