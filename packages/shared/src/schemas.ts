@@ -170,6 +170,7 @@ export const agentMetaSchema = z.object({
   version: z.string().trim().max(40).optional(),
   host: z.string().trim().max(120).optional(),
   os: z.string().trim().max(60).optional(),
+  machineId: z.string().trim().min(8).max(64).optional(),
 });
 
 export const heartbeatSchema = z.object({
@@ -210,6 +211,8 @@ export const agentSchema = z.object({
   version: z.string().max(40).optional(),
   host: z.string().max(120).optional(),
   os: z.string().max(60).optional(),
+  /** Device this agent runs on; resolved from the reported machine fingerprint. */
+  deviceId: z.string().max(64).optional(),
   /** Realtime device protocol version, present once a WS device connects. */
   protocolVersion: z.number().int().positive().optional(),
   /** Local CLI inventory and PTY capability reported by the device daemon. */
@@ -236,6 +239,31 @@ export const agentSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
 });
 
+/**
+ * A machine the hub has seen, with the agents running on it.
+ *
+ * Agents are processes; a device is the box that hosts them, so one card can
+ * cover a Cursor, an OpenCode and a Claude Code session on the same laptop.
+ */
+export const deviceSchema = z.object({
+  id: z.string().min(1).max(64),
+  host: z.string().max(120).optional(),
+  os: z.string().max(60).optional(),
+  /** Inventory last reported by a realtime peer on this machine. */
+  capabilities: deviceCapabilitiesSchema.optional(),
+  /** Last CPU/memory/load snapshot. */
+  deviceStats: deviceStatsSchema.optional(),
+  transport: z.enum(DEVICE_TRANSPORTS).optional(),
+  online: z.boolean(),
+  lastSeenAt: z.number().int().nonnegative().optional(),
+  /** Agent identities running on this machine. */
+  envs: z.array(envSchema),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+export type Device = z.infer<typeof deviceSchema>;
+
 export const createAgentSchema = z.object({
   env: envSchema,
   name: z.string().trim().min(1).max(64).optional(),
@@ -243,6 +271,7 @@ export const createAgentSchema = z.object({
   /** Optional machine metadata so auto-provisioned agents show on the right node. */
   host: z.string().trim().max(120).optional(),
   os: z.string().trim().max(60).optional(),
+  machineId: z.string().trim().min(8).max(64).optional(),
 });
 
 export const updateAgentSchema = z
@@ -307,6 +336,7 @@ export const redeemEnrollmentSchema = z.object({
   code: enrollmentCodeSchema,
   host: z.string().trim().max(120).optional(),
   os: z.string().trim().max(60).optional(),
+  machineId: z.string().trim().min(8).max(64).optional(),
   kind: z.enum(AGENT_KINDS).optional(),
   /** Installer-derived env; falls back to the code's env or host slug. */
   env: envSchema.optional(),

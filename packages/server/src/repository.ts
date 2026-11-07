@@ -35,8 +35,11 @@ import type {
   CreateEnrollmentInput,
   CreateTicketInput,
   DecisionTicket,
+  Device,
+  DeviceCapabilities,
   DeviceConnectionInput,
   DeviceStats,
+  DeviceTransport,
   Enrollment,
   EnvHeartbeat,
   Exchange,
@@ -73,7 +76,8 @@ import type {
 } from '@zhunzou/shared';
 import { HEARTBEAT_ONLINE_WINDOW_MS } from '@zhunzou/shared';
 
-import { hostsMatch } from './env-allocator.js';
+import { normalizeHost, sameMachine } from './env-allocator.js';
+import type { MachineFacts } from './env-allocator.js';
 
 import type { DrizzleDatabase } from './db/client.js';
 import {
@@ -82,6 +86,7 @@ import {
   chatEvents,
   chatMessages,
   chatSessions,
+  devices,
   enrollmentCodes,
   envHeartbeats,
   envRunners,
@@ -101,6 +106,7 @@ import {
   type FleetWorkspaceRow,
   type ChatMessageRow,
   type ChatSessionRow,
+  type DeviceRow,
   type EnrollmentRow,
   type ExchangeRow,
   type HeartbeatRow,
@@ -233,6 +239,24 @@ function toHeartbeat(row: HeartbeatRow, now: number): EnvHeartbeat {
   };
 }
 
+function toDevice(row: DeviceRow, envs: string[], now: number): Device {
+  return {
+    id: row.id,
+    ...(row.host ? { host: row.host } : {}),
+    ...(row.os ? { os: row.os } : {}),
+    ...(row.capabilities ? { capabilities: row.capabilities } : {}),
+    ...(row.deviceStats ? { deviceStats: row.deviceStats } : {}),
+    ...(row.transport ? { transport: row.transport } : {}),
+    online:
+      row.lastSeenAt !== null &&
+      now - row.lastSeenAt <= HEARTBEAT_ONLINE_WINDOW_MS,
+    ...(row.lastSeenAt !== null ? { lastSeenAt: row.lastSeenAt } : {}),
+    envs,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function toAgent(
   row: AgentRow,
   heartbeat: HeartbeatRow | undefined,
@@ -252,6 +276,7 @@ function toAgent(
     ...(row.version ? { version: row.version } : {}),
     ...(row.host ? { host: row.host } : {}),
     ...(row.os ? { os: row.os } : {}),
+    ...(row.deviceId ? { deviceId: row.deviceId } : {}),
     ...(row.protocolVersion ? { protocolVersion: row.protocolVersion } : {}),
     ...(row.capabilities ? { capabilities: row.capabilities } : {}),
     ...(row.deviceStats ? { deviceStats: row.deviceStats } : {}),
@@ -528,6 +553,12 @@ export interface TicketStore {
   registerAgent(input: CreateAgentInput, now?: number): Agent;
   getAgent(env: string, now?: number): Agent | null;
   listAgents(query?: ListAgentsQuery, now?: number): Agent[];
+  /** Machine facts recorded for an env, or null when the agent is unknown. */
+  getAgentMachine(
+    env: string,
+  ): (MachineFacts & { deviceId?: string | null }) | null;
+  /** Machines the hub has seen, each with the agent identities it runs. */
+  listDevices(now?: number): Device[];
   updateAgent(env: string, input: UpdateAgentInput, now?: number): Agent | null;
   /**
    * Remove the agent and its live presence state. Returns true when anything
@@ -1101,7 +1132,128 @@ export class TicketRepository implements TicketStore {
   /* Agent registry                                                   */
   /* ---------------------------------------------------------------- */
 
+  /**
+   * Machine facts the hub holds for an env, including the device row.
+   *
+   * Callers compare these against a newcomer's report before letting it rewrite
+   * anything: `env` is the primary key, so an unguarded write would move one
+   * machine's identity onto another box.
+   */
+  getAgentMachine(env: string): (MachineFacts & { deviceId?: string | null }) | null {
+    const row = this.db
+      .select({
+        host: agents.host,
+        machineId: devices.machineId,
+        deviceId: agents.deviceId,
+      })
+      .from(agents)
+      .leftJoin(devices, eq(devices.id, agents.deviceId))
+      .where(eq(agents.env, env))
+      .get();
+    return row ?? null;
+  }
+
+  /**
+   * Find or create the card for the machine an agent reported.
+   *
+   * A client-generated fingerprint is the key, so one box keeps its card across
+   * a hostname rename and imaged clones never merge. Without a fingerprint the
+   * hostname is all there is, and `host:<hostname>` is the same id the migration
+   * backfills, so upgrading a hub does not split a machine in two.
+   */
+  private upsertDevice(
+    facts: MachineFacts,
+    machine: {
+      os?: string | null;
+      capabilities?: DeviceCapabilities | null;
+      deviceStats?: DeviceStats | null;
+      transport?: DeviceTransport | null;
+    },
+    now: number,
+  ): string | null {
+    const host = normalizeHost(facts.host);
+    const fingerprint = facts.machineId?.trim() ?? '';
+    if (!fingerprint && !host) return null;
+
+    // A fingerprint is the strongest handle a client can offer, so it is the
+    // key. Without one the hostname is only an alias for whatever card already
+    // exists — an older client must not move its agent onto a worse id.
+    const id = fingerprint || this.deviceIdForHost(host) || `host:${host}`;
+    const reported = {
+      ...(facts.host ? { host: facts.host.trim() } : {}),
+      ...(machine.os ? { os: machine.os } : {}),
+      ...(machine.capabilities ? { capabilities: machine.capabilities } : {}),
+      ...(machine.deviceStats ? { deviceStats: machine.deviceStats } : {}),
+      ...(machine.transport ? { transport: machine.transport } : {}),
+    };
+
+    this.db
+      .insert(devices)
+      .values({
+        id,
+        ...(fingerprint ? { machineId: fingerprint } : {}),
+        ...reported,
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: devices.id,
+        set: {
+          ...reported,
+          ...(fingerprint ? { machineId: fingerprint } : {}),
+          lastSeenAt: now,
+          updatedAt: now,
+        },
+      })
+      .run();
+
+    // The hostname-derived card was a stand-in for this very machine; once it
+    // has proven its fingerprint, leaving it behind would show two cards.
+    if (fingerprint && host) this.releaseDeviceAlias(host);
+    return id;
+  }
+
+  /** The card already filed under this hostname, whichever key it uses. */
+  private deviceIdForHost(host: string): string | null {
+    if (!host) return null;
+    return (
+      this.db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(sql`lower(trim(${devices.host})) = ${host}`)
+        .get()?.id ?? null
+    );
+  }
+
+  private releaseDeviceAlias(host: string): void {
+    this.dropDeviceIfIdle(`host:${host}`);
+  }
+
+  /** Forget a card once nothing runs on it; the next report brings it back. */
+  private dropDeviceIfIdle(id: string): void {
+    const stillUsed = this.db
+      .select({ env: agents.env })
+      .from(agents)
+      .where(eq(agents.deviceId, id))
+      .get();
+    if (stillUsed) return;
+
+    this.db.delete(devices).where(eq(devices.id, id)).run();
+  }
+
   registerAgent(input: CreateAgentInput, now = Date.now()): Agent {
+    const deviceId = this.upsertDevice(
+      { host: input.host, machineId: input.machineId },
+      { os: input.os },
+      now,
+    );
+    const machine = {
+      ...(input.host ? { host: input.host } : {}),
+      ...(input.os ? { os: input.os } : {}),
+      ...(deviceId ? { deviceId } : {}),
+    };
+
     const row = this.db
       .insert(agents)
       .values({
@@ -1109,8 +1261,7 @@ export class TicketRepository implements TicketStore {
         name: input.name ?? input.env,
         kind: input.kind ?? 'other',
         status: 'active',
-        ...(input.host ? { host: input.host } : {}),
-        ...(input.os ? { os: input.os } : {}),
+        ...machine,
         lastSeenAt: now,
         createdAt: now,
         updatedAt: now,
@@ -1120,8 +1271,7 @@ export class TicketRepository implements TicketStore {
         set: {
           ...(input.name ? { name: input.name } : {}),
           ...(input.kind ? { kind: input.kind } : {}),
-          ...(input.host ? { host: input.host } : {}),
-          ...(input.os ? { os: input.os } : {}),
+          ...machine,
           updatedAt: now,
         },
       })
@@ -1161,6 +1311,29 @@ export class TicketRepository implements TicketStore {
     return rows.map((row) => toAgent(row, heartbeats.get(row.env), now));
   }
 
+  listDevices(now = Date.now()): Device[] {
+    const rows = this.db
+      .select()
+      .from(devices)
+      .orderBy(desc(devices.lastSeenAt), asc(devices.id))
+      .all();
+
+    const envsByDevice = new Map<string, string[]>();
+    for (const link of this.db
+      .select({ deviceId: agents.deviceId, env: agents.env })
+      .from(agents)
+      .where(isNotNull(agents.deviceId))
+      .orderBy(asc(agents.env))
+      .all()) {
+      if (!link.deviceId) continue;
+      const list = envsByDevice.get(link.deviceId);
+      if (list) list.push(link.env);
+      else envsByDevice.set(link.deviceId, [link.env]);
+    }
+
+    return rows.map((row) => toDevice(row, envsByDevice.get(row.id) ?? [], now));
+  }
+
   updateAgent(
     env: string,
     input: UpdateAgentInput,
@@ -1185,6 +1358,11 @@ export class TicketRepository implements TicketStore {
   }
 
   deleteAgent(env: string): boolean {
+    const deviceId = this.db
+      .select({ deviceId: agents.deviceId })
+      .from(agents)
+      .where(eq(agents.env, env))
+      .get()?.deviceId;
     const agent = this.db.delete(agents).where(eq(agents.env, env)).run();
     // Presence rows are not history: they only describe whether the env is
     // online right now. Without this cleanup a deleted env keeps showing up as
@@ -1197,6 +1375,9 @@ export class TicketRepository implements TicketStore {
       .delete(envRunners)
       .where(eq(envRunners.env, env))
       .run();
+    // A device card is only proof that some agent runs there; deleting the
+    // last one must not leave a machine that can never be seen again.
+    if (deviceId) this.dropDeviceIfIdle(deviceId);
     return (
       agent.changes > 0 || heartbeat.changes > 0 || runner.changes > 0
     );
@@ -1344,17 +1525,30 @@ export class TicketRepository implements TicketStore {
     now = Date.now(),
   ): Agent {
     const os = `${input.capabilities.os}-${input.capabilities.arch}`;
-    const owner = this.db
-      .select({ host: agents.host })
-      .from(agents)
-      .where(eq(agents.env, input.env))
-      .get();
-    const owned = hostsMatch(owner?.host, input.capabilities.hostname);
+    const owner = this.getAgentMachine(input.env);
+    const reported = {
+      host: input.capabilities.hostname,
+      machineId: input.capabilities.machineId,
+    };
+    const owned = sameMachine(owner ?? {}, reported);
+    const deviceId = owned
+      ? this.upsertDevice(
+          reported,
+          {
+            os,
+            capabilities: input.capabilities,
+            deviceStats: input.stats,
+            transport: input.transport,
+          },
+          now,
+        )
+      : null;
     const machine = owned
       ? {
           host: input.capabilities.hostname,
           os,
           capabilities: input.capabilities,
+          ...(deviceId ? { deviceId } : {}),
           ...(input.stats ? { deviceStats: input.stats } : {}),
         }
       : {};
@@ -1441,6 +1635,15 @@ export class TicketRepository implements TicketStore {
       .where(eq(envHeartbeats.env, env))
       .run();
 
+    // The agent beat for the whole box, so the device card ages with it.
+    if (row?.deviceId) {
+      this.db
+        .update(devices)
+        .set({ lastSeenAt: now, updatedAt: now })
+        .where(eq(devices.id, row.deviceId))
+        .run();
+    }
+
     return row ? this.getAgent(env, now) : null;
   }
 
@@ -1472,17 +1675,16 @@ export class TicketRepository implements TicketStore {
     now = Date.now(),
   ): void {
     // A heartbeat cannot be re-labelled by the hub, so machine metadata is only
-    // accepted from the host that already owns this env. Without the guard two
-    // machines sharing a label overwrite each other on every beat.
-    const owner = this.db
-      .select({ host: agents.host })
-      .from(agents)
-      .where(eq(agents.env, env))
-      .get();
-    const owned = !meta?.host || hostsMatch(owner?.host, meta.host);
+    // accepted from the machine that already owns this env. Without the guard
+    // two machines sharing a label overwrite each other on every beat.
+    const owner = this.getAgentMachine(env);
+    const reported = { host: meta?.host, machineId: meta?.machineId };
+    const owned = sameMachine(owner ?? {}, reported);
+    const deviceId = owned ? this.upsertDevice(reported, {}, now) : null;
     const machine = {
       ...(owned && meta?.host ? { host: meta.host } : {}),
       ...(owned && meta?.os ? { os: meta.os } : {}),
+      ...(owned && deviceId ? { deviceId } : {}),
     };
 
     this.db

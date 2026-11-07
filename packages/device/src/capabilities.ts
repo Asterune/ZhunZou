@@ -22,6 +22,8 @@ import type {
 } from '@zhunzou/shared';
 import { DEVICE_PROTOCOL_VERSION } from '@zhunzou/shared';
 
+import { machineId } from './machine-id.js';
+
 const require = createRequire(import.meta.url);
 
 /** Tools worth advertising to the dashboard / terminal launcher. */
@@ -153,12 +155,14 @@ export function detectStats(): DeviceStats {
  */
 export function detectCapabilities(): DeviceCapabilities {
   const pty = detectPty();
+  const mid = machineId();
 
   return {
     protocol: DEVICE_PROTOCOL_VERSION,
     os: platform(),
     arch: arch(),
     hostname: hostname(),
+    ...(mid ? { machineId: mid } : {}),
     release: release(),
     ...(pty.shell ? { shell: pty.shell } : {}),
     pty,

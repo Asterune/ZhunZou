@@ -21,6 +21,7 @@ import {
 } from './fleet.js';
 import { createHubApi } from './hub.js';
 import { runInit } from './init.js';
+import { machineId } from './machine-id.js';
 import {
   installService,
   readServiceConfig,
@@ -82,6 +83,7 @@ async function exchangeEnrollment(
   kind: string,
   project?: string,
 ): Promise<string> {
+  const mid = machineId();
   const response = await fetch(`${hubUrl.replace(/\/+$/, '')}/api/enroll`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -91,6 +93,7 @@ async function exchangeEnrollment(
       kind,
       host: hostname(),
       os: `${platform()}-${arch()}`,
+      ...(mid ? { machineId: mid } : {}),
       ...(project ? { projectName: project } : {}),
     }),
     signal: AbortSignal.timeout(15_000),

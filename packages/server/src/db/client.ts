@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS agents (
   version TEXT,
   host TEXT,
   os TEXT,
+  device_id TEXT,
   protocol_version INTEGER,
   capabilities TEXT,
   device_stats TEXT,
@@ -74,6 +75,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_token_hash ON agents(token_hash);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 CREATE INDEX IF NOT EXISTS idx_agents_kind ON agents(kind);
 CREATE INDEX IF NOT EXISTS idx_agents_updated ON agents(updated_at);
+
+CREATE TABLE IF NOT EXISTS devices (
+  id TEXT PRIMARY KEY,
+  machine_id TEXT,
+  host TEXT,
+  os TEXT,
+  capabilities TEXT,
+  device_stats TEXT,
+  transport TEXT,
+  last_seen_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_machine_id ON devices(machine_id);
+CREATE INDEX IF NOT EXISTS idx_devices_host ON devices(host);
+CREATE INDEX IF NOT EXISTS idx_devices_seen ON devices(last_seen_at);
 
 CREATE TABLE IF NOT EXISTS enrollment_codes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -323,12 +341,33 @@ export function createDatabase(dbPath: string): {
   ensureColumn(sqlite, 'agents', 'device_stats', 'TEXT');
   ensureColumn(sqlite, 'agents', 'transport', 'TEXT');
   ensureColumn(sqlite, 'agents', 'connected_at', 'INTEGER');
-  ensureColumn(
-    sqlite,
-    'agents',
-    'terminal_enabled',
-    'INTEGER NOT NULL DEFAULT 1',
-  );
+  ensureColumn(sqlite, 'agents', 'terminal_enabled', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(sqlite, 'agents', 'device_id', 'TEXT');
+  // Created after the column: the DDL above runs against deployments that
+  // still have the pre-device `agents` table, where the column does not exist
+  // yet, and an index on a missing column aborts the whole upgrade.
+  sqlite.exec('CREATE INDEX IF NOT EXISTS idx_agents_device ON agents(device_id);');
+  // Devices are a new entity, so the machines already reported through
+  // agents.host need their cards backfilled — otherwise every upgraded hub
+  // starts empty and the existing nodes look like they vanished. The synthetic
+  // `host:<hostname>` key is what a client that never reported a fingerprint
+  // resolves to, so both sides agree without another round trip.
+  sqlite.exec(`
+    INSERT OR IGNORE INTO devices (id, host, os, last_seen_at, created_at, updated_at)
+    SELECT 'host:' || lower(trim(host)),
+           lower(trim(host)),
+           MAX(os),
+           MAX(COALESCE(last_seen_at, created_at)),
+           MIN(created_at),
+           MAX(updated_at)
+      FROM agents
+     WHERE host IS NOT NULL AND trim(host) <> ''
+     GROUP BY lower(trim(host));
+
+    UPDATE agents
+       SET device_id = 'host:' || lower(trim(host))
+     WHERE device_id IS NULL AND host IS NOT NULL AND trim(host) <> '';
+  `);
   ensureColumn(sqlite, 'chat_messages', 'origin', "TEXT NOT NULL DEFAULT 'human'");
   ensureColumn(sqlite, 'chat_messages', 'rationale', 'TEXT');
   ensureColumn(sqlite, 'chat_messages', 'decision', 'TEXT');

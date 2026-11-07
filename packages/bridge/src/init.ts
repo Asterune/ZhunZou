@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { AgentKind } from '@zhunzou/shared';
 
+import { machineId } from './machine-id.js';
 import { installService } from './service.js';
 import { BRIDGE_VERSION } from './version.js';
 
@@ -562,6 +563,7 @@ async function exchangeEnrollmentCode(input: {
   env: string;
   host: string;
   os: string;
+  machineId?: string;
   kind: AgentKind;
   projectName?: string;
   version?: string;
@@ -576,6 +578,7 @@ async function exchangeEnrollmentCode(input: {
         env: input.env,
         host: input.host,
         os: input.os,
+        ...(input.machineId ? { machineId: input.machineId } : {}),
         kind: input.kind,
         ...(input.projectName ? { projectName: input.projectName } : {}),
         ...(input.version ? { version: input.version } : {}),
@@ -953,6 +956,7 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
             env: identity.env,
             host: hostname(),
             os: `${platform()}-${arch()}`,
+            machineId: machineId(),
             kind: identity.kind,
             ...(projectName ? { projectName } : {}),
             version: BRIDGE_VERSION,

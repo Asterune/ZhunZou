@@ -98,6 +98,8 @@ export const agents = sqliteTable(
     version: text('version'),
     host: text('host'),
     os: text('os'),
+    /** Machine this agent runs on; see `devices`. Null only for legacy rows. */
+    deviceId: text('device_id'),
 
     /** Realtime device protocol version (null for legacy HTTP bridges). */
     protocolVersion: integer('protocol_version'),
@@ -127,6 +129,43 @@ export const agents = sqliteTable(
     index('idx_agents_status').on(table.status),
     index('idx_agents_kind').on(table.kind),
     index('idx_agents_updated').on(table.updatedAt),
+    index('idx_agents_device').on(table.deviceId),
+  ],
+);
+
+/**
+ * A machine the hub has seen.
+ *
+ * Agents are processes; a device is the box they run on. `id` is the key the
+ * hub uses: the client's own fingerprint when it reported one, otherwise
+ * derived from its hostname. `machineId` stays null until that machine proves
+ * it is the one behind the fingerprint, which lets an older client's row be
+ * adopted rather than duplicated when it upgrades.
+ */
+export const devices = sqliteTable(
+  'devices',
+  {
+    id: text('id').primaryKey(),
+    /** Client-generated fingerprint (`~/.zhunzou/machine.json`), if ever reported. */
+    machineId: text('machine_id'),
+    host: text('host'),
+    os: text('os'),
+    /** JSON inventory: OS/arch, PTY capability, local CLI tools. */
+    capabilities: text('capabilities', {
+      mode: 'json',
+    }).$type<DeviceCapabilities>(),
+    /** JSON CPU / memory / load snapshot. */
+    deviceStats: text('device_stats', { mode: 'json' }).$type<DeviceStats>(),
+    /** ws while a device daemon is attached, http for legacy heartbeat-only bridges. */
+    transport: text('transport').$type<DeviceTransport>(),
+    lastSeenAt: integer('last_seen_at'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_devices_machine_id').on(table.machineId),
+    index('idx_devices_host').on(table.host),
+    index('idx_devices_seen').on(table.lastSeenAt),
   ],
 );
 
@@ -414,6 +453,7 @@ export type HeartbeatRow = typeof envHeartbeats.$inferSelect;
 export type EnvRunnerRow = typeof envRunners.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentInsert = typeof agents.$inferInsert;
+export type DeviceRow = typeof devices.$inferSelect;
 export type EnrollmentRow = typeof enrollmentCodes.$inferSelect;
 export type EnrollmentInsert = typeof enrollmentCodes.$inferInsert;
 export type AgentTaskRow = typeof agentTasks.$inferSelect;

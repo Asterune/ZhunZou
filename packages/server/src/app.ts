@@ -921,9 +921,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     const env = enrollment.usedEnvs.includes(baseEnv)
       ? baseEnv
       : allocateEnv(
-          (candidate) => repo.getAgent(candidate),
+          (candidate) => repo.getAgentMachine(candidate),
           baseEnv,
-          input.host,
+          { host: input.host, machineId: input.machineId },
           // Two codes bound to one label are two identities on the same box.
           { reuseOwned: false },
         );
@@ -941,6 +941,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       name: env,
       ...(input.host ? { host: input.host } : {}),
       ...(input.os ? { os: input.os } : {}),
+      ...(input.machineId ? { machineId: input.machineId } : {}),
     });
     const token = `zz_${randomBytes(32).toString('base64url')}`;
     repo.setAgentToken(env, hashToken(token), token.slice(0, 10), now);
@@ -1229,9 +1230,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         const taken = (env: string): boolean =>
           repo.getAgent(env) !== null || repo.getFleetWorkspaceByEnv(env) !== null;
         const allocated = allocateEnv(
-          (env) => (taken(env) ? repo.getAgent(env) : null),
+          (env) => (taken(env) ? repo.getAgentMachine(env) : null),
           base,
-          host,
+          { host },
         );
         if (!taken(allocated)) return allocated;
 
@@ -2309,6 +2310,15 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return { agents: repo.listAgents(query) };
       });
 
+      /**
+       * Machines rather than processes: one card per box, with the agent
+       * identities running on it.
+       */
+      api.get('/devices', async (request) => {
+        requireAdmin(request);
+        return { devices: repo.listDevices() };
+      });
+
       // Explicit registration. Heartbeats alone never create an agent row, so
       // a bridge that only sends heartbeats stays under "未注册" until it registers.
       // The caller gets the env the hub actually allocated, which differs from
@@ -2317,9 +2327,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         requireAdmin(request);
         const input = createAgentSchema.parse(request.body);
         const env = allocateEnv(
-          (candidate) => repo.getAgent(candidate),
+          (candidate) => repo.getAgentMachine(candidate),
           input.env,
-          input.host,
+          { host: input.host, machineId: input.machineId },
         );
         const existed = repo.getAgent(env) !== null;
         const agent = repo.registerAgent({ ...input, env });

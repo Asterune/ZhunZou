@@ -50,6 +50,11 @@ export const deviceCapabilitiesSchema = z.object({
   os: z.string().trim().min(1).max(60),
   arch: z.string().trim().min(1).max(40),
   hostname: z.string().trim().min(1).max(120),
+  /**
+   * Fingerprint the client generated once and keeps on disk. A hostname is not
+   * an identity: imaged machines share one and renamed machines lose theirs.
+   */
+  machineId: z.string().trim().min(8).max(64).optional(),
   release: z.string().trim().max(120).optional(),
   shell: z.string().trim().max(512).optional(),
   pty: devicePtySchema.optional(),

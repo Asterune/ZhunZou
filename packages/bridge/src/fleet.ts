@@ -20,6 +20,7 @@ import { z } from 'zod';
 import type { BridgeConfig } from './config.js';
 import { HubClient } from './hub-client.js';
 import { createHubApi } from './hub.js';
+import { machineId } from './machine-id.js';
 import { createPresenceReporter } from './presence.js';
 import { runSessionDaemon, supportsChat } from './session.js';
 import { agentKindForAdapter } from './wake/adapters.js';
@@ -662,6 +663,7 @@ async function issueToken(
   project: FleetProject,
   adminToken: string,
 ): Promise<{ token: string; env: string }> {
+  const mid = machineId();
   const registered = (await postJson(
     `${config.hubUrl.replace(/\/+$/, '')}/api/agents`,
     adminToken,
@@ -673,6 +675,7 @@ async function issueToken(
       // projects that never wake would sit under "未上报主机" forever.
       host: hostname(),
       os: `${platform()}-${arch()}`,
+      ...(mid ? { machineId: mid } : {}),
     },
   )) as { agent?: { env?: unknown } } | null;
 

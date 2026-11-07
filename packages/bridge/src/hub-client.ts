@@ -49,6 +49,7 @@ import {
 } from '@zhunzou/shared';
 
 import type { BridgeConfig } from './config.js';
+import { machineId } from './machine-id.js';
 import { BRIDGE_VERSION } from './version.js';
 
 export class HubApiError extends Error {
@@ -251,6 +252,7 @@ export class HubClient implements HubApi {
         version: BRIDGE_VERSION,
         host: hostname(),
         os: `${platform()}-${arch()}`,
+        machineId: machineId(),
         ...(input.agent ?? {}),
       },
     });
