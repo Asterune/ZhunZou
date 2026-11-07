@@ -17,6 +17,7 @@ import type {
   CreateTaskInput,
   CreateTerminalInput,
   DecisionTicket,
+  DeviceListResponse,
   EnrollmentResponse,
   EnvHeartbeat,
   ExchangeListResponse,
@@ -78,6 +79,7 @@ export interface HubApi {
   health(): Promise<ServerHealth>;
   status(token: string): Promise<{ envs: EnvHeartbeat[] }>;
   listAgents(token: string): Promise<AgentListResponse>;
+  listDevices(token: string): Promise<DeviceListResponse>;
   listExchanges(
     token: string,
     limit?: number,
@@ -306,6 +308,8 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
     status: (token) => request<{ envs: EnvHeartbeat[] }>(token, '/api/status'),
 
     listAgents: (token) => request<AgentListResponse>(token, '/api/agents'),
+
+    listDevices: (token) => request<DeviceListResponse>(token, '/api/devices'),
 
     listExchanges: (token, limit = 20, env) =>
       request<ExchangeListResponse>(

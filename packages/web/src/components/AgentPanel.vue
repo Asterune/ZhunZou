@@ -80,19 +80,11 @@ interface NodeCard {
   lastSeenAt?: number;
 }
 
-/** Group agents by the host reported in their heartbeat. */
+/** Cards the hub reports per machine, with unattributed agents grouped by host. */
 const nodes = computed<NodeCard[]>(() => {
   const groups = new Map<string, NodeCard>();
 
-  for (const agent of store.agents) {
-    const host = agent.host?.trim() || t('agents.unknownHost');
-    const node = groups.get(host) ?? {
-      host,
-      total: 0,
-      online: 0,
-      disabled: 0,
-    };
-
+  const tally = (node: NodeCard, agent: Agent): void => {
     node.total += 1;
     if (agent.online) node.online += 1;
     if (agent.status === 'disabled') node.disabled += 1;
@@ -104,8 +96,41 @@ const nodes = computed<NodeCard[]>(() => {
     ) {
       node.lastSeenAt = agent.lastSeenAt;
     }
+  };
 
-    groups.set(host, node);
+  // Two machines can legitimately report one hostname — an image clone does.
+  const duplicates = new Map<string, number>();
+  for (const device of store.devices) {
+    const label = device.host?.trim() || t('agents.unknownHost');
+    duplicates.set(label, (duplicates.get(label) ?? 0) + 1);
+  }
+
+  for (const device of store.devices) {
+    const label = device.host?.trim() || t('agents.unknownHost');
+    const node: NodeCard = {
+      host:
+        duplicates.get(label)! > 1 && !device.id.startsWith('host:')
+          ? `${label} · ${device.id.slice(0, 8)}`
+          : label,
+      os: device.os,
+      total: 0,
+      online: 0,
+      disabled: 0,
+      lastSeenAt: device.lastSeenAt,
+    };
+    for (const agent of store.agents) {
+      if (agent.deviceId === device.id) tally(node, agent);
+    }
+    groups.set(device.id, node);
+  }
+
+  for (const agent of store.agents) {
+    if (agent.deviceId && groups.has(agent.deviceId)) continue;
+    const host = agent.host?.trim() || t('agents.unknownHost');
+    const key = `ungrouped:${host}`;
+    const node = groups.get(key) ?? { host, total: 0, online: 0, disabled: 0 };
+    tally(node, agent);
+    groups.set(key, node);
   }
 
   return [...groups.values()].sort(

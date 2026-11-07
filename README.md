@@ -420,7 +420,7 @@ launchctl load ~/Library/LaunchAgents/com.zhunzou.fleet.plist
 pm2 start "zhunzou-bridge fleet" --name zhunzou-fleet && pm2 save
 ```
 
-The **Agents** (接入端) page groups agents by host, so one card shows how many projects that machine hosts and how many are online.
+The **Agents** (接入端) page shows one card per machine from the hub's device registry, so a card reports how many projects that box hosts and how many are online. Two machines that an image left with the same hostname get separate cards.
 
 ### Keep the daemon and the bridge current
 
@@ -773,7 +773,7 @@ Realtime and terminals:
 ## Development
 
 ```bash
-pnpm test          # 483 tests: 28 shared + 242 server + 164 bridge + 9 device + 40 web
+pnpm test          # 486 tests: 28 shared + 242 server + 164 bridge + 9 device + 43 web
 pnpm typecheck     # tsc + vue-tsc across all packages
 pnpm build         # shared, server, bridge (incl. standalone bundle), web
 pnpm smoke         # real server + HTTP long-poll round trip
@@ -810,7 +810,6 @@ Release process for the bridge bundle and the npm package: [docs/RELEASING.md](.
 Not built yet, in rough order of value:
 
 - Multi-instance scaling: swap the in-process wakeup layer for Redis pub/sub.
-- Dashboard node cards straight from `/api/devices`, replacing the browser-side grouping by hostname.
 - More notification channels (WeCom, DingTalk, Gotify).
 - Storage adapters (Postgres / MySQL) and multi-tenant hubs.
 - Ticket analytics: auto-approval rate and mean time to decision, with archiving.

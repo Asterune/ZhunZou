@@ -945,6 +945,10 @@ export const agentListResponseSchema = z.object({
   agents: z.array(agentSchema),
 });
 
+export const deviceListResponseSchema = z.object({
+  devices: z.array(deviceSchema),
+});
+
 /** Issued once: the plaintext token is never stored or returned again. */
 export const agentTokenResponseSchema = z.object({
   agent: agentSchema,
@@ -1133,6 +1137,7 @@ export type ListAgentsQuery = z.infer<typeof listAgentsQuerySchema>;
 export type CreateAgentInput = z.infer<typeof createAgentSchema>;
 export type UpdateAgentInput = z.infer<typeof updateAgentSchema>;
 export type AgentListResponse = z.infer<typeof agentListResponseSchema>;
+export type DeviceListResponse = z.infer<typeof deviceListResponseSchema>;
 export type AgentResponse = z.infer<typeof agentResponseSchema>;
 export type AgentTokenResponse = z.infer<typeof agentTokenResponseSchema>;
 export type CreateEnrollmentInput = z.infer<typeof createEnrollmentSchema>;

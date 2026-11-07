@@ -7,6 +7,7 @@ import type {
   CreateEnrollmentInput,
   CreateTaskInput,
   DecisionTicket,
+  Device,
   EnrollmentResponse,
   EnvHeartbeat,
   Exchange,
@@ -86,6 +87,7 @@ export function createHubStore(api: HubApi = hubApi) {
   const token = ref(loadStoredToken());
   const envs = ref<EnvHeartbeat[]>([]);
   const agents = ref<Agent[]>([]);
+  const devices = ref<Device[]>([]);
   const exchanges = ref<Exchange[]>([]);
   const tickets = ref<DecisionTicket[]>([]);
   const tasks = ref<AgentTask[]>([]);
@@ -500,6 +502,7 @@ export function createHubStore(api: HubApi = hubApi) {
     if (!token.value) return;
     void runSyncLoop(syncGeneration);
     void runRealtimeLoop(realtimeGeneration);
+    void loadDevices();
     void pollHealth();
     healthTimer = setInterval(() => void pollHealth(), HEALTH_POLL_MS);
   }
@@ -874,6 +877,7 @@ export function createHubStore(api: HubApi = hubApi) {
       ];
       pushToast(t('store.agentRegistered', { env: response.agent.env }), 'success');
       void refresh();
+      void loadDevices();
       return true;
     } catch (error) {
       fail(error, t('store.agentRegisterFailed'));
@@ -925,6 +929,7 @@ export function createHubStore(api: HubApi = hubApi) {
       await api.deleteAgent(token.value, env);
       agents.value = agents.value.filter((agent) => agent.env !== env);
       envs.value = envs.value.filter((item) => item.env !== env);
+      void loadDevices();
       pushToast(t('store.agentDeleted', { env }), 'success');
       return true;
     } catch (error) {
@@ -975,12 +980,26 @@ export function createHubStore(api: HubApi = hubApi) {
     }
   }
 
+  /** Machine registry; an older hub has none, and the panel falls back to hostnames. */
+  async function loadDevices(): Promise<void> {
+    if (!token.value) return;
+    try {
+      const response = await api.listDevices(token.value);
+      devices.value = response.devices;
+    } catch {
+      devices.value = [];
+    }
+  }
+
   async function loadAgents(): Promise<void> {
     if (!token.value || agentsLoading.value) return;
 
     agentsLoading.value = true;
     try {
-      const response = await api.listAgents(token.value);
+      const [response] = await Promise.all([
+        api.listAgents(token.value),
+        loadDevices(),
+      ]);
       agents.value = response.agents;
     } catch (error) {
       fail(error, t('store.agentsLoadFailed'));
@@ -1074,6 +1093,7 @@ export function createHubStore(api: HubApi = hubApi) {
     token,
     envs,
     agents: sortedAgents,
+    devices,
     exchanges,
     rules,
     tasks,

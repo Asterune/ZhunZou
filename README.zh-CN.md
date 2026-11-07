@@ -165,7 +165,7 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 
 - **登录门**：粘贴 `HUB_SECRET_TOKEN`，仅存于本机 `localStorage`（`zhunzou.token`，自动兼容旧的 `agent-hub.token`）。
 - **接入端状态栏**：展示每个 `env` 的在线心跳、Running / Blocked / Idle 状态与当前任务，90 秒无心跳自动置灰。
-- **接入端管理**：把每个 `env` 当作可管理的 Agent——客户端类型、版本、主机、系统、当前项目、专属 Token 的签发/轮换/吊销，以及改名、停用、删除；顶部按 host 汇总运行节点（托管项目数、在线数、bridge 版本）。
+- **接入端管理**：把每个 `env` 当作可管理的 Agent——客户端类型、版本、主机、系统、当前项目、专属 Token 的签发/轮换/吊销，以及改名、停用、删除；顶部按 hub 的设备登记逐台汇总运行节点（托管项目数、在线数、bridge 版本），被镜像复制成同一主机名的两台机器会分成两张卡。
 - **任务实时输出**：任务卡展开即可看 `stdout` / `stderr` / 系统事件，执行中每 1.2 秒增量拉取；每个任务最多保留 256 KB，结束后仍可回看。
 - **交互式会话**：在「会话」页直接和任意项目的 Agent 多轮对话；每条消息由端侧 runner 用可恢复 CLI（`--session` / `--resume`）执行，输出实时回传并保留上下文。
 - **待批奏折**：`PENDING_META` / `PENDING_HUMAN` 工单按创建时间排队；卡片即三行简报（已完成 / 卡点 / 下一步），点击任一方案即提交审批，可附带补充指令。推荐方案会高亮，但不影响选择。
@@ -821,7 +821,7 @@ zhunzou-bridge fleet
   编辑器开没开都不影响。
 - 某个项目的循环崩溃会自动重启；`--refresh-tokens` 强制轮换所有 Token，
   `--once` 只处理一轮（适合 cron / 定时任务）。
-- 看板「接入端」页会按运行节点（host）汇总：这台机器托管了多少项目、多少在线。
+- 看板「接入端」页按 hub 的设备登记逐台汇总运行节点：这台机器托管了多少项目、多少在线；主机名相同但指纹不同的两台机器会分开成卡。
 
 开机自启：
 
@@ -957,7 +957,7 @@ bash deploy/deploy.sh        # 随仓库上传到 hub
 ## 测试
 
 ```bash
-pnpm test          # shared 28 + server 242 + bridge 164 + device 9 + web 40 = 483 个测试
+pnpm test          # shared 28 + server 242 + bridge 164 + device 9 + web 43 = 486 个测试
 pnpm typecheck     # 全量类型检查（tsc + vue-tsc）
 pnpm build         # 全量构建（含 Vue 看板）
 pnpm smoke         # 构建、启动真实服务、HTTP 长轮询冒烟测试
