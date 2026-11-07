@@ -5,6 +5,12 @@
 > Agent 上奏，总管拟票，你一句「准奏」。
 
 <p align="center">
+  <a href="https://github.com/Asterune/ZhunZou/actions/workflows/ci.yml"><img src="https://github.com/Asterune/ZhunZou/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+  <a href="./package.json"><img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg" alt="Node.js >= 20" /></a>
+</p>
+
+<p align="center">
   <img src="./docs/assets/dashboard.png" alt="准奏看板：环境状态、待批奏折、总管转人工理由与高风险选项二次确认" width="920" />
 </p>
 
@@ -57,7 +63,7 @@ Agent 遇到卡点
 
 ## 当前状态
 
-当前状态：**M1–M8 全部完成**，具备共享协议、云端服务、长轮询、Meta-Agent、MCP/CLI 桥接、Web 看板、单端口部署、「历史判例 + 批复沉淀」的决策记忆闭环、超时裁决、批量审批、高风险保护、陈旧任务治理，以及通知内签名一键批复与接入向导。
+当前状态：**M1–M13 全部完成**，具备共享协议、云端服务、长轮询、Meta-Agent、MCP/CLI 桥接、Web 看板、单端口部署、「历史判例 + 批复沉淀」的决策记忆闭环、超时裁决、批量审批、高风险保护、陈旧任务治理、通知内签名一键批复与接入向导，以及反向长连（M9）、交互式 PTY 终端与治理（M10–M12）、bridge WS 混合传输（M13）、可安装 PWA 看板与一键接入。里程碑表见 [PROJECT_PLAN.md](./PROJECT_PLAN.md)，尚未覆盖的部分见文末「后续可选增强」。
 
 ---
 
@@ -72,7 +78,7 @@ zhunzou/
 ├── .env.example
 ├── Dockerfile / docker-compose.yml
 ├── ecosystem.config.cjs         # pm2 单实例配置
-├── docs/PLUGINS.md              # 可插拔扩展说明
+├── docs/                        # PLUGINS.md / REALTIME.md / RELEASING.md / UI 说明
 ├── examples/plugins/            # 外部插件示例（审计日志 / 自定义通知）
 ├── scripts/
 │   ├── smoke-test.sh            # 启动真实服务 + HTTP 冒烟测试
@@ -84,11 +90,13 @@ zhunzou/
 │   ├── setup.sh                 # 服务器端安装 / systemd / nginx
 │   ├── enable-https.sh          # Let's Encrypt 证书 + HTTPS
 │   └── zhunzou.service / nginx.conf
+├── release/bridge/              # standalone bridge 发布产物（对应 /releases/bridge/）
 └── packages/
     ├── shared/                  # Zod Schema、TypeScript 类型、状态机常量
-    ├── server/                  # Fastify API、SQLite/Drizzle、Meta-Agent、通知、插件、长轮询
-    ├── bridge/                  # 端侧 MCP Server + CLI（Cursor / OpenCode / 任意 Agent）
-    └── web/                     # Vue 3 + Vite + TailwindCSS 批奏折看板
+    ├── server/                  # Fastify API、SQLite/Drizzle、Meta-Agent、通知、插件、长轮询、WS 网关
+    ├── bridge/                  # 端侧 MCP Server + CLI（init / wait / wake / fleet / service / upgrade）
+    ├── web/                     # Vue 3 + Vite + TailwindCSS 批奏折看板（可安装 PWA）
+    └── device/                  # 反向长连守护进程：在线状态、机器能力、node-pty 终端
 ```
 
 ---
@@ -178,7 +186,7 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 
 ---
 
-## 跨设备反向长连（Phase 1）
+## 跨设备反向长连（device daemon）
 
 MCP bridge 仍是 HTTP 长轮询；如果希望中心主动保持到每台机器的反向连接，在端侧额外运行 device daemon：
 
@@ -188,17 +196,21 @@ pnpm --filter @zhunzou/device build
 node packages/device/bin/device.js run \
   --hub https://hub.example.com \
   --token zz_xxx \
-  --env home-mac
+  --env home-mac \
+  --project agent-hub \
+  --heartbeat 30000
 
 # 查看本机能力：OS、负载、CLI 清单、PTY 支持
-node packages/device/bin/device.js capabilities
+node packages/device/bin/device.js capabilities --json   # 子命令别名：print
 ```
 
-daemon 主动连接 `wss://<hub>/ws/device`，发送 `hello` 上报 OS/架构、CPU/内存/负载和本地 CLI 清单（claude、cursor-agent、opencode、git、node 等），之后每 30 秒心跳。看板「接入端」页会显示反向长连徽标、CPU/负载/内存与可用 CLI；断开后立即标记离线。
+`run` 是默认子命令。`--token` 依次回退 `ZHUNZOU_DEVICE_TOKEN` → `HUB_TOKEN` → `HUB_SECRET_TOKEN`，`--hub` 回退 `ZHUNZOU_HUB_URL` → `HUB_URL`，`--env` 回退 `ZHUNZOU_DEVICE_ENV` → `AGENT_ENV`（默认 `device-<hostname>`）；重连退避用 `ZHUNZOU_RECONNECT_MIN_MS` / `ZHUNZOU_RECONNECT_MAX_MS`。
+
+daemon 主动连接 `wss://<hub>/ws/device`，发送 `hello` 上报协议版本、OS/架构/主机名/shell、PTY 后端、CPU/内存/负载与本地 CLI 清单（claude、cursor-agent、agent、opencode、codex、gemini、aider、goose、amp、git、node、pnpm、docker、tmux 等），之后按服务端下发的间隔（默认 30 秒）心跳。看板「接入端」页会显示反向长连徽标、CPU/负载/内存与可用 CLI；断开后立即标记离线。帧级细节见 [docs/REALTIME.md](./docs/REALTIME.md)。
 
 - 设备端使用专属 Agent Token（`zz_...`）或管理员 Token；浏览器看板先调用 `POST /api/realtime/ticket` 换取 60 秒短期 ticket，再连接 `/ws/realtime`。
 - `REALTIME_ENABLED=false` 可关闭 WS 网关，完全回退到原有 HTTP 心跳 / 长轮询。
-- 本阶段**不安装 `node-pty`**，`capabilities` 会显示 `pty: unavailable`；PTY Runner 与终端控制台在下一阶段接入。
+- `node-pty` 是可选依赖：只上报在线状态的设备不装它也能跑，`capabilities` 会显示 `pty: unavailable`；装上后即提供下一节的交互式终端。
 
 ---
 
@@ -245,6 +257,9 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/healthz` | 健康检查（免鉴权） |
 | `GET` | `/a/:token` | 签名审批页（免 Bearer，链接自带能力与有效期） |
 | `POST` | `/a/:token/resolve` | 从签名审批页提交决定 |
+| `GET` | `/install.sh` · `/install.ps1` | 服务端渲染的一键安装脚本（`?code=ABCDE-FGHIJ`，免鉴权） |
+| `POST` | `/api/enroll` | 接入码换取专属 Agent Token（免鉴权，码本身是能力凭证） |
+| `GET` | `/api/bridge/latest` | standalone bridge 发布清单，供 `upgrade` / 自更新使用（免鉴权） |
 | `POST` | `/api/tickets` | 创建工单，返回 `201`，随后异步触发 Meta-Agent 预审 |
 | `POST` | `/api/decisions` | 统一裁决入口：`{ kind, proposal, context?, risk?, options? }` → `APPROVED` 或 `PENDING` 工单 |
 | `GET` | `/api/tickets/:id` | 查询单个工单 |
@@ -258,7 +273,8 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/api/tasks` | 任务列表，支持 `?env=&status=&limit=` |
 | `GET` | `/api/tasks/next?env=...&timeout=40000` | 端侧长轮询领取任务；无任务时超时返回 |
 | `POST` | `/api/tasks/:id/complete` | Agent 回报完成 / 失败 `{ status, result? }` |
-| `POST` | `/api/tasks/:id/log` | Agent 追加执行输出 `{ stream: stdout\|stderr\|system, chunk }` |
+| `POST` | `/api/tasks/:id/release` | 端侧唤不醒 Agent 时交回任务 `{ requeue?, reason? }`，重新排队而不是卡在 `CLAIMED` |
+| `POST` | `/api/tasks/:id/log` | Agent 追加执行输出 `{ stream: stdout / stderr / system, chunk }` |
 | `GET` | `/api/tasks/:id/logs` | 增量读取执行输出 `?after=<id>&limit=` |
 | `POST` | `/api/sessions` | 新建会话 `{ env, projectName?, title? }` |
 | `GET` | `/api/sessions` | 会话列表，支持 `?env=&limit=` |
@@ -274,6 +290,8 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/api/sessions/:id/events` | 增量读取会话输出 `?after=&messageId=` |
 | `POST` | `/api/sessions/:id/messages/:messageId/complete` | 回报结果 `{ status, content?, externalId?, error? }` |
 | `POST` | `/api/sessions/:id/messages/:messageId/retry` | 重试失败的轮次（重置为待领取） |
+| `POST` | `/api/exchanges` | Agent 镜像本轮问答 `{ env, question?, conclusion?, projectName? }`（后两者至少填一项） |
+| `GET` | `/api/exchanges` | 会话镜像列表，支持 `?env=&projectName=&limit=` |
 | `POST` | `/api/tasks/:id/cancel` | 人取消尚未结束的任务 |
 | `GET` | `/api/workspace-projects` | 工作区项目绑定列表，支持 `?env=` |
 | `POST` | `/api/workspace-projects` | 绑定项目 `{ env, projectName }`，幂等 |
@@ -291,6 +309,7 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `POST` | `/api/fleet/browse/:id/result` | bridge 回报目录列表 |
 | `POST` | `/api/status/heartbeat` | 端侧上报 `{ env, status, projectName?, currentTask?, agent? }`，同时续租该端执行中的任务 |
 | `GET` | `/api/status` | 各接入端在线状态（90s 内有心跳视为在线） |
+| `GET` | `/api/sync` | 看板整表快照长轮询（`rev` / `changed`）；`/ws/realtime` 可用时自动暂停 |
 | `POST` | `/api/realtime/ticket` | 管理员 Token 换取短期看板 WebSocket ticket |
 | `GET` | `/api/realtime/status` | 实时网关状态（设备 / 看板 / bridge 连接数） |
 | `POST` | `/api/terminals` | 在在线设备上创建 PTY 终端 |
@@ -301,18 +320,32 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/api/terminals/:id/audit?after=` | 终端审计（输入/接管/resize/信号/关闭） |
 | `GET` | `/api/terminals/:id/audit/export?format=csv` | 导出审计为 CSV / JSONL |
 | `GET` | `/api/terminals/stats` | 终端指标（活跃数/窗口数/字节数） |
-| `GET` | `/api/agents` | 接入端列表，支持 `?status=active\|disabled` |
+| `GET` | `/api/agents` | 接入端列表，支持 `?status=active` / `disabled` |
 | `POST` | `/api/agents` | 手动登记接入端 `{ env, name?, kind? }` |
 | `PATCH` | `/api/agents/:env` | 改名 / 改类型 / 停用 `{ name?, kind?, status? }` |
-| `DELETE` | `/api/agents/:env` | 删除接入端（历史工单保留） |
+| `DELETE` | `/api/agents/:env` | 删除接入端（历史工单保留；心跳/在线状态一并清除，在线连接立即断开） |
 | `POST` | `/api/agents/:env/token` | 签发或轮换专属 Token，明文只返回一次 |
 | `DELETE` | `/api/agents/:env/token` | 吊销专属 Token |
+| `POST` | `/api/enrollments` | 生成一次性接入码与安装命令（默认 15 分钟有效、最多 10 个客户端） |
 | `GET` | `/api/resume?env=...&since=...` | 端侧重启恢复：未决/近期工单 + 活跃任务 |
 | `GET` | `/api/rules` | 读取 `GLOBAL_RULES.md` |
 | `PUT` | `/api/rules` | 在线更新规则 `{ content }` |
-| `GET` | `/api/rules/candidates` | 候选规则列表，支持 `?status=PENDING\|ACCEPTED\|DISMISSED&limit=` |
+| `GET` | `/api/rules/candidates` | 候选规则列表，`?status=` 取 `PENDING` / `ACCEPTED` / `DISMISSED`，支持 `&limit=` |
 | `POST` | `/api/rules/candidates/:id/accept` | 采纳候选规则并追加到 `GLOBAL_RULES.md` |
 | `POST` | `/api/rules/candidates/:id/dismiss` | 忽略候选规则 |
+
+### WebSocket 端点
+
+仅在 `REALTIME_ENABLED=true` 时启用；关闭后上面的 HTTP 路径原样可用。
+
+| 路径 | 方向 | 用途与鉴权 |
+| --- | --- | --- |
+| `/ws/device` | 设备 → 中心 | 反向长连：`hello` + `heartbeat` + `pty.*`。管理员 Token（带 `?env=`）或设备专属 Token，走 Bearer 头或 `?token=` |
+| `/ws/bridge` | bridge → 中心 | 任务 / 工单 / 会话领取（`task.claim` / `ticket.wait` / `chat.claim`），对应 `ZHUNZOU_TRANSPORT=auto` |
+| `/ws/realtime` | 中心 → 浏览器 | 看板推送 `sync.snapshot` / `sync.changed`；需要 `POST /api/realtime/ticket` 换来的 `?ticket=`，或管理员 Bearer |
+| `/ws/terminal` | 浏览器 ↔ 中心 | 一个 PTY 会话：`?ticket=&sessionId=&afterSeq=` 回放 scrollback，输入 / resize / 接管 / 关闭都会审计 |
+
+未知 WS 路径直接以 `401` / `404` 拒绝。
 
 ### 长轮询约定
 
@@ -445,10 +478,13 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `NODE_ENV` | `development` | `production` 要求显式设置 `HUB_SECRET_TOKEN`，并把默认日志级别调到 `info` |
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | 监听地址 |
+| `LOG_LEVEL` | dev `debug` / prod `info` | Pino 日志级别 |
 | `HUB_SECRET_TOKEN` | 开发环境 `dev-token` | 生产环境必须显式设置 |
 | `DATABASE_PATH` | `./data/zhunzou.db` | SQLite 文件路径 |
 | `GLOBAL_RULES_PATH` | `./GLOBAL_RULES.md` | 规则文件路径 |
+| `META_AGENT_ENABLED` | `true` | `false` 等同 `META_AGENT_PROVIDER=none` |
 | `META_AGENT_PROVIDER` | `openai` | `openai` / `http` / `none` |
 | `OPENAI_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI 兼容接口 |
 | `OPENAI_API_KEY` | 空 | 为空时跳过自动预审 |
@@ -459,6 +495,10 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 | `META_AGENT_TIMEOUT_MS` | `15000` | LLM 请求超时 |
 | `NOTIFY_CHANNELS` | 空 | `webhook,bark,feishu,slack,discord,ntfy,telegram,console` |
 | `WEBHOOK_URL` / `WEBHOOK_SECRET` | 空 | 通用通知 Webhook（兼容旧配置） |
+| `BARK_KEY` / `BARK_URL` | 空 | Bark（iOS）；只给 KEY 时自动拼 `https://api.day.app/<key>` |
+| `FEISHU_WEBHOOK_URL` · `SLACK_WEBHOOK_URL` · `DISCORD_WEBHOOK_URL` | 空 | 各 IM 的 incoming webhook |
+| `NTFY_URL` / `NTFY_TOKEN` | 空 | ntfy 主题与访问 Token |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 空 | Telegram Bot 发送 |
 | `HUB_PLUGINS` | 空 | 逗号分隔的插件模块路径 |
 | `WAIT_TIMEOUT_MS` | `40000` | 默认长轮询窗口 |
 | `AUTO_RESOLVE_TIMEOUT_MS` | `0` | 超时默认裁决时限；`0` 关闭。到期按推荐方案自动准奏 |
@@ -467,6 +507,7 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 | `TASK_CLAIM_TIMEOUT_MS` | `1800000` | 端侧离线超过该时长后，`CLAIMED` 任务自动重新排队 |
 | `TASK_HARD_TIMEOUT_MS` | `21600000` | `CLAIMED` 任务硬超时，即使端侧在线也标记失败 |
 | `TASK_MAX_ATTEMPTS` | `3` | 任务最多被领取次数，超过后标记 `FAILED` |
+| `CHAT_MESSAGE_TIMEOUT_MS` | `300000` | 会话轮次 `RUNNING` 且该端离线超过此时长后判定失败；`0` 关闭恢复 |
 | `PUBLIC_BASE_URL` | 空 | 通知里签名审批链接的公开地址，如 `https://hub.example.com` |
 | `APPROVAL_LINK_SECRET` | `HUB_SECRET_TOKEN` | 审批链接 HMAC 密钥 |
 | `APPROVAL_LINK_TTL_MS` | `1800000` | 审批链接有效期 |
@@ -485,12 +526,32 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 | `TERMINAL_ALLOWED_ENVS` | 空 | 允许开终端的设备 env；空表示全部 |
 | `SERVE_WEB` | `true` | 是否由 Fastify 托管 `packages/web/dist` |
 | `WEB_DIST_PATH` | `./packages/web/dist` | 前端构建产物目录 |
+| `BRIDGE_RELEASES_PATH` | `./release/bridge` | standalone bridge 发布目录，公开托管在 `/releases/bridge/`，清单在 `/api/bridge/latest` |
 
 相对路径统一以仓库根目录为基准解析，因此从任意目录启动都不会写错位置。
 
 ---
 
 ## 端侧接入
+
+> **关于 `zhunzou-bridge` 命令的从哪来。** 分发渠道是你自己的 hub：一键安装会把校验过 SHA256 的
+> standalone bundle 下载到 `~/.zhunzou/`，`upgrade` 负责后续自更新。`npx -y zhunzou-bridge` 要等
+> 包正式发布到 npm 才能用；在那之前，请从仓库运行（`pnpm build && node packages/bridge/bin/cli.js …`），
+> 或在一台已装好的机器上运行 `node ~/.zhunzou/cli.mjs …`。下文示例里的 `zhunzou-bridge …` 都按此替换。
+
+### 命令一览
+
+| 命令 | 作用 |
+| --- | --- |
+| `init` | 检测编辑器、写 MCP 配置与决策规则、签发专属 Token、校验连通性 |
+| `wait --ticket 104 [--interval 15000]` | 阻塞等待该工单裁决，把决定打印到 stdout |
+| `wake` | 长轮询领取下发任务并唤醒本机 Agent（`--adapter --command --cwd --args --poll --run-timeout --once`） |
+| `fleet` | 一个进程跑多个项目的 wake 循环（`--config --once --refresh-tokens --print-launchd --no-auto-discover`） |
+| `fleet add` · `scan` · `list` · `remove` | 维护 `~/.zhunzou/fleet.json` 里的项目 |
+| `service`（`install` / `uninstall` / `status` / `restart`） | 管理登录自启的常驻服务 |
+| `upgrade`（`--check` / `--force` / `--rollback`） | 从 hub 拉取最新 bridge 并切换版本指针 |
+
+`wake` 适配器：`auto` / `opencode` / `opencode-run` / `claude` / `codex` / `gemini` / `cursor-agent` / `aider` / `goose` / `amp` / `command`（自定义命令模板）/ `notify`（只把任务显示在看板，不跑 CLI）。`auto` 优先接管已运行的 OpenCode 服务，其次按 `claude` → `codex` → `gemini` → `cursor-agent` → `aider` → `goose` → `amp` 探测，最后回退 `notify`。交互式会话需要可续跑的适配器：`opencode` / `opencode-run` / `cursor-agent` / `claude` / `command`。
 
 ### 一键接入（推荐给普通用户）
 
@@ -508,7 +569,17 @@ irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 
 这条命令会自动完成：准备 Node 20+（没装 Node 时下载便携运行时并校验 SHA256）、从 hub 拉取对应版本的 bridge、用接入码为**每个客户端**换取专属 scoped Token、写入用户级 Cursor / OpenCode / Claude Code / Codex 配置、安装登录自启守护进程。用户不需要管理员 `HUB_SECRET_TOKEN`，也不需要克隆仓库。
 
-接入码默认 15 分钟有效，最多可在**同一台电脑**上兑换 10 次（一次安装会为 4 个客户端各兑换一次）；第一次兑换会把接入码绑定到该主机，换台电脑无法复用。设备上线后会自动出现在「接入端」页。命令里带 `--no-service` 可以跳过常驻服务，只在编辑器打开时在线。
+接入码默认 15 分钟有效，最多可在**同一台电脑**上兑换 10 次（一次安装会为 4 个客户端各兑换一次）；第一次兑换会把接入码绑定到该主机，换台电脑无法复用。设备上线后会自动出现在「接入端」页。想跳过常驻服务、只在编辑器打开时在线：
+
+```bash
+curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash -s -- --no-service
+```
+
+```powershell
+# irm | iex 无法传参数；存下来再跑即可传 -NoService / -Code / -HubUrl
+iwr 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' -OutFile install.ps1
+.\install.ps1 -NoService          # 也可用 $env:ZHUNZOU_ENROLL_CODE / ZHUNZOU_HUB_URL
+```
 
 ### 一台电脑，多个客户端
 
@@ -646,6 +717,7 @@ npx zhunzou-bridge init
 | `agent_hub_next_task` | 长轮询领取看板下发的任务，返回后标记 `Running` 并显示真实任务 |
 | `agent_hub_complete_task` | 回报下发任务 `DONE` / `FAILED`，状态回到 `Idle` |
 | `agent_hub_report_task` | 上报当前正在做的普通任务，避免看板一直显示「MCP 已连接」 |
+| `agent_hub_report_exchange` | 把本轮「人类提问 + Agent 结论」镜像到看板会话记录，编辑器关掉也留痕 |
 | `agent_hub_propose_reply` | 替人起草下一句回复（草稿模式）：人类采纳前不会真的发给 Agent |
 | `agent_hub_escalate` | 创建工单 → 长轮询 40s → 返回最终决策或超时引导 |
 | `agent_hub_decide` | 统一裁决入口：提交提案，hub 返回放行或开票转人工（agent 不再自行判断该不该问人） |
@@ -833,6 +905,12 @@ pm2 save
 | `ZHUNZOU_WAKE_CWD` | 否 | 当前目录 | 一次性适配器的工作目录 |
 | `ZHUNZOU_WAKE_RUN_TIMEOUT_MS` | 否 | `1800000` | 一次性适配器最长执行时间 |
 | `ZHUNZOU_WAKE_POLL_TIMEOUT_MS` | 否 | `40000` | 领取任务的长轮询窗口（1s ~ 55s） |
+| `ZHUNZOU_WAKE_NOTIFY_INTERVAL_MS` | 否 | `15000` | `notify` 适配器重复提醒的间隔 |
+| `ZHUNZOU_CHAT_SESSION_ID` | 否 | 空 | 会话 runner 注入，用来把本轮接回正确的聊天会话 |
+| `ZHUNZOU_AUTO_UPGRADE` | 否 | 开启 | 设 `0` / `false` / `off` / `no` 关闭后台自更新 |
+| `ZHUNZOU_AUTO_UPGRADE_INTERVAL_MS` | 否 | `21600000` | 自更新检查间隔（最小 60s） |
+| `ZHUNZOU_MCP_BIN` / `ZHUNZOU_CLI_BIN` | 否 | 自动推断 | 覆盖 `init` 写进编辑器配置的入口路径 |
+| `CODEX_HOME` | 否 | `~/.codex` | `init --target codex` 读写 `config.toml` 的位置 |
 
 ### 接入模板
 
@@ -878,12 +956,15 @@ bash deploy/deploy.sh        # 随仓库上传到 hub
 ## 测试
 
 ```bash
-pnpm test          # shared 28 + server 191 + bridge 113 + device 9 + web 39 = 380 个测试
-pnpm typecheck     # 全量类型检查
+pnpm test          # shared 28 + server 217 + bridge 163 + device 9 + web 40 = 457 个测试
+pnpm typecheck     # 全量类型检查（tsc + vue-tsc）
 pnpm build         # 全量构建（含 Vue 看板）
 pnpm smoke         # 构建、启动真实服务、HTTP 长轮询冒烟测试
 pnpm smoke:bridge  # 真实服务 + MCP stdio 客户端 + CLI 端到端验收
 pnpm smoke:web     # 构建看板 + 单端口静态托管 / SPA fallback / 同源 API 验收
+pnpm deploy        # 本地打包 → 上传 → 服务器构建（deploy/deploy.sh）
+pnpm deploy:https  # 申请 Let's Encrypt 证书并启用 HTTPS
+pnpm deploy:pm2    # 构建并在 pm2 下 (重) 启动
 ```
 
 `pnpm smoke` / `pnpm smoke:bridge` / `pnpm smoke:web` 的实际输出（本机）：
@@ -903,7 +984,7 @@ BRIDGE SMOKE TEST PASSED
 WEB SMOKE TEST PASSED
 ```
 
-验收标准要求「resolve 后 100ms 内返回」，实测分别为 9ms 与 12ms。
+验收标准要求「resolve 后 1 秒内唤醒等待方」（`scripts/smoke-test.mjs` 断言 `wakeLatency < 1000`），实测约 9ms；bridge 冒烟测试另外打印 MCP 工具内的唤醒延迟，实测约 12ms。
 
 ---
 
@@ -974,7 +1055,11 @@ pm2 logs zhunzou
 ## 开源与贡献
 
 准奏以 MIT 协议开源，欢迎 Issue / PR。贡献指南见 [CONTRIBUTING.md](./CONTRIBUTING.md)，
-扩展开发见 [docs/PLUGINS.md](./docs/PLUGINS.md)，CI 配置见
+扩展开发见 [docs/PLUGINS.md](./docs/PLUGINS.md)，实时链路与终端设计见
+[docs/REALTIME.md](./docs/REALTIME.md)，bridge 发版与自更新见
+[docs/RELEASING.md](./docs/RELEASING.md)，端侧细节见
+[packages/bridge/README.md](./packages/bridge/README.md)，安全约定见
+[SECURITY.md](./SECURITY.md)，CI 配置见
 [.github/workflows/ci.yml](./.github/workflows/ci.yml)。
 
 如果你基于准奏接入了新的模型、通知渠道或 Agent 客户端，欢迎把适配方式整理成示例插件提交回来。
@@ -986,4 +1071,11 @@ pm2 logs zhunzou
 - 多实例水平扩展：把进程内 `EventEmitter` 唤醒层替换为 Redis pub/sub；
 - 更多内置通知渠道（企业微信、钉钉、Gotify…）；
 - 存储适配器（Postgres / MySQL）与多租户；
-- 工单归档与统计：自动放行率、平均决策耗时。
+- 工单归档与统计：自动放行率、平均决策耗时；
+- 终端运维增强：录制留存、按角色的终端策略。
+
+---
+
+## 许可
+
+[MIT](./LICENSE) © 2026 qiliu
