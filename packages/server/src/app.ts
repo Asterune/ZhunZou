@@ -226,7 +226,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   );
 
   const { sqlite, db } = createDatabase(config.dbPath);
-  const repo: TicketStore = options.repo ?? new TicketRepository(db);
+  const repo: TicketStore =
+    options.repo ??
+    new TicketRepository(db, {
+      onIdentityConflict: (conflict) =>
+        app.log.warn(conflict, 'refused machine claim on an env it does not own'),
+    });
   const bus = new TicketEventBus();
   const taskBus = new TaskEventBus();
   const sessionBus = new SessionEventBus();

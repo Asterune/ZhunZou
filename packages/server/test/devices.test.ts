@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import type { Agent, Device } from '@zhunzou/shared';
 
 import { createDatabase } from '../src/db/client.js';
-import { TicketRepository } from '../src/repository.js';
+import { TicketRepository, type IdentityConflict } from '../src/repository.js';
 import { createTestContext } from './helpers.js';
 
 type Ctx = Awaited<ReturnType<typeof createTestContext>>;
@@ -210,6 +210,66 @@ describe('devices', () => {
       expect(await devices(ctx)).toEqual([]);
     } finally {
       await ctx.close();
+    }
+  });
+});
+
+describe('identity conflicts', () => {
+  const mine = 'ffffffff-6666-4666-8666-ffffffffffff';
+  const theirs = 'gggggggg-7777-4777-8777-gggggggggggg';
+
+  function repoWithConflicts(): {
+    repo: TicketRepository;
+    conflicts: IdentityConflict[];
+    cleanup: () => void;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), 'zhunzou-conflict-'));
+    const { db } = createDatabase(join(dir, 'hub.db'));
+    const conflicts: IdentityConflict[] = [];
+    const seeded = new TicketRepository(db);
+    seeded.registerAgent({
+      env: 'cursor-erp',
+      kind: 'cursor',
+      host: 'lq',
+      machineId: mine,
+    });
+    const repo = new TicketRepository(db, {
+      onIdentityConflict: (conflict) => conflicts.push(conflict),
+    });
+    return { repo, conflicts, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it('reports a beat from a stranger wearing the owner hostname', () => {
+    const { repo, conflicts, cleanup } = repoWithConflicts();
+    try {
+      repo.recordAgentPresence('cursor-erp', {
+        host: 'lq',
+        os: 'linux-x64',
+        machineId: theirs,
+      });
+
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0]).toMatchObject({
+        env: 'cursor-erp',
+        owner: { host: 'lq', machineId: mine },
+        claimed: { host: 'lq', machineId: theirs },
+      });
+      expect(repo.getAgent('cursor-erp')?.os).not.toBe('linux-x64');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('stays quiet while the owning machine keeps reporting', () => {
+    const { repo, conflicts, cleanup } = repoWithConflicts();
+    try {
+      repo.recordAgentPresence('cursor-erp', { host: 'lq', machineId: mine });
+      repo.recordAgentPresence('cursor-erp', { host: 'lq' });
+      repo.recordAgentPresence('cursor-erp', undefined);
+
+      expect(conflicts).toEqual([]);
+    } finally {
+      cleanup();
     }
   });
 });

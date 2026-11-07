@@ -511,6 +511,17 @@ export function parseTicketId(raw: string): number {
   return id;
 }
 
+/** A contact whose reported machine facts belong to a different machine. */
+export interface IdentityConflict {
+  env: string;
+  owner: MachineFacts;
+  claimed: MachineFacts;
+}
+
+export interface RepositoryHooks {
+  onIdentityConflict?: (conflict: IdentityConflict) => void;
+}
+
 export interface TicketStore {
   create(
     input: CreateTicketInput,
@@ -845,7 +856,23 @@ export interface TicketStore {
 }
 
 export class TicketRepository implements TicketStore {
-  constructor(private readonly db: DrizzleDatabase) {}
+  constructor(
+    private readonly db: DrizzleDatabase,
+    private readonly hooks: RepositoryHooks = {},
+  ) {}
+
+  /**
+   * A client cannot be allowed to rewrite another machine's inventory, but a
+   * silent refusal leaves the operator with a stale card and no explanation.
+   */
+  private reportConflict(
+    owner: MachineFacts | null,
+    claimed: MachineFacts,
+    env: string,
+  ): void {
+    if (!owner || sameMachine(owner, claimed)) return;
+    this.hooks.onIdentityConflict?.({ env, owner, claimed });
+  }
 
   create(
     input: CreateTicketInput,
@@ -1530,6 +1557,7 @@ export class TicketRepository implements TicketStore {
       host: input.capabilities.hostname,
       machineId: input.capabilities.machineId,
     };
+    this.reportConflict(owner, reported, input.env);
     const owned = sameMachine(owner ?? {}, reported);
     const deviceId = owned
       ? this.upsertDevice(
@@ -1679,6 +1707,7 @@ export class TicketRepository implements TicketStore {
     // two machines sharing a label overwrite each other on every beat.
     const owner = this.getAgentMachine(env);
     const reported = { host: meta?.host, machineId: meta?.machineId };
+    this.reportConflict(owner, reported, env);
     const owned = sameMachine(owner ?? {}, reported);
     const deviceId = owned ? this.upsertDevice(reported, {}, now) : null;
     const machine = {

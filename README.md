@@ -773,7 +773,7 @@ Realtime and terminals:
 ## Development
 
 ```bash
-pnpm test          # 486 tests: 28 shared + 242 server + 164 bridge + 9 device + 43 web
+pnpm test          # 488 tests: 28 shared + 244 server + 164 bridge + 9 device + 43 web
 pnpm typecheck     # tsc + vue-tsc across all packages
 pnpm build         # shared, server, bridge (incl. standalone bundle), web
 pnpm smoke         # real server + HTTP long-poll round trip
@@ -802,7 +802,7 @@ Release process for the bridge bundle and the npm package: [docs/RELEASING.md](.
 - **Ticket IDs** are auto-increment integers, returned as numeric strings (`"104"`) and rendered as `#104` — short enough to read, stable enough to route a long poll.
 - **Concurrency** is settled in the database: `resolve` and `markAutoResolved` are conditional updates, so a human answer and a late verdict cannot both win.
 - **Devices are machines, agents are processes.** Each client generates one fingerprint (`~/.zhunzou/machine.json`) and every contact carries it, so a hub can group a Cursor, an OpenCode and a Claude Code session onto one node card — and still tell apart two machines that an image left with the same hostname. A client that reports no fingerprint is grouped by hostname, which is what pre-fingerprint deployments already did.
-- **`env` is allocated by the hub, not by the client.** Two machines that open same-basename repos derive the same label, and `agents.env` is the primary key — so registration renames the newcomer (`cursor-erp` → `cursor-erp-home-mac`) instead of letting it overwrite the incumbent's identity. Clients that already read the response adopt the new label; heartbeats, which cannot be re-labelled, are simply refused write access to another host's machine metadata.
+- **`env` is allocated by the hub, not by the client.** Two machines that open same-basename repos derive the same label, and `agents.env` is the primary key — so registration renames the newcomer (`cursor-erp` → `cursor-erp-home-mac`) instead of letting it overwrite the incumbent's identity. Clients that already read the response adopt the new label; heartbeats, which cannot be re-labelled, are refused write access to another host's machine metadata and the refusal is logged, because a stale card with no explanation is worse than a noisy warning.
 - **Pluggability at the edges only**: `META_AGENT_PROVIDER`, `NOTIFY_CHANNELS`, `HUB_PLUGINS`, and a `buildApp({ repo })` storage seam — the protocol stays stable.
 
 ## Roadmap

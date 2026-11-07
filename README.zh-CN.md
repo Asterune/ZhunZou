@@ -957,7 +957,7 @@ bash deploy/deploy.sh        # 随仓库上传到 hub
 ## 测试
 
 ```bash
-pnpm test          # shared 28 + server 242 + bridge 164 + device 9 + web 43 = 486 个测试
+pnpm test          # shared 28 + server 244 + bridge 164 + device 9 + web 43 = 488 个测试
 pnpm typecheck     # 全量类型检查（tsc + vue-tsc）
 pnpm build         # 全量构建（含 Vue 看板）
 pnpm smoke         # 构建、启动真实服务、HTTP 长轮询冒烟测试
@@ -1051,7 +1051,7 @@ pm2 logs zhunzou
 - **并发安全**：`resolve` / `markAutoResolved` 都带状态条件更新，重复审批返回 `409`，迟到的 Meta-Agent 结果不会覆盖人工决定。
 - **优雅退出**：`SIGINT` / `SIGTERM` 关闭 Fastify 与 SQLite 连接。
 - **设备是机器，接入端是进程**：每个客户端只生成一次指纹（`~/.zhunzou/machine.json`），之后每次通信都带上，hub 因此能把同一台机器上的 Cursor、OpenCode、Claude Code 归到一张节点卡——也分得清被镜像复制成同一主机名的两台机器。没上报指纹的客户端仍按主机名归组，与升级前的行为一致。
-- **`env` 由 hub 分配，不由客户端决定**：两台机器打开同名仓库会得到相同标签，而 `agents.env` 是主键——所以注册时后来者改名（`cursor-erp` → `cursor-erp-home-mac`），而不是覆盖先来者的设备归属。会读取响应的客户端自动采用新标签；心跳无法被改名，只能拒绝它写入其它机器的设备信息。
+- **`env` 由 hub 分配，不由客户端决定**：两台机器打开同名仓库会得到相同标签，而 `agents.env` 是主键——所以注册时后来者改名（`cursor-erp` → `cursor-erp-home-mac`），而不是覆盖先来者的设备归属。会读取响应的客户端自动采用新标签；心跳无法被改名，它写入其它机器设备信息的请求会被拒绝，并且服务端会记一条 warning——卡片变旧却查不到原因，比多一条日志更难排查。
 
 ---
 
