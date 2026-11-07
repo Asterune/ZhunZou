@@ -99,6 +99,7 @@ import {
   evaluateDecision,
   syntheticTicket,
 } from './decision-policy.js';
+import { allocateEnv } from './env-allocator.js';
 import {
   ApiError,
   BadRequestError,
@@ -905,25 +906,27 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     // identity shared by every client. With several slots each client gets
     // `<env>-<client>`; single-use codes keep the exact name for compatibility.
     const boundEnv = enrollment.env;
-    const baseEnv = boundEnv
-      ? enrollment.maxUses > 1
-        ? `${boundEnv}-${clientPrefix(kind)}`.slice(0, 64)
-        : boundEnv
-      : input.env ?? `${kind}-${slugifyHost(input.host) || 'device'}`;
+    const baseEnv = (
+      boundEnv
+        ? enrollment.maxUses > 1
+          ? `${boundEnv}-${clientPrefix(kind)}`
+          : boundEnv
+        : input.env ?? `${kind}-${slugifyHost(input.host) || 'device'}`
+    ).slice(0, 64);
 
     // Re-running the installer on the same machine should refresh the existing
-    // cards, not create `cursor-host-2` ghosts. An env this code already
-    // produced is safe to reuse; everything else gets a collision suffix so a
-    // leaked code cannot take over another machine's identity.
-    let env = baseEnv.slice(0, 64);
-    if (!enrollment.usedEnvs.includes(env)) {
-      for (let suffix = 2; repo.getAgent(env) && suffix < 100; suffix += 1) {
-        env = `${baseEnv.slice(0, 60)}-${suffix}`;
-      }
-      if (repo.getAgent(env)) {
-        env = `${baseEnv.slice(0, 55)}-${randomBytes(3).toString('hex')}`;
-      }
-    }
+    // card, not create `cursor-host-2` ghosts. An env this code already
+    // produced is safe to reuse; everything else goes through the allocator so
+    // a leaked code cannot take over another machine's identity.
+    const env = enrollment.usedEnvs.includes(baseEnv)
+      ? baseEnv
+      : allocateEnv(
+          (candidate) => repo.getAgent(candidate),
+          baseEnv,
+          input.host,
+          // Two codes bound to one label are two identities on the same box.
+          { reuseOwned: false },
+        );
 
     if (!repo.consumeEnrollmentCode(enrollment.id, env, input.host, now)) {
       throw new NotFoundError(
@@ -1217,15 +1220,26 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return token;
       };
 
-      const uniqueFleetEnv = (base: string): string => {
-        let env = base;
-        let index = 2;
-        while (repo.getAgent(env) || repo.getFleetWorkspaceByEnv(env)) {
-          const suffix = `-${index}`;
-          env = `${base.slice(0, 64 - suffix.length)}${suffix}`;
-          index += 1;
+      /**
+       * Fleet workspaces are unique per env as well as per host+path, and two
+       * directories on ONE host share a basename often enough that a label held
+       * by any workspace must move on, regardless of which machine holds it.
+       */
+      const uniqueFleetEnv = (base: string, host: string): string => {
+        const taken = (env: string): boolean =>
+          repo.getAgent(env) !== null || repo.getFleetWorkspaceByEnv(env) !== null;
+        const allocated = allocateEnv(
+          (env) => (taken(env) ? repo.getAgent(env) : null),
+          base,
+          host,
+        );
+        if (!taken(allocated)) return allocated;
+
+        for (let index = 2; index < 100; index += 1) {
+          const candidate = `${base.slice(0, 60)}-${index}`;
+          if (!taken(candidate)) return candidate;
         }
-        return env;
+        return `${base.slice(0, 55)}-${randomBytes(3).toString('hex')}`;
       };
 
       const fleetEnvPrefix: Record<string, string> = {
@@ -2295,12 +2309,20 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return { agents: repo.listAgents(query) };
       });
 
-      // Explicit registration (also happens automatically on heartbeat).
+      // Explicit registration. Heartbeats alone never create an agent row, so
+      // a bridge that only sends heartbeats stays under "未注册" until it registers.
+      // The caller gets the env the hub actually allocated, which differs from
+      // the requested one only when another machine already holds that label.
       api.post('/agents', async (request, reply) => {
         requireAdmin(request);
         const input = createAgentSchema.parse(request.body);
-        const existed = repo.getAgent(input.env) !== null;
-        const agent = repo.registerAgent(input);
+        const env = allocateEnv(
+          (candidate) => repo.getAgent(candidate),
+          input.env,
+          input.host,
+        );
+        const existed = repo.getAgent(env) !== null;
+        const agent = repo.registerAgent({ ...input, env });
         return reply.code(existed ? 200 : 201).send({ agent });
       });
 
@@ -2570,6 +2592,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           host,
           env: uniqueFleetEnv(
             suggestedEnv ?? fleetEnvFor(adapter, projectName),
+            host,
           ),
           path,
           projectName,

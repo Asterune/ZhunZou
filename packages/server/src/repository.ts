@@ -73,6 +73,8 @@ import type {
 } from '@zhunzou/shared';
 import { HEARTBEAT_ONLINE_WINDOW_MS } from '@zhunzou/shared';
 
+import { hostsMatch } from './env-allocator.js';
+
 import type { DrizzleDatabase } from './db/client.js';
 import {
   agentTasks,
@@ -1342,6 +1344,20 @@ export class TicketRepository implements TicketStore {
     now = Date.now(),
   ): Agent {
     const os = `${input.capabilities.os}-${input.capabilities.arch}`;
+    const owner = this.db
+      .select({ host: agents.host })
+      .from(agents)
+      .where(eq(agents.env, input.env))
+      .get();
+    const owned = hostsMatch(owner?.host, input.capabilities.hostname);
+    const machine = owned
+      ? {
+          host: input.capabilities.hostname,
+          os,
+          capabilities: input.capabilities,
+          ...(input.stats ? { deviceStats: input.stats } : {}),
+        }
+      : {};
 
     this.db
       .insert(agents)
@@ -1364,11 +1380,8 @@ export class TicketRepository implements TicketStore {
       .onConflictDoUpdate({
         target: agents.env,
         set: {
-          host: input.capabilities.hostname,
-          os,
+          ...machine,
           protocolVersion: input.protocolVersion,
-          capabilities: input.capabilities,
-          ...(input.stats ? { deviceStats: input.stats } : {}),
           transport: input.transport,
           connectedAt: now,
           lastSeenAt: now,
@@ -1458,6 +1471,20 @@ export class TicketRepository implements TicketStore {
     meta: AgentMeta | undefined,
     now = Date.now(),
   ): void {
+    // A heartbeat cannot be re-labelled by the hub, so machine metadata is only
+    // accepted from the host that already owns this env. Without the guard two
+    // machines sharing a label overwrite each other on every beat.
+    const owner = this.db
+      .select({ host: agents.host })
+      .from(agents)
+      .where(eq(agents.env, env))
+      .get();
+    const owned = !meta?.host || hostsMatch(owner?.host, meta.host);
+    const machine = {
+      ...(owned && meta?.host ? { host: meta.host } : {}),
+      ...(owned && meta?.os ? { os: meta.os } : {}),
+    };
+
     this.db
       .insert(agents)
       .values({
@@ -1466,8 +1493,7 @@ export class TicketRepository implements TicketStore {
         kind: meta?.kind ?? 'other',
         status: 'active',
         ...(meta?.version ? { version: meta.version } : {}),
-        ...(meta?.host ? { host: meta.host } : {}),
-        ...(meta?.os ? { os: meta.os } : {}),
+        ...machine,
         transport: 'http',
         connectedAt: now,
         lastSeenAt: now,
@@ -1482,8 +1508,7 @@ export class TicketRepository implements TicketStore {
           // client would relabel an OpenCode agent as "other" on every beat.
           ...(meta?.kind && meta.kind !== 'other' ? { kind: meta.kind } : {}),
           ...(meta?.version ? { version: meta.version } : {}),
-          ...(meta?.host ? { host: meta.host } : {}),
-          ...(meta?.os ? { os: meta.os } : {}),
+          ...machine,
           transport: 'http',
           connectedAt: now,
           lastSeenAt: now,

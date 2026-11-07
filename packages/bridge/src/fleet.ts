@@ -648,31 +648,48 @@ async function postJson(
   return parsed;
 }
 
-/** Register the agent (idempotent) and issue a scoped token. */
+/**
+ * Register the agent (idempotent) and issue a scoped token.
+ *
+ * The hub may answer with a different env: two machines that opened
+ * same-named repositories derive the identical label, and the hub keeps both
+ * addressable by giving the newcomer a host component. Callers must then run
+ * under the returned env, or their traffic would keep landing on the other
+ * machine's agent.
+ */
 async function issueToken(
   config: FleetConfig,
   project: FleetProject,
   adminToken: string,
-): Promise<string> {
-  await postJson(`${config.hubUrl.replace(/\/+$/, '')}/api/agents`, adminToken, {
-    env: project.env,
-    name: project.project ?? basename(project.absolutePath),
-    kind: agentKindForAdapter(project.adapter ?? config.adapter),
-    // The fleet runs on this machine, so register the node up-front. Otherwise
-    // projects that never wake would sit under "未上报主机" forever.
-    host: hostname(),
-    os: `${platform()}-${arch()}`,
-  });
+): Promise<{ token: string; env: string }> {
+  const registered = (await postJson(
+    `${config.hubUrl.replace(/\/+$/, '')}/api/agents`,
+    adminToken,
+    {
+      env: project.env,
+      name: project.project ?? basename(project.absolutePath),
+      kind: agentKindForAdapter(project.adapter ?? config.adapter),
+      // The fleet runs on this machine, so register the node up-front. Otherwise
+      // projects that never wake would sit under "未上报主机" forever.
+      host: hostname(),
+      os: `${platform()}-${arch()}`,
+    },
+  )) as { agent?: { env?: unknown } } | null;
+
+  const env =
+    typeof registered?.agent?.env === 'string' && registered.agent.env
+      ? registered.agent.env
+      : project.env;
 
   const body = (await postJson(
-    `${config.hubUrl.replace(/\/+$/, '')}/api/agents/${encodeURIComponent(project.env)}/token`,
+    `${config.hubUrl.replace(/\/+$/, '')}/api/agents/${encodeURIComponent(env)}/token`,
     adminToken,
   )) as { token?: unknown } | null;
 
   if (typeof body?.token !== 'string' || !body.token) {
-    throw new Error(`hub did not return a token for ${project.env}`);
+    throw new Error(`hub did not return a token for ${env}`);
   }
-  return body.token;
+  return { token: body.token, env };
 }
 
 /**
@@ -720,8 +737,17 @@ export async function resolveFleetTokens(
 
     try {
       const issued = await issueToken(config, project, adminToken);
-      tokens.set(project.env, issued);
-      cache[project.env] = issued;
+      if (issued.env !== project.env) {
+        // The label belonged to another machine, so the token cached under it
+        // authenticates as that machine. Drop it before adopting the new name.
+        delete cache[project.env];
+        (options.stderr ?? ((line: string) => process.stderr.write(`${line}\n`)))(
+          `[fleet] ${project.env} 已被其他设备使用，本机改用 ${issued.env}`,
+        );
+        project.env = issued.env;
+      }
+      tokens.set(project.env, issued.token);
+      cache[project.env] = issued.token;
       cacheDirty = true;
     } catch (error) {
       if (project.implicit) continue;

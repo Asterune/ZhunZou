@@ -772,7 +772,7 @@ Realtime and terminals:
 ## Development
 
 ```bash
-pnpm test          # 457 tests: 28 shared + 217 server + 163 bridge + 9 device + 40 web
+pnpm test          # 473 tests: 28 shared + 232 server + 164 bridge + 9 device + 40 web
 pnpm typecheck     # tsc + vue-tsc across all packages
 pnpm build         # shared, server, bridge (incl. standalone bundle), web
 pnpm smoke         # real server + HTTP long-poll round trip
@@ -800,6 +800,7 @@ Release process for the bridge bundle and the npm package: [docs/RELEASING.md](.
 - **No OpenAI SDK.** Node's built-in `fetch` talks to any OpenAI-compatible endpoint, which keeps the client dependency-free and makes DeepSeek / OpenAI / Moonshot interchangeable.
 - **Ticket IDs** are auto-increment integers, returned as numeric strings (`"104"`) and rendered as `#104` — short enough to read, stable enough to route a long poll.
 - **Concurrency** is settled in the database: `resolve` and `markAutoResolved` are conditional updates, so a human answer and a late verdict cannot both win.
+- **`env` is allocated by the hub, not the client.** Two machines that open same-basename repos derive the same label, and `agents.env` is the primary key — so registration renames the newcomer (`cursor-erp` → `cursor-erp-home-mac`) instead of letting it overwrite the incumbent's identity. Clients that already read the response adopt the new label; heartbeats, which cannot be re-labelled, are simply refused write access to another host's machine metadata.
 - **Pluggability at the edges only**: `META_AGENT_PROVIDER`, `NOTIFY_CHANNELS`, `HUB_PLUGINS`, and a `buildApp({ repo })` storage seam — the protocol stays stable.
 
 ## Roadmap

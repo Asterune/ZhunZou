@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Agent, AgentTokenResponse } from '@zhunzou/shared';
 
+import { hostsMatch } from '../src/env-allocator.js';
 import { createTestContext, ticketInput } from './helpers.js';
 
 const ENV = 'home-opencode';
@@ -446,6 +447,126 @@ describe('task lease renewal', () => {
         payload: { env: ENV, status: 'Idle' },
       });
       expect(ctx.app.repo.getTask(Number(task.id))?.leaseAt).toBe(before);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+describe('env identity across machines', () => {
+  it('keeps the owning machine when another host heartbeats the same env', async () => {
+    const ctx = await createTestContext();
+    try {
+      await heartbeat(ctx, 'cursor-erp', ctx.auth, {
+        kind: 'cursor',
+        host: 'office-pc',
+        os: 'darwin-arm64',
+      });
+      await heartbeat(ctx, 'cursor-erp', ctx.auth, {
+        kind: 'cursor',
+        host: 'home-mac',
+        os: 'win32-x64',
+      });
+
+      const agent = ctx.app.repo.getAgent('cursor-erp');
+      expect(agent?.host).toBe('office-pc');
+      expect(agent?.os).toBe('darwin-arm64');
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('still accepts machine metadata from the same host under another spelling', async () => {
+    const ctx = await createTestContext();
+    try {
+      await heartbeat(ctx, 'cursor-erp', ctx.auth, {
+        kind: 'cursor',
+        host: 'office-pc',
+        os: 'darwin-arm64',
+      });
+      await heartbeat(ctx, 'cursor-erp', ctx.auth, {
+        kind: 'cursor',
+        host: 'Office-PC.local',
+        os: 'darwin-arm64',
+      });
+
+      // The label may be restated in whatever spelling the machine reports, as
+      // long as it still identifies the machine that already owned it.
+      expect(hostsMatch(ctx.app.repo.getAgent('cursor-erp')?.host, 'office-pc')).toBe(
+        true,
+      );
+
+      await heartbeat(ctx, 'cursor-erp', ctx.auth, {
+        kind: 'cursor',
+        host: 'home-mac',
+        os: 'win32-x64',
+      });
+      expect(
+        hostsMatch(ctx.app.repo.getAgent('cursor-erp')?.host, 'office-pc'),
+      ).toBe(true);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('gives the second machine its own agent instead of sharing a label', async () => {
+    const ctx = await createTestContext();
+    try {
+      const first = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/agents',
+        headers: ctx.auth,
+        payload: { env: 'cursor-erp', kind: 'cursor', host: 'office-pc' },
+      });
+      expect(first.statusCode).toBe(201);
+      expect((first.json() as { agent: Agent }).agent.env).toBe('cursor-erp');
+
+      const second = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/agents',
+        headers: ctx.auth,
+        payload: { env: 'cursor-erp', kind: 'cursor', host: 'home-mac' },
+      });
+      expect((second.json() as { agent: Agent }).agent.env).toBe('cursor-erp-home-mac');
+      expect(ctx.app.repo.getAgent('cursor-erp')?.host).toBe('office-pc');
+      expect(ctx.app.repo.getAgent('cursor-erp-home-mac')?.host).toBe('home-mac');
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('routes a scoped token to the machine that owns the label', async () => {
+    const ctx = await createTestContext();
+    try {
+      const registered = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/agents',
+        headers: ctx.auth,
+        payload: { env: 'claude-crm', kind: 'claude-code', host: 'office-pc' },
+      });
+      const env = (registered.json() as { agent: Agent }).agent.env;
+      const issued = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/agents/${env}/token`,
+        headers: ctx.auth,
+      });
+      const token = (issued.json() as AgentTokenResponse).token;
+
+      const other = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/agents',
+        headers: ctx.auth,
+        payload: { env: 'claude-crm', kind: 'claude-code', host: 'home-mac' },
+      });
+      expect((other.json() as { agent: Agent }).agent.env).toBe('claude-crm-home-mac');
+
+      const ticket = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/tickets',
+        headers: { authorization: `Bearer ${token}` },
+        payload: ticketInput({ env }),
+      });
+      expect(ticket.statusCode).toBe(201);
     } finally {
       await ctx.close();
     }

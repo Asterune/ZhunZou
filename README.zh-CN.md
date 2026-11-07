@@ -956,7 +956,7 @@ bash deploy/deploy.sh        # 随仓库上传到 hub
 ## 测试
 
 ```bash
-pnpm test          # shared 28 + server 217 + bridge 163 + device 9 + web 40 = 457 个测试
+pnpm test          # shared 28 + server 232 + bridge 164 + device 9 + web 40 = 473 个测试
 pnpm typecheck     # 全量类型检查（tsc + vue-tsc）
 pnpm build         # 全量构建（含 Vue 看板）
 pnpm smoke         # 构建、启动真实服务、HTTP 长轮询冒烟测试
@@ -1049,6 +1049,7 @@ pm2 logs zhunzou
 - **工单 ID**：数据库自增整数，API 中以数字字符串返回（`"104"`），展示层格式化为 `#104`，兼顾短 ID 与长轮询路由。
 - **并发安全**：`resolve` / `markAutoResolved` 都带状态条件更新，重复审批返回 `409`，迟到的 Meta-Agent 结果不会覆盖人工决定。
 - **优雅退出**：`SIGINT` / `SIGTERM` 关闭 Fastify 与 SQLite 连接。
+- **`env` 由 hub 分配，不由客户端决定**：两台机器打开同名仓库会得到相同标签，而 `agents.env` 是主键——所以注册时后来者改名（`cursor-erp` → `cursor-erp-home-mac`），而不是覆盖先来者的设备归属。会读取响应的客户端自动采用新标签；心跳无法被改名，只能拒绝它写入其它机器的设备信息。
 
 ---
 

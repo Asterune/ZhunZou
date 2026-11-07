@@ -386,6 +386,59 @@ describe('resolveFleetTokens', () => {
     }
   });
 
+  it('adopts the env the hub allocates when another machine owns the label', async () => {
+    const dir = tempDir();
+    const cachePath = join(dir, 'tokens.json');
+    writeFileSync(cachePath, JSON.stringify({ demo: 'zz_shared' }), {
+      mode: 0o600,
+    });
+
+    const hub = await startHub((request, response) => {
+      if (request.url === '/api/agents') {
+        json(response, 201, { agent: { env: 'demo-home-mac' } });
+        return;
+      }
+      if (request.url === '/api/agents/demo-home-mac/token') {
+        json(response, 200, { agent: { env: 'demo-home-mac' }, token: 'zz_new' });
+        return;
+      }
+      json(response, 404, { error: { message: 'not found' } });
+    });
+
+    try {
+      const path = writeConfig(dir, {
+        hubUrl: hub.baseUrl,
+        adminToken: 'admin-token',
+        projects: [{ env: 'demo', path: './project', project: 'demo' }],
+      });
+      const config = loadFleetConfig(path);
+      const lines: string[] = [];
+
+      const tokens = await resolveFleetTokens(config, {
+        tokenCachePath: cachePath,
+        refreshTokens: true,
+        stderr: (line) => lines.push(line),
+      });
+
+      expect(hub.requests.map((item) => item.url)).toEqual([
+        '/api/agents',
+        '/api/agents/demo-home-mac/token',
+      ]);
+      expect(tokens.get('demo-home-mac')).toBe('zz_new');
+      expect(config.projects[0]?.env).toBe('demo-home-mac');
+      expect(lines.join('')).toContain('demo-home-mac');
+
+      // The token minted for the shared label must not survive under it.
+      const cached = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<
+        string,
+        string
+      >;
+      expect(cached).toEqual({ 'demo-home-mac': 'zz_new' });
+    } finally {
+      await hub.close();
+    }
+  });
+
   it('requires a token or admin token', async () => {
     const dir = tempDir();
     const path = writeConfig(dir, {
