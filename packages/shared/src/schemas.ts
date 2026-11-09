@@ -1070,6 +1070,12 @@ export const syncStateSchema = z.object({
   exchanges: z.array(exchangeSchema),
   fleetCandidates: z.array(fleetCandidateSchema),
   fleetWorkspaces: z.array(fleetWorkspaceSchema),
+  /**
+   * The machine registry. Optional because a dashboard bundle can outrun the
+   * hub process serving it during a deploy; a hub without this field still
+   * renders, just without node cards.
+   */
+  devices: z.array(deviceSchema).optional(),
 });
 
 export const syncResponseSchema = z.object({

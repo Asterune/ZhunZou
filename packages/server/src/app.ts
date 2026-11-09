@@ -294,6 +294,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     tasks: repo.listTasks({ limit: 200 }).tasks,
     projects: repo.listWorkspaceProjects({}).projects,
     agents: repo.listAgents({}),
+    devices: repo.listDevices(),
     exchanges: repo.listExchanges({ limit: 100 }),
     fleetCandidates: repo.listFleetCandidates().candidates,
     fleetWorkspaces: repo.listFleetWorkspaces().workspaces,

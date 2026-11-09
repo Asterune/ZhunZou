@@ -45,6 +45,22 @@ describe('GET /api/sync', () => {
     expect(Array.isArray(body.state?.agents)).toBe(true);
     expect(Array.isArray(body.state?.projects)).toBe(true);
     expect(Array.isArray(body.state?.exchanges)).toBe(true);
+    expect(Array.isArray(body.state?.devices)).toBe(true);
+  });
+
+  it('carries the machine registry so no second call is needed', async () => {
+    await ctx.app.inject({
+      method: 'POST',
+      url: '/api/agents',
+      headers: ctx.auth,
+      payload: { env: 'sync-machine-env', kind: 'cursor', host: 'sync-pc' },
+    });
+
+    const body = await sync(0, 0);
+    const card = body.state?.devices?.find(
+      (device) => device.id === 'host:sync-pc',
+    );
+    expect(card?.envs).toContain('sync-machine-env');
   });
 
   it('reports "unchanged" on a clean timeout', async () => {
