@@ -21,6 +21,7 @@ import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 import { useTerminalStore } from '../stores/terminals';
 import TerminalView from './TerminalView.vue';
+import TargetPicker from './TargetPicker.vue';
 
 const hub = useHubStore();
 const terminals = useTerminalStore();
@@ -34,10 +35,6 @@ const form = reactive({
   shell: '',
 });
 
-const realtimeEnvs = computed(() =>
-  hub.agents.filter((agent) => agent.online && agent.transport === 'ws'),
-);
-const projects = computed(() => hub.projectsForEnv(form.env));
 const selected = computed(() => terminals.selected);
 const auditOpen = ref(false);
 const auditLoading = ref(false);
@@ -47,7 +44,6 @@ const stats = ref<TerminalStatsResponse | null>(null);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 function openCreate(): void {
-  form.env = realtimeEnvs.value[0]?.env ?? '';
   form.projectName = '';
   form.title = '';
   form.shell = '';
@@ -194,7 +190,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[11px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container disabled:opacity-50"
-          :disabled="!realtimeEnvs.length"
+          :disabled="!hub.realtimeMachines.length"
           @click="openCreate"
         >
           <Plus :size="14" />
@@ -204,7 +200,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      v-if="!realtimeEnvs.length"
+      v-if="!hub.realtimeMachines.length"
       class="mb-4 rounded-xl border border-outline-variant/35 bg-surface-container-low px-4 py-3 text-[12px] leading-5 text-on-surface-variant"
     >
       {{ t('terminal.noDeviceBefore') }}
@@ -345,34 +341,17 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <label class="mb-3 block text-[12px] text-on-surface-variant">
-            {{ t('terminal.envLabel') }}
-            <select
-              v-model="form.env"
-              class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2 font-mono text-[13px] text-on-surface outline-none focus:border-primary"
-            >
-              <option v-for="agent in realtimeEnvs" :key="agent.env" :value="agent.env">
-                {{ agent.env }} · {{ agent.host || agent.os || '' }}
-              </option>
-            </select>
-          </label>
-
-          <label class="mb-3 block text-[12px] text-on-surface-variant">
-            {{ t('terminal.projectLabel') }}
-            <select
-              v-model="form.projectName"
-              class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2 text-[13px] text-on-surface outline-none focus:border-primary"
-            >
-              <option value="">{{ t('terminal.anyProject') }}</option>
-              <option
-                v-for="project in projects"
-                :key="project.id"
-                :value="project.projectName"
-              >
-                {{ project.projectName }}
-              </option>
-            </select>
-          </label>
+          <div class="mb-3">
+            <TargetPicker
+              v-model:env="form.env"
+              v-model:project-name="form.projectName"
+              :machines="hub.realtimeMachines"
+              variant="dialog"
+              :machine-label="t('terminal.envLabel')"
+              :project-label="t('terminal.projectLabel')"
+              :no-project-text="t('terminal.anyProject')"
+            />
+          </div>
 
           <label class="mb-3 block text-[12px] text-on-surface-variant">
             {{ t('terminal.titleLabel') }}

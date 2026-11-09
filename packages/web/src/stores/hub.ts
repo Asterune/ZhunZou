@@ -83,6 +83,55 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : t('store.unknownError');
 }
 
+/** Host names are case-insensitive, and `.local` is not part of the machine. */
+function normalizeMachineHost(host: string | undefined): string {
+  return (host ?? '').trim().toLowerCase().replace(/\.local$/, '');
+}
+
+/**
+ * The machine an agent identity belongs to. The key has to match the hub's own
+ * device registry — device id, else hostname — or the same box shows up twice.
+ * An agent that reports neither is only distinguishable by its env.
+ */
+function machineKeyOf(agent: Agent): string {
+  if (agent.deviceId) return agent.deviceId;
+  const host = normalizeMachineHost(agent.host);
+  return host ? `host:${host}` : `env:${agent.env}`;
+}
+
+function machineLabel(agents: Agent[]): string {
+  const host = agents.find((agent) => agent.host?.trim())?.host?.trim();
+  const os = agents.find((agent) => agent.os?.trim())?.os?.trim();
+  return host || os || t('agents.unknownHost');
+}
+
+/** Online first, so whichever default the dashboard picks can actually claim work. */
+function sortClients(agents: Agent[]): Agent[] {
+  return [...agents].sort(
+    (left, right) =>
+      Number(right.online) - Number(left.online) ||
+      left.kind.localeCompare(right.kind) ||
+      left.env.localeCompare(right.env),
+  );
+}
+
+/**
+ * One dispatch target: a machine and the agent identities running on it.
+ *
+ * `env` stays the address work is delivered to, so a machine is a group of
+ * identities rather than one of them, and a target is only fully chosen once
+ * one of them is named.
+ */
+export interface MachineTarget {
+  id: string;
+  label: string;
+  os?: string;
+  total: number;
+  online: number;
+  lastSeenAt?: number;
+  agents: Agent[];
+}
+
 export function createHubStore(api: HubApi = hubApi) {
   const token = ref(loadStoredToken());
   const envs = ref<EnvHeartbeat[]>([]);
@@ -213,6 +262,114 @@ export function createHubStore(api: HubApi = hubApi) {
     return [...names].sort((left, right) => left.localeCompare(right));
   });
 
+  /**
+   * Machines the hub can dispatch to, one card each, whichever agent
+   * identities they happen to run.
+   */
+  const targetMachines = computed(() =>
+    machineCards(agents.value.filter((agent) => agent.status === 'active')),
+  );
+
+  /** Machines whose realtime daemon is attached — the terminal's target list. */
+  const realtimeMachines = computed(() =>
+    machineCards(
+      agents.value.filter((agent) => agent.online && agent.transport === 'ws'),
+    ),
+  );
+
+  function machineCards(list: Agent[]): MachineTarget[] {
+    const groups = new Map<string, Agent[]>();
+    for (const agent of list) {
+      const id = machineKeyOf(agent);
+      const bucket = groups.get(id);
+      if (bucket) bucket.push(agent);
+      else groups.set(id, [agent]);
+    }
+
+    // Two machines can report one hostname — an imaged clone does — and the
+    // card has to say which is which.
+    const labelCount = new Map<string, number>();
+    for (const members of groups.values()) {
+      const label = machineLabel(members);
+      labelCount.set(label, (labelCount.get(label) ?? 0) + 1);
+    }
+
+    const cards: MachineTarget[] = [];
+    for (const [id, members] of groups) {
+      const label = machineLabel(members);
+      const distinguished =
+        labelCount.get(label)! > 1 &&
+        !id.startsWith('host:') &&
+        !id.startsWith('env:');
+      cards.push({
+        id,
+        label: distinguished ? `${label} · ${id.slice(0, 8)}` : label,
+        os: members.find((agent) => agent.os)?.os,
+        total: members.length,
+        online: members.filter((agent) => agent.online).length,
+        lastSeenAt:
+          members.reduce(
+            (latest, agent) => Math.max(latest, agent.lastSeenAt ?? 0),
+            0,
+          ) || undefined,
+        agents: sortClients(members),
+      });
+    }
+
+    return cards.sort(
+      (left, right) =>
+        Number(right.online > 0) - Number(left.online > 0) ||
+        left.label.localeCompare(right.label),
+    );
+  }
+
+  /** Projects an identity knows: its bindings plus the workspace it has open. */
+  function projectNamesOfEnv(env: string): string[] {
+    const names = new Set(
+      projectsForEnv(env).map((project) => project.projectName),
+    );
+    const current = envs.value.find((item) => item.env === env)?.projectName;
+    if (current) names.add(current);
+    return [...names];
+  }
+
+  function projectsForMachine(machine: MachineTarget): string[] {
+    const names = new Set<string>();
+    for (const agent of machine.agents) {
+      for (const project of projectNamesOfEnv(agent.env)) names.add(project);
+    }
+    return [...names].sort((left, right) => left.localeCompare(right));
+  }
+
+  /** Identities on a machine that take this project; all of them when none is named. */
+  function clientsForMachine(machine: MachineTarget, projectName = ''): Agent[] {
+    return sortClients(
+      projectName
+        ? machine.agents.filter((agent) =>
+            projectNamesOfEnv(agent.env).includes(projectName),
+          )
+        : machine.agents,
+    );
+  }
+
+  /**
+   * An offline identity whose client type is already live on the same machine
+   * is a registration ghost of that one. It stays selectable, just not in the
+   * way; a machine with nothing online has no ghosts to fold.
+   */
+  function splitGhostClients(clients: Agent[]): {
+    visible: Agent[];
+    ghosts: Agent[];
+  } {
+    const live = new Set(
+      clients.filter((agent) => agent.online).map((agent) => agent.kind),
+    );
+    return {
+      visible: clients.filter((agent) => agent.online || !live.has(agent.kind)),
+      ghosts: clients.filter((agent) => !agent.online && live.has(agent.kind)),
+    };
+  }
+
   /** Candidates grouped by the machine that reported them. */
   const fleetCandidatesByHost = computed(() => {
     const groups = new Map<string, FleetCandidate[]>();
@@ -249,6 +406,7 @@ export function createHubStore(api: HubApi = hubApi) {
   function applySnapshot(state: SyncState): void {
     envs.value = state.envs;
     agents.value = state.agents;
+    devices.value = state.devices ?? [];
     exchanges.value = state.exchanges;
     tickets.value = state.tickets;
     tasks.value = state.tasks;
@@ -486,6 +644,7 @@ export function createHubStore(api: HubApi = hubApi) {
     rev.value = 0;
     envs.value = [];
     agents.value = [];
+    devices.value = [];
     tickets.value = [];
     tasks.value = [];
     rules.value = null;
@@ -502,7 +661,6 @@ export function createHubStore(api: HubApi = hubApi) {
     if (!token.value) return;
     void runSyncLoop(syncGeneration);
     void runRealtimeLoop(realtimeGeneration);
-    void loadDevices();
     void pollHealth();
     healthTimer = setInterval(() => void pollHealth(), HEALTH_POLL_MS);
   }
@@ -877,7 +1035,6 @@ export function createHubStore(api: HubApi = hubApi) {
       ];
       pushToast(t('store.agentRegistered', { env: response.agent.env }), 'success');
       void refresh();
-      void loadDevices();
       return true;
     } catch (error) {
       fail(error, t('store.agentRegisterFailed'));
@@ -929,7 +1086,8 @@ export function createHubStore(api: HubApi = hubApi) {
       await api.deleteAgent(token.value, env);
       agents.value = agents.value.filter((agent) => agent.env !== env);
       envs.value = envs.value.filter((item) => item.env !== env);
-      void loadDevices();
+      // The hub may retire the machine card with the last identity on it.
+      void refresh();
       pushToast(t('store.agentDeleted', { env }), 'success');
       return true;
     } catch (error) {
@@ -980,26 +1138,12 @@ export function createHubStore(api: HubApi = hubApi) {
     }
   }
 
-  /** Machine registry; an older hub has none, and the panel falls back to hostnames. */
-  async function loadDevices(): Promise<void> {
-    if (!token.value) return;
-    try {
-      const response = await api.listDevices(token.value);
-      devices.value = response.devices;
-    } catch {
-      devices.value = [];
-    }
-  }
-
   async function loadAgents(): Promise<void> {
     if (!token.value || agentsLoading.value) return;
 
     agentsLoading.value = true;
     try {
-      const [response] = await Promise.all([
-        api.listAgents(token.value),
-        loadDevices(),
-      ]);
+      const response = await api.listAgents(token.value);
       agents.value = response.agents;
     } catch (error) {
       fail(error, t('store.agentsLoadFailed'));
@@ -1109,6 +1253,11 @@ export function createHubStore(api: HubApi = hubApi) {
     fleetActionId,
     fleetLoading,
     knownProjects,
+    targetMachines,
+    realtimeMachines,
+    projectsForMachine,
+    clientsForMachine,
+    splitGhostClients,
     pendingTickets,
     historyTickets,
     activeTasks,

@@ -9,7 +9,7 @@ import {
   Terminal,
   XCircle,
 } from 'lucide-vue-next';
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, reactive, ref } from 'vue';
 
 import type { CreateTaskInput } from '@zhunzou/shared';
 
@@ -21,6 +21,7 @@ import {
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 import ProjectBindings from './ProjectBindings.vue';
+import TargetPicker from './TargetPicker.vue';
 import TaskLogViewer from './TaskLogViewer.vue';
 
 const store = useHubStore();
@@ -40,54 +41,12 @@ function toggleLogs(taskId: string): void {
   openLogs.value = openLogs.value === taskId ? '' : taskId;
 }
 
-const envOptions = computed(() =>
-  [...store.envs].sort((left, right) => left.env.localeCompare(right.env)),
-);
-
-const projectOptions = computed(() => {
-  if (!form.env) return [];
-  return store.projectsForEnv(form.env).map((project) => project.projectName);
-});
-
 const canSubmit = computed(
   () =>
     form.env.trim().length > 0 &&
     form.title.trim().length > 0 &&
     form.instruction.trim().length > 0,
 );
-
-watch(
-  envOptions,
-  (options) => {
-    if (!form.env && options[0]) form.env = options[0].env;
-  },
-  { immediate: true },
-);
-
-watch(
-  () => form.env,
-  (env) => {
-    const bound = store.projectsForEnv(env);
-    const current = store.envs.find((item) => item.env === env)?.projectName;
-
-    if (current && bound.some((project) => project.projectName === current)) {
-      form.projectName = current;
-    } else if (bound.length === 1) {
-      form.projectName = bound[0]!.projectName;
-    } else {
-      form.projectName = '';
-    }
-  },
-);
-
-watch(projectOptions, (options) => {
-  if (form.projectName && !options.includes(form.projectName)) {
-    form.projectName = '';
-  }
-  if (!form.projectName && options.length === 1) {
-    form.projectName = options[0]!;
-  }
-});
 
 async function submit(): Promise<void> {
   if (!canSubmit.value || submitting.value) return;
@@ -148,48 +107,13 @@ async function cancel(taskId: string): Promise<void> {
       class="mb-6 rounded-2xl border border-outline-variant/35 bg-surface-container-lowest p-4 shadow-sm sm:p-5"
       @submit.prevent="submit"
     >
-      <div class="grid gap-3 sm:grid-cols-2">
-        <label class="block">
-          <span class="flex items-center gap-1 text-[11px] font-medium text-on-surface-variant">
-            {{ t('tasks.envLabel') }} <span class="text-primary">*</span>
-          </span>
-          <select
-            v-model="form.env"
-            required
-            class="mt-1 h-10 w-full rounded-lg bg-surface-container-low px-3 font-mono text-sm text-on-surface shadow-inner outline-none transition focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20"
-          >
-            <option value="" disabled>{{ t('tasks.envPlaceholder') }}</option>
-            <option v-for="env in envOptions" :key="env.env" :value="env.env">
-              {{ env.env }}{{ env.online ? t('tasks.envOnlineSuffix') : t('tasks.envOfflineSuffix') }}
-            </option>
-          </select>
-          <span
-            v-if="!envOptions.length"
-            class="mt-1 block text-[11px] text-on-surface-variant/70"
-          >
-            {{ t('tasks.noEnv') }}
-          </span>
-        </label>
-
-        <label class="block">
-          <span class="text-[11px] font-medium text-on-surface-variant">{{ t('tasks.projectLabel') }}</span>
-          <select
-            v-model="form.projectName"
-            class="mt-1 h-10 w-full rounded-lg bg-surface-container-low px-3 font-mono text-sm text-on-surface shadow-inner outline-none transition focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20"
-          >
-            <option value="">{{ t('tasks.noProject') }}</option>
-            <option v-for="project in projectOptions" :key="project" :value="project">
-              {{ project }}
-            </option>
-          </select>
-          <span
-            v-if="form.env && !projectOptions.length"
-            class="mt-1 block text-[11px] text-on-surface-variant/70"
-          >
-            {{ t('tasks.noBinding') }}
-          </span>
-        </label>
-      </div>
+      <TargetPicker
+        v-model:env="form.env"
+        v-model:project-name="form.projectName"
+        :machines="store.targetMachines"
+        :project-label="t('tasks.projectLabel')"
+        :no-project-text="t('tasks.noProject')"
+      />
 
       <div
         class="mt-3 rounded-lg border border-dashed border-outline-variant/70 bg-surface-container-low/50 px-3 py-2.5"

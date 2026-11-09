@@ -1,4 +1,5 @@
 import type {
+  AgentKind,
   AgentTask,
   DecisionTicket,
   EnvHeartbeat,
@@ -142,6 +143,25 @@ export function formatUptime(ms: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return t('time.hoursAgo', { count: hours });
   return t('time.daysAgo', { count: Math.floor(hours / 24) });
+}
+
+/**
+ * Client types are product names, so only the catch-all needs translating.
+ * A hub may know a type this board was built without; it shows as its id.
+ */
+const CLIENT_KIND_LABELS: Record<AgentKind, string> = {
+  cursor: 'Cursor',
+  opencode: 'OpenCode',
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  gemini: 'Gemini',
+  windsurf: 'Windsurf',
+  other: 'Other',
+};
+
+export function clientKindLabel(kind: AgentKind): string {
+  if (kind === 'other') return t('agents.kind.other');
+  return CLIENT_KIND_LABELS[kind] ?? kind;
 }
 
 export function envDotClass(env: EnvHeartbeat): string {

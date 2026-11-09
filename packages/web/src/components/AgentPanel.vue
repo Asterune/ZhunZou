@@ -19,6 +19,7 @@ import {
 } from 'lucide-vue-next';
 import { computed, reactive, ref } from 'vue';
 
+import { AGENT_KINDS } from '@zhunzou/shared';
 import type {
   Agent,
   AgentKind,
@@ -26,7 +27,7 @@ import type {
   UpdateAgentInput,
 } from '@zhunzou/shared';
 
-import { relativeTime } from '../lib/format';
+import { clientKindLabel, relativeTime } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 import FleetWorkspaces from './FleetWorkspaces.vue';
@@ -34,17 +35,7 @@ import FleetWorkspaces from './FleetWorkspaces.vue';
 const store = useHubStore();
 const { t } = useI18n();
 
-const KIND_LABELS: Record<AgentKind, string> = {
-  cursor: 'Cursor',
-  opencode: 'OpenCode',
-  'claude-code': 'Claude Code',
-  codex: 'Codex',
-  gemini: 'Gemini',
-  windsurf: 'Windsurf',
-  other: 'Other',
-};
-
-const KIND_OPTIONS = Object.keys(KIND_LABELS) as AgentKind[];
+const KIND_OPTIONS = AGENT_KINDS;
 
 const formOpen = ref(false);
 const editingEnv = ref('');
@@ -140,12 +131,6 @@ const nodes = computed<NodeCard[]>(() => {
       left.host.localeCompare(right.host),
   );
 });
-
-function kindLabel(agent: Agent): string {
-  return agent.kind === 'other'
-    ? t('agents.kind.other')
-    : KIND_LABELS[agent.kind] ?? agent.kind;
-}
 
 function formatBytes(bytes: number | undefined): string {
   if (!bytes) return '—';
@@ -464,7 +449,7 @@ async function copyEnrollmentCommand(): Promise<void> {
               </span>
             </div>
             <p class="mt-1 truncate text-[12px] text-on-surface-variant">
-              {{ agent.name }} · {{ kindLabel(agent) }}
+              {{ agent.name }} · {{ clientKindLabel(agent.kind) }}
             </p>
           </div>
           <button
@@ -861,7 +846,7 @@ async function copyEnrollmentCommand(): Promise<void> {
               class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2 text-[13px] text-on-surface outline-none focus:border-primary"
             >
               <option v-for="value in KIND_OPTIONS" :key="value" :value="value">
-                {{ value === 'other' ? t('agents.kind.other') : KIND_LABELS[value] }}
+                {{ clientKindLabel(value) }}
               </option>
             </select>
           </label>

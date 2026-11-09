@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Agent, Device } from '@zhunzou/shared';
+import type { Agent, Device, SyncState } from '@zhunzou/shared';
 
 import type { HubApi } from '../src/lib/api';
 import { createHubStore } from '../src/stores/hub';
@@ -28,19 +28,27 @@ function device(id: string, envs: string[]): Device {
   } as Device;
 }
 
-/** A hub whose agents and machines both live in memory. */
-function fakeHub(agents: Agent[], devices: Device[]) {
-  const state = { agents: [...agents], devices: [...devices], deviceCalls: 0 };
+/** A hub whose agents and machines both live in one sync snapshot. */
+function fakeHub(state: Partial<SyncState> = {}) {
+  const snapshot = {
+    envs: [],
+    tickets: [],
+    tasks: [],
+    projects: [],
+    agents: [],
+    exchanges: [],
+    fleetCandidates: [],
+    fleetWorkspaces: [],
+    devices: [],
+    ...state,
+  } as SyncState;
 
   const api = {
-    listAgents: async () => ({ agents: [...state.agents] }),
-    listDevices: async () => {
-      state.deviceCalls += 1;
-      return { devices: [...state.devices] };
-    },
+    sync: async () => ({ rev: 1, changed: true, state: snapshot }),
     deleteAgent: async (_token: string, env: string) => {
-      state.agents = state.agents.filter((item) => item.env !== env);
-      state.devices = state.devices
+      snapshot.agents = snapshot.agents.filter((item) => item.env !== env);
+      // The hub retires a machine card once nothing runs on it.
+      snapshot.devices = snapshot.devices
         .map((item) => ({ ...item, envs: item.envs.filter((e) => e !== env) }))
         .filter((item) => item.envs.length);
       return { deleted: true, env };
@@ -49,27 +57,27 @@ function fakeHub(agents: Agent[], devices: Device[]) {
 
   const store = createHubStore(api);
   store.token = 'test-token';
-  return { store, state };
+  return { store, snapshot };
 }
 
 describe('device registry in the dashboard', () => {
-  it('loads machines alongside the agent list', async () => {
-    const { store } = fakeHub(
-      [agent('desk-one', 'pc-one'), agent('solo', 'pc-two')],
-      [device('pc-one', ['desk-one']), device('pc-two', ['solo'])],
-    );
+  it('reads machines from the sync snapshot', async () => {
+    const { store } = fakeHub({
+      agents: [agent('desk-one', 'pc-one'), agent('solo', 'pc-two')],
+      devices: [device('pc-one', ['desk-one']), device('pc-two', ['solo'])],
+    });
 
-    await store.loadAgents();
+    await store.refresh();
 
     expect(store.devices.map((item) => item.id)).toEqual(['pc-one', 'pc-two']);
   });
 
   it('drops a node card when its last agent is deleted', async () => {
-    const { store, state } = fakeHub(
-      [agent('desk-one', 'pc-one'), agent('desk-two', 'pc-one')],
-      [device('pc-one', ['desk-one', 'desk-two'])],
-    );
-    await store.loadAgents();
+    const { store } = fakeHub({
+      agents: [agent('desk-one', 'pc-one'), agent('desk-two', 'pc-one')],
+      devices: [device('pc-one', ['desk-one', 'desk-two'])],
+    });
+    await store.refresh();
     expect(store.devices).toHaveLength(1);
 
     await store.deleteAgent('desk-one');
@@ -77,19 +85,13 @@ describe('device registry in the dashboard', () => {
 
     await store.deleteAgent('desk-two');
     expect(store.devices).toHaveLength(0);
-    expect(state.deviceCalls).toBe(3);
   });
 
   it('keeps working against a hub that has no device registry', async () => {
-    const store = createHubStore({
-      listAgents: async () => ({ agents: [agent('desk-one', null)] }),
-      listDevices: async () => {
-        throw new Error('404');
-      },
-    } as unknown as HubApi);
-    store.token = 'test-token';
+    const { store, snapshot } = fakeHub({ agents: [agent('desk-one', null)] });
+    delete (snapshot as Partial<SyncState>).devices;
 
-    await store.loadAgents();
+    await store.refresh();
 
     expect(store.agents).toHaveLength(1);
     expect(store.devices).toEqual([]);

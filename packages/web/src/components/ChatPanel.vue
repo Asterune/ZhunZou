@@ -31,6 +31,7 @@ import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
 import ChatSessionList from './ChatSessionList.vue';
 import SessionOutput from './SessionOutput.vue';
+import TargetPicker from './TargetPicker.vue';
 
 const store = useHubStore();
 const { t } = useI18n();
@@ -89,23 +90,8 @@ let listInFlight = false;
 /** Sequence number of the newest `refreshSession` request. */
 let sessionRequest = 0;
 
-const envOptions = computed(() => {
-  const agents = store.agents.filter((agent) => agent.status === 'active');
-  // Online agents first so the default choice is one that can actually pick
-  // the message up; offline ones stay visible but disabled.
-  return [...agents].sort((left, right) => {
-    if (left.online !== right.online) return left.online ? -1 : 1;
-    return left.env.localeCompare(right.env);
-  });
-});
-
-/** Env of the first agent that can actually claim a message, if any. */
-function preferredEnv(options = envOptions.value): string {
-  return options.find((agent) => agent.online)?.env ?? '';
-}
-
 const formAgent = computed(() =>
-  envOptions.value.find((agent) => agent.env === form.env),
+  store.agents.find((agent) => agent.env === form.env),
 );
 
 const formEnvOnline = computed(() => Boolean(formAgent.value?.online));
@@ -115,23 +101,6 @@ const sessionAgent = computed(() =>
 );
 
 const sessionOnline = computed(() => Boolean(sessionAgent.value?.online));
-
-/**
- * Only projects that belong to the selected env. Mixing in `knownProjects`
- * leaked projects from other environments into the dialog, so switching the
- * target env appeared to have no effect on the project dropdown.
- */
-const projectOptions = computed(() => {
-  if (!form.env) return [];
-  const names = new Set(
-    store
-      .projectsForEnv(form.env)
-      .map((project) => project.projectName),
-  );
-  const active = store.envs.find((item) => item.env === form.env)?.projectName;
-  if (active) names.add(active);
-  return [...names].sort((left, right) => left.localeCompare(right));
-});
 
 const runningMessage = computed(() =>
   [...messages.value]
@@ -483,8 +452,6 @@ async function deleteSession(item: ChatSession): Promise<void> {
 
 function openForm(): void {
   formOpen.value = true;
-  const current = envOptions.value.find((agent) => agent.env === form.env);
-  if (!current?.online) form.env = preferredEnv();
 }
 
 function openSessionList(): void {
@@ -514,25 +481,6 @@ watch(sessionListOpen, async (open) => {
     sessionListButton.value?.focus();
   }
 });
-
-watch(envOptions, (options) => {
-  const current = options.find((agent) => agent.env === form.env);
-  if (!current?.online) {
-    form.env = preferredEnv(options);
-  }
-}, { immediate: true });
-
-watch(
-  () => form.env,
-  () => {
-    if (
-      form.projectName &&
-      !projectOptions.value.includes(form.projectName)
-    ) {
-      form.projectName = '';
-    }
-  },
-);
 
 onMounted(() => {
   void loadSessions(true);
@@ -608,44 +556,16 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <label class="mb-3 block text-[12px] text-on-surface-variant">
-            {{ t('chat.dialogEnv') }}
-            <select
-              v-model="form.env"
-              class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2 text-[13px] text-on-surface outline-none focus:border-primary"
-            >
-              <option value="" disabled>
-                {{ envOptions.some((agent) => agent.online) ? t('chat.selectOnline') : t('chat.noOnlineAgent') }}
-              </option>
-              <option
-                v-for="agent in envOptions"
-                :key="agent.env"
-                :value="agent.env"
-                :disabled="!agent.online"
-              >
-                {{ agent.env }} · {{ agent.kind }}{{ agent.online ? '' : t('chat.offlineSuffix') }}
-              </option>
-            </select>
-            <span
-              v-if="!envOptions.some((agent) => agent.online)"
-              class="mt-1 block text-[11px] text-error"
-            >
-              {{ t('chat.noOnlineHint') }}
-            </span>
-          </label>
-
-          <label class="mb-3 block text-[12px] text-on-surface-variant">
-            {{ t('chat.dialogProject') }}
-            <select
-              v-model="form.projectName"
-              class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2 text-[13px] text-on-surface outline-none focus:border-primary"
-            >
-              <option value="">{{ t('chat.defaultDir') }}</option>
-              <option v-for="project in projectOptions" :key="project" :value="project">
-                {{ project }}
-              </option>
-            </select>
-          </label>
+          <div class="mb-3">
+            <TargetPicker
+              v-model:env="form.env"
+              v-model:project-name="form.projectName"
+              :machines="store.targetMachines"
+              variant="dialog"
+              :project-label="t('chat.dialogProject')"
+              :no-project-text="t('chat.defaultDir')"
+            />
+          </div>
 
           <label class="mb-4 block text-[12px] text-on-surface-variant">
             {{ t('chat.dialogTitleLabel') }}
