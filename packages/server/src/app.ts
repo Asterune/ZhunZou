@@ -2324,6 +2324,15 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return { devices: repo.listDevices() };
       });
 
+      /**
+       * The other axis of the same question: which repositories the hub has
+       * work in, and which machines and identities touch each of them.
+       */
+      api.get('/projects', async (request) => {
+        requireAdmin(request);
+        return { projects: repo.listProjects() };
+      });
+
       // Explicit registration. Heartbeats alone never create an agent row, so
       // a bridge that only sends heartbeats stays under "未注册" until it registers.
       // The caller gets the env the hub actually allocated, which differs from

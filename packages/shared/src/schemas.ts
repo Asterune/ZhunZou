@@ -264,6 +264,27 @@ export const deviceSchema = z.object({
 
 export type Device = z.infer<typeof deviceSchema>;
 
+/**
+ * A project seen across the hub.
+ *
+ * The name is what agents report — usually the git root basename — so this is
+ * a view over tickets, tasks and workspace bindings, not a renamed entity: two
+ * unrelated repositories that share a basename still read as one project.
+ */
+export const projectSchema = z.object({
+  name: projectNameSchema,
+  /** Enrolled agent identities that have this project bound. */
+  envs: z.array(envSchema),
+  /** Machines those identities run on. */
+  deviceIds: z.array(z.string().min(1).max(64)),
+  ticketCount: z.number().int().nonnegative(),
+  pendingCount: z.number().int().nonnegative(),
+  taskCount: z.number().int().nonnegative(),
+  lastActivityAt: z.number().int().nonnegative().optional(),
+});
+
+export type Project = z.infer<typeof projectSchema>;
+
 export const createAgentSchema = z.object({
   env: envSchema,
   name: z.string().trim().min(1).max(64).optional(),
@@ -949,6 +970,10 @@ export const deviceListResponseSchema = z.object({
   devices: z.array(deviceSchema),
 });
 
+export const projectListResponseSchema = z.object({
+  projects: z.array(projectSchema),
+});
+
 /** Issued once: the plaintext token is never stored or returned again. */
 export const agentTokenResponseSchema = z.object({
   agent: agentSchema,
@@ -1138,6 +1163,7 @@ export type CreateAgentInput = z.infer<typeof createAgentSchema>;
 export type UpdateAgentInput = z.infer<typeof updateAgentSchema>;
 export type AgentListResponse = z.infer<typeof agentListResponseSchema>;
 export type DeviceListResponse = z.infer<typeof deviceListResponseSchema>;
+export type ProjectListResponse = z.infer<typeof projectListResponseSchema>;
 export type AgentResponse = z.infer<typeof agentResponseSchema>;
 export type AgentTokenResponse = z.infer<typeof agentTokenResponseSchema>;
 export type CreateEnrollmentInput = z.infer<typeof createEnrollmentSchema>;

@@ -59,6 +59,7 @@ import type {
   ListTerminalsQuery,
   ListTicketsQuery,
   ListWorkspaceProjectsQuery,
+  Project,
   ReportExchangeInput,
   ResolveTicketInput,
   RuleCandidate,
@@ -570,6 +571,8 @@ export interface TicketStore {
   ): (MachineFacts & { deviceId?: string | null }) | null;
   /** Machines the hub has seen, each with the agent identities it runs. */
   listDevices(now?: number): Device[];
+  /** Every project name the hub has stored work under. */
+  listProjects(): Project[];
   updateAgent(env: string, input: UpdateAgentInput, now?: number): Agent | null;
   /**
    * Remove the agent and its live presence state. Returns true when anything
@@ -1359,6 +1362,104 @@ export class TicketRepository implements TicketStore {
     }
 
     return rows.map((row) => toDevice(row, envsByDevice.get(row.id) ?? [], now));
+  }
+
+  /**
+   * Projects as the hub has seen them, whether or not anyone is online.
+   *
+   * The name comes from the clients, so it is the join key; activity is
+   * counted from tickets and tasks rather than trusted from a heartbeat, which
+   * only reports the project an agent happens to have open. The identities
+   * listed under a project are the ones still enrolled.
+   */
+  listProjects(): Project[] {
+    const seen = new Map<string, Project>();
+
+    const entry = (name: string): Project => {
+      const existing = seen.get(name);
+      if (existing) return existing;
+      const created: Project = {
+        name,
+        envs: [],
+        deviceIds: [],
+        ticketCount: 0,
+        pendingCount: 0,
+        taskCount: 0,
+      };
+      seen.set(name, created);
+      return created;
+    };
+
+    for (const row of this.db
+      .select({
+        projectName: tickets.projectName,
+        status: tickets.status,
+        count: sql<number>`count(*)`,
+        last: sql<number>`max(${tickets.updatedAt})`,
+      })
+      .from(tickets)
+      .groupBy(tickets.projectName, tickets.status)
+      .all()) {
+      const project = entry(row.projectName);
+      project.ticketCount += row.count;
+      if (AWAITING.includes(row.status)) project.pendingCount += row.count;
+      project.lastActivityAt = Math.max(project.lastActivityAt ?? 0, row.last);
+    }
+
+    for (const row of this.db
+      .select({
+        projectName: agentTasks.projectName,
+        count: sql<number>`count(*)`,
+        last: sql<number>`max(${agentTasks.updatedAt})`,
+      })
+      .from(agentTasks)
+      .where(isNotNull(agentTasks.projectName))
+      .groupBy(agentTasks.projectName)
+      .all()) {
+      if (!row.projectName) continue;
+      const project = entry(row.projectName);
+      project.taskCount += row.count;
+      project.lastActivityAt = Math.max(project.lastActivityAt ?? 0, row.last);
+    }
+
+    const deviceByEnv = new Map(
+      this.db
+        .select({ env: agents.env, deviceId: agents.deviceId })
+        .from(agents)
+        .all()
+        .map((row) => [row.env, row.deviceId]),
+    );
+
+    for (const row of this.db
+      .select({
+        projectName: workspaceProjects.projectName,
+        env: workspaceProjects.env,
+      })
+      .from(workspaceProjects)
+      .all()) {
+      // A binding outlives the agent that made it, but a project that points
+      // only at unenrolled envs would be a card with no live end to open; the
+      // tickets and tasks it produced still carry that history.
+      if (!deviceByEnv.has(row.env)) continue;
+      entry(row.projectName).envs.push(row.env);
+    }
+
+    for (const project of seen.values()) {
+      project.envs.sort();
+      project.deviceIds = [
+        ...new Set(
+          project.envs
+            .map((env) => deviceByEnv.get(env))
+            .filter((deviceId): deviceId is string => Boolean(deviceId)),
+        ),
+      ].sort();
+    }
+
+    return [...seen.values()].sort(
+      (left, right) =>
+        (right.lastActivityAt ?? 0) - (left.lastActivityAt ?? 0) ||
+        left.name.localeCompare(right.name),
+    );
   }
 
   updateAgent(
