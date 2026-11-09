@@ -23,7 +23,7 @@ import { createHubApi } from './hub.js';
 import { machineId } from './machine-id.js';
 import { createPresenceReporter } from './presence.js';
 import { runSessionDaemon, supportsChat } from './session.js';
-import { agentKindForAdapter } from './wake/adapters.js';
+import { agentKindForAdapter, detectAutoAdapter } from './wake/adapters.js';
 import type { WakeAdapterName } from './wake/config.js';
 import { WAKE_ADAPTERS, loadWakeConfig } from './wake/config.js';
 import { runWakeDaemon } from './wake/daemon.js';
@@ -270,7 +270,11 @@ export function envSlug(value: string): string {
 }
 
 export function defaultEnvForProject(adapter: string, project: string): string {
-  const prefix = ADAPTER_ENV_PREFIX[adapter] ?? 'agent';
+  // `auto` must name the client that will actually run, or the fleet loop
+  // claims tasks under `agent-…` while the CLI's MCP config reports under
+  // `claude-…` / `opencode-…`, splitting tickets and 403ing completions.
+  const effective = adapter === 'auto' ? detectAutoAdapter() : adapter;
+  const prefix = ADAPTER_ENV_PREFIX[effective] ?? 'agent';
   return `${prefix}-${envSlug(project) || 'project'}`;
 }
 

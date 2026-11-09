@@ -331,6 +331,7 @@ export function attachRealtimeGateway(
       }
     }
     bridges.set(env, socket);
+    repo.recordBridgePresence(env);
     send(socket, {
       type: 'ready',
       protocol: DEVICE_PROTOCOL_VERSION,
@@ -361,6 +362,7 @@ export function attachRealtimeGateway(
         });
         return;
       }
+      repo.recordBridgePresence(env);
       if (frame.type === 'ping') {
         send(socket, { type: 'pong', at: frame.at });
         return;

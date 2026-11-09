@@ -420,3 +420,53 @@ describe('GLOBAL_RULES.md editing', () => {
     expect(get.json().content).toBe(content);
   });
 });
+
+describe('ticket ↔ task linkage', () => {
+  async function dispatch(env: string, title: string): Promise<string> {
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      headers: ctx.auth,
+      payload: { env, title, instruction: '执行任务' },
+    });
+    expect(created.statusCode).toBe(201);
+    const taskId = (created.json().task as { id: string }).id;
+    const claimed = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/tasks/next?env=${env}&timeout=100`,
+      headers: ctx.auth,
+    });
+    expect(claimed.json().task.id).toBe(taskId);
+    return taskId;
+  }
+
+  it('links a ticket to the most recently claimed task in the same env', async () => {
+    await dispatch('ticket-link-env', 'older');
+    const latest = await dispatch('ticket-link-env', 'newer');
+
+    const ticket = await createTicket({ env: 'ticket-link-env' });
+
+    expect(ticket.taskId).toBe(latest);
+  });
+
+  it('leaves a ticket unlinked when the env has no running task', async () => {
+    const ticket = await createTicket({ env: 'ticket-link-empty' });
+
+    expect(ticket.taskId).toBeUndefined();
+  });
+
+  it('does not link finished tasks', async () => {
+    const taskId = await dispatch('ticket-link-done', 'finished');
+    const completed = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${taskId}/complete`,
+      headers: ctx.auth,
+      payload: { status: 'DONE', result: '完成' },
+    });
+    expect(completed.statusCode).toBe(200);
+
+    const ticket = await createTicket({ env: 'ticket-link-done' });
+
+    expect(ticket.taskId).toBeUndefined();
+  });
+});

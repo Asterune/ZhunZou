@@ -100,6 +100,39 @@ describe('device migration', () => {
     expect(repo.getAgent('cursor-erp')?.deviceId).toBe('host:lq');
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it('folds suffix-keyed cards into the normalized hostname card', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zhunzou-device-'));
+    const path = join(dir, 'hub.db');
+    const now = Date.now();
+
+    // Simulate a hub upgraded from the build that keyed cards by raw hostname:
+    // one machine ended up with both `host:lq` and `host:lq.local`.
+    const first = createDatabase(path);
+    first.sqlite
+      .prepare(
+        `INSERT INTO devices (id, host, os, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run('host:lq.local', 'LQ.local', 'darwin-arm64', now, now, now);
+    first.sqlite
+      .prepare(
+        `INSERT INTO agents (env, name, kind, status, device_id, created_at, updated_at)
+         VALUES ('cursor-erp', 'cursor-erp', 'cursor', 'active', ?, ?, ?)`,
+      )
+      .run('host:lq.local', now, now);
+    first.sqlite.close();
+
+    const { db, sqlite } = createDatabase(path);
+    const repo = new TicketRepository(db);
+
+    expect(repo.listDevices(now)).toMatchObject([
+      { id: 'host:lq', host: 'LQ.local', envs: ['cursor-erp'] },
+    ]);
+    expect(repo.getAgent('cursor-erp')?.deviceId).toBe('host:lq');
+    sqlite.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe('devices', () => {
@@ -190,6 +223,23 @@ describe('devices', () => {
         id: 'host:lq',
         host: 'lq',
         online: true,
+        envs: ['cursor-erp', 'opencode-erp'],
+      });
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('treats hostname.local as the same machine as the bare hostname', async () => {
+    const ctx = await createTestContext();
+    try {
+      await register(ctx, { env: 'cursor-erp', kind: 'cursor', host: 'LQ.local' });
+      await register(ctx, { env: 'opencode-erp', kind: 'opencode', host: 'lq' });
+
+      const list = await devices(ctx);
+      expect(list).toHaveLength(1);
+      expect(list[0]).toMatchObject({
+        id: 'host:lq',
         envs: ['cursor-erp', 'opencode-erp'],
       });
     } finally {

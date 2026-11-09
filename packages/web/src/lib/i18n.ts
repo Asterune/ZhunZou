@@ -187,6 +187,7 @@ const zh: Record<string, string> = {
   'tasks.output': '输出',
   'tasks.cancel': '取消',
   'tasks.claimed': 'Agent 已领取，执行中',
+  'tasks.linkedTickets': '执行中的决策',
   'tasks.finished': '已结束',
   'tasks.finishedCount': '共 {count} 条',
 
@@ -739,6 +740,7 @@ const en: Record<string, string> = {
   'tasks.output': 'Output',
   'tasks.cancel': 'Cancel',
   'tasks.claimed': 'Agent claimed it · running',
+  'tasks.linkedTickets': 'Decisions raised during this task',
   'tasks.finished': 'Finished',
   'tasks.finishedCount': '{count} total',
 

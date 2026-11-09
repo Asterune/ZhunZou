@@ -17,6 +17,8 @@ import {
   relativeTime,
   TASK_STATUS_CLASSES,
   taskStatusLabel,
+  TICKET_STATUS_CLASSES,
+  ticketStatusLabel,
 } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
@@ -39,6 +41,10 @@ const openLogs = ref('');
 
 function toggleLogs(taskId: string): void {
   openLogs.value = openLogs.value === taskId ? '' : taskId;
+}
+
+function ticketsForTask(taskId: string) {
+  return store.tickets.filter((ticket) => ticket.taskId === taskId);
 }
 
 const canSubmit = computed(
@@ -260,6 +266,34 @@ async function cancel(taskId: string): Promise<void> {
           {{ task.instruction }}
         </p>
 
+        <div
+          v-if="ticketsForTask(task.id).length"
+          class="mt-2 rounded-lg border border-outline-variant/30 bg-surface-container-low/60 px-3 py-2"
+        >
+          <p class="text-[11px] font-medium text-on-surface-variant">
+            {{ t('tasks.linkedTickets') }}
+          </p>
+          <ul class="mt-1 space-y-1">
+            <li
+              v-for="ticket in ticketsForTask(task.id)"
+              :key="ticket.id"
+              class="flex flex-wrap items-center gap-1.5 text-xs text-on-surface"
+            >
+              <span class="font-mono font-semibold text-primary">#{{ ticket.id }}</span>
+              <span class="min-w-0 break-words">{{ ticket.blockerQuestion }}</span>
+              <span
+                class="rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                :class="TICKET_STATUS_CLASSES[ticket.status]"
+              >
+                {{ ticketStatusLabel(ticket.status) }}
+              </span>
+              <span v-if="ticket.selectedOption" class="font-mono text-[10px] text-on-surface-variant">
+                → {{ ticket.selectedOption }}
+              </span>
+            </li>
+          </ul>
+        </div>
+
         <p
           v-if="task.status === 'CLAIMED'"
           class="mt-2 flex items-center gap-1.5 text-[11px] text-secondary"
@@ -318,6 +352,25 @@ async function cancel(taskId: string): Promise<void> {
           <p v-if="task.result" class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-on-surface-variant">
             {{ task.result }}
           </p>
+          <ul v-if="ticketsForTask(task.id).length" class="mt-1.5 space-y-1">
+            <li
+              v-for="ticket in ticketsForTask(task.id)"
+              :key="ticket.id"
+              class="flex flex-wrap items-center gap-1.5 text-xs text-on-surface-variant"
+            >
+              <span class="font-mono font-semibold text-primary">#{{ ticket.id }}</span>
+              <span class="min-w-0 break-words">{{ ticket.blockerQuestion }}</span>
+              <span
+                class="rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                :class="TICKET_STATUS_CLASSES[ticket.status]"
+              >
+                {{ ticketStatusLabel(ticket.status) }}
+              </span>
+              <span v-if="ticket.selectedOption" class="font-mono text-[10px]">
+                → {{ ticket.selectedOption }}
+              </span>
+            </li>
+          </ul>
           <TaskLogViewer
             v-if="openLogs === task.id"
             :task-id="task.id"

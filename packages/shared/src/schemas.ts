@@ -66,6 +66,9 @@ export const decisionTicketSchema = z.object({
   projectName: projectNameSchema,
   status: ticketStatusSchema,
 
+  /** Dispatched task this decision belongs to, when the env had one claimed. */
+  taskId: ticketIdSchema.optional(),
+
   doneSummary: shortTextSchema,
   blockerQuestion: longTextSchema,
   nextStepPlan: longTextSchema,

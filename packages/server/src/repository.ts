@@ -213,6 +213,7 @@ function toTicket(row: TicketRow): DecisionTicket {
     env: row.env,
     projectName: row.projectName,
     status: row.status,
+    ...(row.taskId !== null ? { taskId: String(row.taskId) } : {}),
     doneSummary: row.doneSummary,
     blockerQuestion: row.blockerQuestion,
     nextStepPlan: row.nextStepPlan,
@@ -616,6 +617,12 @@ export interface TicketStore {
   ): Agent | null;
   /** Mark the WS peer as gone without deleting its capability inventory. */
   markDeviceDisconnected(env: string, now?: number): Agent | null;
+  /**
+   * Keep-alive for a bridge attached over /ws/bridge. Unlike a device, the
+   * bridge also heartbeats over HTTP, so a dropped socket must not force the
+   * env offline — the regular heartbeat window decides.
+   */
+  recordBridgePresence(env: string, now?: number): void;
   recordAgentPresence(
     env: string,
     meta: AgentMeta | undefined,
@@ -882,12 +889,26 @@ export class TicketRepository implements TicketStore {
     now = Date.now(),
     expiresAt?: number,
   ): DecisionTicket {
+    // A decision raised while a dispatched task is claimed belongs to that
+    // task, so the dashboard can show it on the task card instead of leaving
+    // the human to guess which queue item the running work is blocked on.
+    const claimed = this.db
+      .select({ id: agentTasks.id })
+      .from(agentTasks)
+      .where(
+        and(eq(agentTasks.env, input.env), eq(agentTasks.status, 'CLAIMED')),
+      )
+      .orderBy(desc(agentTasks.claimedAt), desc(agentTasks.id))
+      .limit(1)
+      .get();
+
     const row = this.db
       .insert(tickets)
       .values({
         env: input.env,
         projectName: input.projectName,
         status: 'PENDING_META',
+        taskId: claimed?.id ?? null,
         doneSummary: input.doneSummary,
         blockerQuestion: input.blockerQuestion,
         nextStepPlan: input.nextStepPlan,
@@ -1247,11 +1268,17 @@ export class TicketRepository implements TicketStore {
   /** The card already filed under this hostname, whichever key it uses. */
   private deviceIdForHost(host: string): string | null {
     if (!host) return null;
+    // Stored hosts may still carry macOS's `.local` suffix; callers pass the
+    // normalized name, so strip it on both sides or the alias never matches.
     return (
       this.db
         .select({ id: devices.id })
         .from(devices)
-        .where(sql`lower(trim(${devices.host})) = ${host}`)
+        .where(
+          sql`CASE WHEN lower(trim(${devices.host})) LIKE '%.local'
+              THEN substr(lower(trim(${devices.host})), 1, length(lower(trim(${devices.host}))) - 6)
+              ELSE lower(trim(${devices.host})) END = ${host}`,
+        )
         .get()?.id ?? null
     );
   }
@@ -1691,6 +1718,9 @@ export class TicketRepository implements TicketStore {
         status: 'active',
         host: input.capabilities.hostname,
         os,
+        // Group the env onto its machine card from the very first hello;
+        // waiting for the conflict-update path left new envs ungrouped.
+        ...(deviceId ? { deviceId } : {}),
         protocolVersion: input.protocolVersion,
         capabilities: input.capabilities,
         deviceStats: input.stats ?? null,
@@ -1796,6 +1826,45 @@ export class TicketRepository implements TicketStore {
       .run();
 
     return row ? this.getAgent(env, now) : null;
+  }
+
+  recordBridgePresence(env: string, now = Date.now()): void {
+    // Transport stays heartbeat-based: the bridge WS carries claims, while
+    // presence may also arrive over HTTP. A socket drop therefore ages out
+    // through the normal window instead of forcing an offline flash.
+    this.db
+      .insert(agents)
+      .values({
+        env,
+        name: env,
+        kind: 'other',
+        status: 'active',
+        transport: 'http',
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: agents.env,
+        set: { lastSeenAt: now, updatedAt: now },
+      })
+      .run();
+
+    this.db
+      .insert(envHeartbeats)
+      .values({
+        env,
+        status: 'Idle',
+        projectName: null,
+        currentTask: '实时通道已连接',
+        note: null,
+        lastSeenAt: now,
+      })
+      .onConflictDoUpdate({
+        target: envHeartbeats.env,
+        set: { lastSeenAt: now },
+      })
+      .run();
   }
 
   recordAgentPresence(

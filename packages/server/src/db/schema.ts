@@ -30,6 +30,9 @@ export const tickets = sqliteTable(
     projectName: text('project_name').notNull(),
     status: text('status').$type<TicketStatus>().notNull(),
 
+    /** Claimed task this decision was raised under, if any. */
+    taskId: integer('task_id'),
+
     doneSummary: text('done_summary').notNull(),
     blockerQuestion: text('blocker_question').notNull(),
     nextStepPlan: text('next_step_plan').notNull(),
@@ -53,6 +56,7 @@ export const tickets = sqliteTable(
     index('idx_tickets_project').on(table.projectName),
     index('idx_tickets_created').on(table.createdAt),
     index('idx_tickets_updated').on(table.updatedAt),
+    index('idx_tickets_task').on(table.taskId),
   ],
 );
 

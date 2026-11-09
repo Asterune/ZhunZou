@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentTask } from '@zhunzou/shared';
 
@@ -21,6 +22,7 @@ import {
   agentKindForAdapter,
   buildFleetRuntimes,
   buildLaunchdPlist,
+  defaultEnvForProject,
   loadFleetConfig,
   readFleetFile,
   removeFleetProject,
@@ -38,10 +40,24 @@ function tempDir(): string {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/** Put fake executables on a throwaway PATH so adapter detection is stable. */
+function stubPathWith(dir: string, binaries: string[]): void {
+  const bin = join(dir, 'bin');
+  mkdirSync(bin, { recursive: true });
+  const suffix = process.platform === 'win32' ? '.cmd' : '';
+  for (const name of binaries) {
+    const file = join(bin, `${name}${suffix}`);
+    writeFileSync(file, 'exit 0\n', 'utf8');
+    chmodSync(file, 0o755);
+  }
+  vi.stubEnv('PATH', bin);
+}
 
 function writeConfig(dir: string, value: unknown): string {
   const path = join(dir, 'fleet.json');
@@ -194,6 +210,7 @@ describe('loadFleetConfig', () => {
     const dir = tempDir();
     mkdirSync(join(dir, 'repos', 'a', 'same', '.git'), { recursive: true });
     mkdirSync(join(dir, 'repos', 'b', 'same', '.git'), { recursive: true });
+    stubPathWith(dir, ['opencode']);
     const path = writeConfig(dir, {
       hubUrl: 'https://hub.example.com',
       scan: { roots: ['./repos'], depth: 2 },
@@ -202,10 +219,22 @@ describe('loadFleetConfig', () => {
     const config = loadFleetConfig(path);
 
     expect(config.projects.map((project) => project.env)).toEqual([
-      'agent-same',
-      'agent-same-2',
+      'opencode-same',
+      'opencode-same-2',
     ]);
     expect(config.projects.every((project) => project.discovered)).toBe(true);
+  });
+
+  it('falls back to the agent prefix when no CLI is on PATH', () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'repos', 'solo', '.git'), { recursive: true });
+    vi.stubEnv('PATH', '');
+    const path = writeConfig(dir, {
+      hubUrl: 'https://hub.example.com',
+      scan: { roots: ['./repos'], depth: 1 },
+    });
+
+    expect(loadFleetConfig(path).projects[0]?.env).toBe('agent-solo');
   });
 
   it('accepts a scan-only config and rejects a completely empty one', () => {
@@ -300,6 +329,27 @@ describe('loadFleetConfig', () => {
     });
 
     expect(config.projects.map((project) => project.project)).toEqual(['rooted']);
+  });
+});
+
+describe('defaultEnvForProject', () => {
+  it('names auto envs after the detected client, matching init MCP envs', () => {
+    const dir = tempDir();
+    stubPathWith(dir, ['opencode']);
+
+    expect(defaultEnvForProject('auto', 'My Project')).toBe('opencode-my-project');
+  });
+
+  it('detects claude when opencode is absent', () => {
+    const dir = tempDir();
+    stubPathWith(dir, ['claude']);
+
+    expect(defaultEnvForProject('auto', 'demo')).toBe('claude-demo');
+  });
+
+  it('keeps explicit adapter prefixes and falls back for unknown ones', () => {
+    expect(defaultEnvForProject('cursor-agent', 'demo')).toBe('cursor-demo');
+    expect(defaultEnvForProject('command', 'demo')).toBe('agent-demo');
   });
 });
 

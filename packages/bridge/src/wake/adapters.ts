@@ -480,19 +480,26 @@ export function isNotifyAdapter(name: WakeAdapterName): boolean {
 }
 
 /**
+ * The adapter `auto` resolves to from PATH alone. Env naming uses this so a
+ * fleet project lands on the same `<client>-<project>` label `init` writes
+ * into the editor's MCP config; tickets and task reports then share one env.
+ */
+export function detectAutoAdapter(): WakeAdapterName {
+  if (whichSync('opencode')) return 'opencode';
+  for (const name of AUTO_ORDER) {
+    const candidate = PRESETS[name];
+    if (candidate && whichSync(candidate.binary)) return name;
+  }
+  return 'notify';
+}
+
+/**
  * Guess which local client `auto` will hand tasks to, using the same order as
  * {@link resolveWakeAdapter}. Registration runs before that resolution, so it
  * must not report every auto project as "other".
  */
 export function detectAgentKind(): AgentKind {
-  if (whichSync('opencode')) return 'opencode';
-  for (const name of AUTO_ORDER) {
-    const candidate = PRESETS[name];
-    if (candidate && whichSync(candidate.binary)) {
-      return agentKindForAdapter(name);
-    }
-  }
-  return 'other';
+  return agentKindForAdapter(detectAutoAdapter());
 }
 
 const ADAPTER_KINDS: Partial<Record<WakeAdapterName, AgentKind>> = {

@@ -128,6 +128,83 @@ describe('realtime gateway', () => {
     }
   });
 
+  it('counts a bridge socket as online and ages out instead of flashing offline', async () => {
+    const ctx = await createTestContext();
+    try {
+      await ctx.app.listen({ port: 0, host: '127.0.0.1' });
+
+      const { socket, received } = await openSocket(
+        serverUrl(ctx, `/ws/bridge?env=${ENV}`),
+        ctx.auth,
+      );
+      const ready = await waitFor(() =>
+        received.find((frame) => frame.type === 'ready'),
+      );
+      expect(ready).toMatchObject({ role: 'bridge', env: ENV });
+
+      expect(ctx.app.repo.getAgent(ENV)).toMatchObject({
+        env: ENV,
+        online: true,
+        transport: 'http',
+      });
+      const status = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/status',
+        headers: ctx.auth,
+      });
+      const [heartbeat] = status.json().envs as Array<{ env: string; online: boolean }>;
+      expect(heartbeat).toMatchObject({ env: ENV, online: true });
+
+      socket.send(JSON.stringify({ type: 'ping', at: Date.now() }));
+      await waitFor(() => received.find((frame) => frame.type === 'pong'));
+
+      socket.close();
+      await sleep(20);
+      // The bridge also heartbeats over HTTP, so a dropped socket must leave
+      // the regular heartbeat window in charge instead of rewinding presence.
+      expect(ctx.app.repo.getAgent(ENV)?.online).toBe(true);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('groups same-machine envs onto one card from the first hello', async () => {
+    const ctx = await createTestContext();
+    const sockets: WebSocket[] = [];
+    try {
+      await ctx.app.listen({ port: 0, host: '127.0.0.1' });
+      const machineId = '12345678-1234-4234-8234-123456789abc';
+      const capabilities = { ...(await capabilitiesPayload()), machineId };
+
+      for (const env of ['group-cursor', 'group-opencode']) {
+        const { socket } = await openSocket(
+          serverUrl(ctx, `/ws/device?env=${env}`),
+          ctx.auth,
+        );
+        sockets.push(socket);
+        socket.send(
+          JSON.stringify({ type: 'hello', protocol: 1, env, capabilities }),
+        );
+        await waitFor(() => ctx.app.repo.getAgent(env)?.deviceId === machineId);
+      }
+
+      const response = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/devices',
+        headers: ctx.auth,
+      });
+      const list = response.json().devices as Array<{ id: string; envs: string[] }>;
+      expect(list).toHaveLength(1);
+      expect(list[0]).toMatchObject({
+        id: machineId,
+        envs: ['group-cursor', 'group-opencode'],
+      });
+    } finally {
+      for (const socket of sockets) socket.close();
+      await ctx.close();
+    }
+  });
+
   it('pushes presence updates to a dashboard ticket socket', async () => {
     const ctx = await createTestContext();
     try {

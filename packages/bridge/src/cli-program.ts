@@ -22,6 +22,7 @@ import {
 import { createHubApi } from './hub.js';
 import { runInit } from './init.js';
 import { machineId } from './machine-id.js';
+import { createPresenceReporter } from './presence.js';
 import {
   installService,
   readServiceConfig,
@@ -564,11 +565,23 @@ export function createProgram(): Command {
         }
 
         const client = createHubApi(hub);
+        // Idle long-polls send no traffic, so without a keep-alive the hub
+        // would mark a running daemon offline after 90s without a task.
+        const presence = createPresenceReporter(client, {
+          intervalMs: hub.heartbeatIntervalMs,
+          ...(hub.projectName ? { projectName: hub.projectName } : {}),
+          onError: (error) =>
+            process.stderr.write(
+              `[zhunzou] heartbeat failed: ${(error as Error).message}\n`,
+            ),
+        });
+        presence.start();
         const loops: Array<Promise<number>> = [
           runWakeDaemon({
             client,
             hub,
             wake,
+            presence,
             ...(options.once === true ? { once: true } : {}),
           }),
         ];
@@ -582,6 +595,7 @@ export function createProgram(): Command {
               client,
               hub,
               wake,
+              presence,
               ...(options.once === true ? { once: true } : {}),
               stdout: (line) => process.stdout.write(`${line}\n`),
               stderr: (line) => process.stderr.write(`${line}\n`),
@@ -590,6 +604,7 @@ export function createProgram(): Command {
         }
 
         const codes = await Promise.all(loops);
+        presence.stop();
         client.close?.();
         process.exitCode = codes.find((code) => code !== 0) ?? 0;
       },

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   env TEXT NOT NULL,
   project_name TEXT NOT NULL,
   status TEXT NOT NULL,
+  task_id INTEGER,
   done_summary TEXT NOT NULL,
   blocker_question TEXT NOT NULL,
   next_step_plan TEXT NOT NULL,
@@ -334,6 +335,8 @@ export function createDatabase(dbPath: string): {
   sqlite.exec(DDL);
 
   ensureColumn(sqlite, 'tickets', 'expires_at', 'INTEGER');
+  ensureColumn(sqlite, 'tickets', 'task_id', 'INTEGER');
+  sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tickets_task ON tickets(task_id);');
   ensureColumn(sqlite, 'agent_tasks', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(sqlite, 'agent_tasks', 'lease_at', 'INTEGER');
   ensureColumn(sqlite, 'agents', 'protocol_version', 'INTEGER');
@@ -351,22 +354,42 @@ export function createDatabase(dbPath: string): {
   // agents.host need their cards backfilled — otherwise every upgraded hub
   // starts empty and the existing nodes look like they vanished. The synthetic
   // `host:<hostname>` key is what a client that never reported a fingerprint
-  // resolves to, so both sides agree without another round trip.
+  // resolves to, so both sides agree without another round trip. Hostnames are
+  // normalized the same way env-allocator does (lowercase, no `.local`), or a
+  // macOS box ends up with one card per suffix variant.
+  const normalizedHost = `CASE WHEN lower(trim(host)) LIKE '%.local'
+    THEN substr(lower(trim(host)), 1, length(lower(trim(host))) - 6)
+    ELSE lower(trim(host)) END`;
   sqlite.exec(`
     INSERT OR IGNORE INTO devices (id, host, os, last_seen_at, created_at, updated_at)
-    SELECT 'host:' || lower(trim(host)),
-           lower(trim(host)),
+    SELECT 'host:' || ${normalizedHost},
+           ${normalizedHost},
            MAX(os),
            MAX(COALESCE(last_seen_at, created_at)),
            MIN(created_at),
            MAX(updated_at)
       FROM agents
      WHERE host IS NOT NULL AND trim(host) <> ''
-     GROUP BY lower(trim(host));
+     GROUP BY ${normalizedHost};
 
     UPDATE agents
-       SET device_id = 'host:' || lower(trim(host))
+       SET device_id = 'host:' || ${normalizedHost}
      WHERE device_id IS NULL AND host IS NOT NULL AND trim(host) <> '';
+
+    -- Cards minted before normalization keyed the raw suffix; fold them into
+    -- the normalized key so one machine keeps exactly one card.
+    INSERT OR IGNORE INTO devices (id, machine_id, host, os, capabilities, device_stats, transport, last_seen_at, created_at, updated_at)
+    SELECT substr(id, 1, length(id) - 6),
+           machine_id, host, os, capabilities, device_stats, transport,
+           last_seen_at, created_at, updated_at
+      FROM devices
+     WHERE id LIKE 'host:%.local';
+
+    UPDATE agents
+       SET device_id = substr(device_id, 1, length(device_id) - 6)
+     WHERE device_id LIKE 'host:%.local';
+
+    DELETE FROM devices WHERE id LIKE 'host:%.local';
   `);
   ensureColumn(sqlite, 'chat_messages', 'origin', "TEXT NOT NULL DEFAULT 'human'");
   ensureColumn(sqlite, 'chat_messages', 'rationale', 'TEXT');

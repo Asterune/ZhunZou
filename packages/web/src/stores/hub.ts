@@ -1240,6 +1240,7 @@ export function createHubStore(api: HubApi = hubApi) {
     devices,
     exchanges,
     rules,
+    tickets,
     tasks,
     ruleCandidates,
     workspaceProjects,
