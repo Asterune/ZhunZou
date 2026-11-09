@@ -646,6 +646,7 @@ Three auth tiers, all via `Authorization: Bearer <token>`:
 | --- | --- | --- | --- |
 | `GET` / `POST` | `/api/agents` | admin | List / register agents |
 | `GET` | `/api/devices` | admin | Machines the hub has seen, each with the envs running on it |
+| `GET` | `/api/projects` | admin | Project names the hub has work in, with their ticket/task counts and the enrolled envs and machines behind each |
 | `PATCH` / `DELETE` | `/api/agents/:env` | admin | Update (name, status, terminal toggle) / delete an agent (also clears its heartbeat and drops its live socket) |
 | `POST` / `DELETE` | `/api/agents/:env/token` | admin | Issue or rotate a scoped token (plaintext returned once) / revoke it |
 | `POST` | `/api/enrollments` | admin | Mint a one-click enrollment code plus ready-to-paste install commands |
@@ -773,7 +774,7 @@ Realtime and terminals:
 ## Development
 
 ```bash
-pnpm test          # 488 tests: 28 shared + 244 server + 164 bridge + 9 device + 43 web
+pnpm test          # 501 tests: 28 shared + 249 server + 164 bridge + 9 device + 51 web
 pnpm typecheck     # tsc + vue-tsc across all packages
 pnpm build         # shared, server, bridge (incl. standalone bundle), web
 pnpm smoke         # real server + HTTP long-poll round trip
@@ -803,6 +804,7 @@ Release process for the bridge bundle and the npm package: [docs/RELEASING.md](.
 - **Concurrency** is settled in the database: `resolve` and `markAutoResolved` are conditional updates, so a human answer and a late verdict cannot both win.
 - **Devices are machines, agents are processes.** Each client generates one fingerprint (`~/.zhunzou/machine.json`) and every contact carries it, so a hub can group a Cursor, an OpenCode and a Claude Code session onto one node card — and still tell apart two machines that an image left with the same hostname. A client that reports no fingerprint is grouped by hostname, which is what pre-fingerprint deployments already did.
 - **`env` is allocated by the hub, not by the client.** Two machines that open same-basename repos derive the same label, and `agents.env` is the primary key — so registration renames the newcomer (`cursor-erp` → `cursor-erp-home-mac`) instead of letting it overwrite the incumbent's identity. Clients that already read the response adopt the new label; heartbeats, which cannot be re-labelled, are refused write access to another host's machine metadata and the refusal is logged, because a stale card with no explanation is worse than a noisy warning.
+- **A project is a view, not an entity.** `GET /api/projects` answers "which repositories has work happened in, and on which machines" by grouping the `projectName` that tickets, tasks and workspace bindings already carry, so no client has to report anything new. That name is still the git root basename the bridge inferred, which means two unrelated repositories sharing a basename read as one project.
 - **Pluggability at the edges only**: `META_AGENT_PROVIDER`, `NOTIFY_CHANNELS`, `HUB_PLUGINS`, and a `buildApp({ repo })` storage seam — the protocol stays stable.
 
 ## Roadmap
@@ -810,6 +812,7 @@ Release process for the bridge bundle and the npm package: [docs/RELEASING.md](.
 Not built yet, in rough order of value:
 
 - Multi-instance scaling: swap the in-process wakeup layer for Redis pub/sub.
+- Project identity: have the bridge report a repository fingerprint (its git remote) so the hub can split the same-named checkouts that today merge into one project.
 - More notification channels (WeCom, DingTalk, Gotify).
 - Storage adapters (Postgres / MySQL) and multi-tenant hubs.
 - Ticket analytics: auto-approval rate and mean time to decision, with archiving.

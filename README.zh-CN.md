@@ -323,6 +323,7 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/api/agents` | 接入端列表，支持 `?status=active` / `disabled` |
 | `POST` | `/api/agents` | 手动登记接入端 `{ env, name?, kind? }` |
 | `GET` | `/api/devices` | 设备列表：每台机器及其承载的接入端 |
+| `GET` | `/api/projects` | 项目列表：项目名对应的接入端、设备与工单/任务数量 |
 | `PATCH` | `/api/agents/:env` | 改名 / 改类型 / 停用 `{ name?, kind?, status? }` |
 | `DELETE` | `/api/agents/:env` | 删除接入端（历史工单保留；心跳/在线状态一并清除，在线连接立即断开） |
 | `POST` | `/api/agents/:env/token` | 签发或轮换专属 Token，明文只返回一次 |
@@ -957,7 +958,7 @@ bash deploy/deploy.sh        # 随仓库上传到 hub
 ## 测试
 
 ```bash
-pnpm test          # shared 28 + server 244 + bridge 164 + device 9 + web 43 = 488 个测试
+pnpm test          # shared 28 + server 249 + bridge 164 + device 9 + web 51 = 501 个测试
 pnpm typecheck     # 全量类型检查（tsc + vue-tsc）
 pnpm build         # 全量构建（含 Vue 看板）
 pnpm smoke         # 构建、启动真实服务、HTTP 长轮询冒烟测试
@@ -1052,6 +1053,7 @@ pm2 logs zhunzou
 - **优雅退出**：`SIGINT` / `SIGTERM` 关闭 Fastify 与 SQLite 连接。
 - **设备是机器，接入端是进程**：每个客户端只生成一次指纹（`~/.zhunzou/machine.json`），之后每次通信都带上，hub 因此能把同一台机器上的 Cursor、OpenCode、Claude Code 归到一张节点卡——也分得清被镜像复制成同一主机名的两台机器。没上报指纹的客户端仍按主机名归组，与升级前的行为一致。
 - **`env` 由 hub 分配，不由客户端决定**：两台机器打开同名仓库会得到相同标签，而 `agents.env` 是主键——所以注册时后来者改名（`cursor-erp` → `cursor-erp-home-mac`），而不是覆盖先来者的设备归属。会读取响应的客户端自动采用新标签；心跳无法被改名，它写入其它机器设备信息的请求会被拒绝，并且服务端会记一条 warning——卡片变旧却查不到原因，比多一条日志更难排查。
+- **项目是一张视图，不是一个实体**：`GET /api/projects` 把工单、任务、工作区绑定里已经存在的 `projectName` 归组，回答「哪些仓库有过工作、发生在哪几台机器」，客户端不必上报任何新东西。这个名字仍是 bridge 推断的 git 根目录名，因此两个恰好同名、却互不相关的仓库会被读成同一个项目。
 
 ---
 
@@ -1072,7 +1074,7 @@ pm2 logs zhunzou
 ## 后续可选增强
 
 - 多实例水平扩展：把进程内 `EventEmitter` 唤醒层替换为 Redis pub/sub；
-- 看板节点卡直接读 `/api/devices`，不再由前端按 host 归组；
+- 项目身份：让 bridge 上报仓库指纹（git remote），hub 由此拆散今天会合并成同一个项目的同名仓库；
 - 更多内置通知渠道（企业微信、钉钉、Gotify…）；
 - 存储适配器（Postgres / MySQL）与多租户；
 - 工单归档与统计：自动放行率、平均决策耗时；
