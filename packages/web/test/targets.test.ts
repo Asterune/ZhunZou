@@ -206,6 +206,40 @@ describe('machine targets in the dashboard', () => {
     expect(store.clientsForMachine(machine, 'unrelated')).toEqual([]);
   });
 
+  it('fills the project list from the machine fleet scan when no client reports one', async () => {
+    // Windows Cursor starts the bridge outside the workspace, so the identity
+    // has no projectName. The fleet still walked the same folders.
+    const store = fakeHub({
+      agents: [
+        agent('cursor-windows', { deviceId: 'pc-one', host: 'DESKTOP-1' }),
+        agent('device-windows', {
+          deviceId: 'pc-one',
+          kind: 'other',
+          host: 'DESKTOP-1',
+        }),
+      ],
+      fleetCandidates: [
+        {
+          id: 1,
+          host: 'DESKTOP-1',
+          path: 'C:\\work\\erp-console',
+          projectName: 'erp-console',
+          env: 'fleet-erp-console',
+          associated: false,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    });
+    await store.refresh();
+
+    const machine = store.targetMachines[0]!;
+    expect(store.projectsForMachine(machine)).toEqual(['erp-console']);
+    expect(
+      store.clientsForMachine(machine, 'erp-console').map((item) => item.env),
+    ).toEqual(['cursor-windows', 'device-windows']);
+  });
+
   it('lists realtime machines for the terminal and leaves the rest out', async () => {
     const store = fakeHub({
       agents: [

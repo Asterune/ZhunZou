@@ -197,6 +197,17 @@ export interface HubApi {
     sessionId: string,
     messageId: string,
   ): Promise<ChatSessionResponse>;
+  editChatMessage(
+    token: string,
+    sessionId: string,
+    messageId: string,
+    content: string,
+  ): Promise<ChatMessageResponse>;
+  cancelChatMessage(
+    token: string,
+    sessionId: string,
+    messageId: string,
+  ): Promise<ChatMessageResponse>;
   adoptChatProposal(
     token: string,
     sessionId: string,
@@ -530,6 +541,20 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
       request<ChatSessionResponse>(
         token,
         `/api/sessions/${sessionId}/messages/${messageId}/retry`,
+        { method: 'POST' },
+      ),
+
+    editChatMessage: (token, sessionId, messageId, content) =>
+      request<ChatMessageResponse>(
+        token,
+        `/api/sessions/${sessionId}/messages/${messageId}`,
+        { method: 'PATCH', body: JSON.stringify({ content }) },
+      ),
+
+    cancelChatMessage: (token, sessionId, messageId) =>
+      request<ChatMessageResponse>(
+        token,
+        `/api/sessions/${sessionId}/messages/${messageId}/cancel`,
         { method: 'POST' },
       ),
 

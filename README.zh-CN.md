@@ -50,7 +50,7 @@ Agent 遇到卡点
 
 - **是决策，不是聊天。** 工单被约束成「三行简报 + 封闭选项」，不会出现「你到底想问什么」的来回拉扯。
 - **规则先行，人只在关键处出现。** 总管 Agent 按 `GLOBAL_RULES.md` 和历史判例处理常规问题，真正需要判断的才转人工。
-- **一个入口管所有 Agent。** Cursor、OpenCode、Claude Code、Codex、Gemini、Windsurf，或任意 MCP 客户端；桌面、手机、通知里的签名链接都能批。统一队列，统一审计。
+- **一个入口管所有 Agent。** Cursor、OpenCode、Claude Code、Codex、Gemini、Qoder、Windsurf，或任意 MCP 客户端；桌面、手机、通知里的签名链接都能批。统一队列，统一审计。
 - **人不在也能推进。** 长轮询让你点完的瞬间 Agent 就恢复执行；编辑器关了，还有无头 `wake` / `fleet` 守护进程继续领任务。
 - **默认安全。** 高危选项永不自动执行，超时裁决默认关闭；人工决定永远覆盖迟到的总管或超时结果。
 - **判例复用，而不是重复回答。** 已解决的决策会被召回为判例，每次人工批复还能一键沉淀成规则。
@@ -173,8 +173,8 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 - **批量准奏**：积压多封时一键按各自推荐方案批复，提交前有 3 秒撤销窗口；高风险方案默认跳过，需勾选后才会一并批准。
 - **高风险保护**：选项支持 `risk: safe | caution | destructive`；破坏性选项必须人类二次确认，Meta-Agent 与超时策略都不能自动通过。
 - **通知内一键批复**：设置 `PUBLIC_BASE_URL` 后，Bark / 飞书 / Slack / Discord / ntfy / Telegram / Webhook 的通知都会带签名审批链接；手机点开即可选方案提交，无需登录看板。链接绑定单张工单、默认 30 分钟过期，重复提交会被状态机拒绝。
-- **下发任务**：人 → Agent 的反向调度。在看板指定环境、项目、标题与详细指令，端侧 Agent 通过 `agent_hub_next_task` 领取并执行，完成后回报结果；看板状态栏同步显示真实任务。
-- **工作区项目绑定**：每个环境（工作区）可绑定多个项目，下发任务时「项目名」下拉框只列出该环境已绑定的项目，不用再手输。Agent 心跳会自动上报 OpenCode / Cursor 当前打开的工作区（git 根目录名），服务端据此自动绑定；也可在看板用下拉框绑定其他已上报项目 / 解除（当前活跃项目不可解除，心跳会自动恢复）。
+- **下发任务**：人 → Agent 的反向调度，现在是「会话」页里的「单次执行」模式——同一套环境/项目选择，派一次活、跑完收工、不保留上下文。端侧 Agent 通过 `agent_hub_next_task` 领取并执行，完成后回报结果。
+- **工作区项目绑定**：每个环境（工作区）可绑定多个项目，已移到「接入端」页；绑定后会话与单次执行的项目下拉框只列出这些项目。Agent 心跳会自动上报 OpenCode / Cursor 当前打开的工作区（git 根目录名），服务端据此自动绑定；也可在看板用下拉框绑定其他已上报项目 / 解除（当前活跃项目不可解除，心跳会自动恢复）。
 - **历史决策**：自动放行与人工审批的完整记录，含决定、理由与补充指令。
 - **规则配置**：在线编辑 `GLOBAL_RULES.md`，保存后 Meta-Agent 立即使用新规则，无需重启。
 - **批复沉淀**：每次人工审批后自动提炼一条候选规则；在规则页一键采纳后并入 `GLOBAL_RULES.md`，也可忽略。没有配置 LLM 时使用确定性模板，功能仍可用。
@@ -206,7 +206,7 @@ node packages/device/bin/device.js capabilities --json   # 子命令别名：pri
 
 `run` 是默认子命令。`--token` 依次回退 `ZHUNZOU_DEVICE_TOKEN` → `HUB_TOKEN` → `HUB_SECRET_TOKEN`，`--hub` 回退 `ZHUNZOU_HUB_URL` → `HUB_URL`，`--env` 回退 `ZHUNZOU_DEVICE_ENV` → `AGENT_ENV`（默认 `device-<hostname>`）；重连退避用 `ZHUNZOU_RECONNECT_MIN_MS` / `ZHUNZOU_RECONNECT_MAX_MS`。
 
-daemon 主动连接 `wss://<hub>/ws/device`，发送 `hello` 上报协议版本、OS/架构/主机名/shell、PTY 后端、CPU/内存/负载与本地 CLI 清单（claude、cursor-agent、agent、opencode、codex、gemini、aider、goose、amp、git、node、pnpm、docker、tmux 等），之后按服务端下发的间隔（默认 30 秒）心跳。看板「接入端」页会显示反向长连徽标、CPU/负载/内存与可用 CLI；断开后立即标记离线。帧级细节见 [docs/REALTIME.md](./docs/REALTIME.md)。
+daemon 主动连接 `wss://<hub>/ws/device`，发送 `hello` 上报协议版本、OS/架构/主机名/shell、PTY 后端、CPU/内存/负载与本地 CLI 清单（claude、cursor-agent、agent、opencode、codex、gemini、qoder、qodercli、aider、goose、amp、git、node、pnpm、docker、tmux 等），之后按服务端下发的间隔（默认 30 秒）心跳。看板「接入端」页会显示反向长连徽标、CPU/负载/内存与可用 CLI；断开后立即标记离线。帧级细节见 [docs/REALTIME.md](./docs/REALTIME.md)。
 
 - 设备端使用专属 Agent Token（`zz_...`）或管理员 Token；浏览器看板先调用 `POST /api/realtime/ticket` 换取 60 秒短期 ticket，再连接 `/ws/realtime`。
 - `REALTIME_ENABLED=false` 可关闭 WS 网关，完全回退到原有 HTTP 心跳 / 长轮询。
@@ -280,6 +280,8 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/api/sessions` | 会话列表，支持 `?env=&limit=` |
 | `GET` | `/api/sessions/:id` | 会话详情与消息 |
 | `POST` | `/api/sessions/:id/messages` | 发送用户消息 `{ content }` |
+| `PATCH` | `/api/sessions/:id/messages/:messageId` | 编辑仍在排队的用户消息 `{ content }`（仅 `PENDING` 人工消息） |
+| `POST` | `/api/sessions/:id/messages/:messageId/cancel` | 取消仍在排队的用户消息，保留为 `CANCELLED` 审计记录 |
 | `POST` | `/api/sessions/proposals` | Agent 起草下一句回复 `{ env, sessionId?, content, rationale? }`，存为 `PROPOSED` |
 | `POST` | `/api/sessions/:id/proposals/:messageId/adopt` | 采纳草稿（可带改写后的 `content`）并排队发送 |
 | `POST` | `/api/sessions/:id/proposals/:messageId/discard` | 丢弃草稿（保留记录用于审计） |
@@ -553,7 +555,7 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 | `service`（`install` / `uninstall` / `status` / `restart`） | 管理登录自启的常驻服务 |
 | `upgrade`（`--check` / `--force` / `--rollback`） | 从 hub 拉取最新 bridge 并切换版本指针 |
 
-`wake` 适配器：`auto` / `opencode` / `opencode-run` / `claude` / `codex` / `gemini` / `cursor-agent` / `aider` / `goose` / `amp` / `command`（自定义命令模板）/ `notify`（只把任务显示在看板，不跑 CLI）。`auto` 优先接管已运行的 OpenCode 服务，其次按 `claude` → `codex` → `gemini` → `cursor-agent` → `aider` → `goose` → `amp` 探测，最后回退 `notify`。交互式会话需要可续跑的适配器：`opencode` / `opencode-run` / `cursor-agent` / `claude` / `command`。
+`wake` 适配器：`auto` / `opencode` / `opencode-run` / `claude` / `codex` / `gemini` / `qoder` / `cursor-agent` / `aider` / `goose` / `amp` / `command`（自定义命令模板）/ `notify`（只把任务显示在看板，不跑 CLI）。`auto` 优先接管已运行的 OpenCode 服务，其次按 `claude` → `codex` → `gemini` → `qoder` → `cursor-agent` → `aider` → `goose` → `amp` 探测，最后回退 `notify`。`qoder` 适配器运行 Qoder CLI（`qoder -p`，也能识别 `qodercli` / `qcode` 可执行文件）。交互式会话需要可续跑的适配器：`opencode` / `opencode-run` / `cursor-agent` / `claude` / `qoder` / `command`。
 
 ### 一键接入（推荐给普通用户）
 
@@ -569,7 +571,7 @@ curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash
 irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 ```
 
-这条命令会自动完成：准备 Node 20+（没装 Node 时下载便携运行时并校验 SHA256）、从 hub 拉取对应版本的 bridge、用接入码为**每个客户端**换取专属 scoped Token、写入用户级 Cursor / OpenCode / Claude Code / Codex 配置、安装登录自启守护进程。用户不需要管理员 `HUB_SECRET_TOKEN`，也不需要克隆仓库。
+这条命令会自动完成：准备 Node 20+（没装 Node 时下载便携运行时并校验 SHA256）、从 hub 拉取对应版本的 bridge、用接入码为**每个客户端**换取专属 scoped Token、写入用户级 Cursor / OpenCode / Claude Code / Codex / Qoder 配置、安装登录自启守护进程。用户不需要管理员 `HUB_SECRET_TOKEN`，也不需要克隆仓库。
 
 接入码默认 15 分钟有效，最多可在**同一台电脑**上兑换 10 次（一次安装会为 4 个客户端各兑换一次）；第一次兑换会把接入码绑定到该主机，换台电脑无法复用。设备上线后会自动出现在「接入端」页。想跳过常驻服务、只在编辑器打开时在线：
 
@@ -593,14 +595,17 @@ iwr 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' -OutFile install.ps1
 | OpenCode | `opencode-<项目或主机名>` | `opencode` |
 | Claude Code | `claude-<项目或主机名>` | `claude-code` |
 | Codex | `codex-<项目或主机名>` | `codex` |
+| Qoder | `qoder-<项目或主机名>` | `qoder` |
 
 每个 env 有自己的 Token 和看板卡片，心跳不再互相覆盖；同一个项目可以被多个 env 绑定。常驻服务会自动改用 `fleet` 守护这几个 env（`~/.zhunzou/fleet.json`）。
 
 想回到「一个 env 写进所有客户端」的旧行为，显式传 `--env` 或 `--agent-kind` 即可。
 
-生成接入码时把「环境标识」留空，各客户端会按 `<kind>-<项目或主机>` 自动命名；若填了环境名（例如「公司」），每个客户端会得到 `公司-cursor`、`公司-opencode`、`公司-claude`、`公司-codex`，同一客户端重跑会复用原卡而不会产生 `-2`。
+生成接入码时把「环境标识」留空，各客户端会按 `<kind>-<项目或主机>` 自动命名；若填了环境名（例如「公司」），每个客户端会得到 `公司-cursor`、`公司-opencode`、`公司-claude`、`公司-codex`、`公司-qoder`，同一客户端重跑会复用原卡而不会产生 `-2`。
 
 Codex 只读用户级配置 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`），`init` 会写入或替换其中的 `[mcp_servers.zhunzou]` 段，不影响其它 server。
+
+Qoder CLI 从 `$QODER_CONFIG_DIR/settings.json`（默认 `~/.qoder/settings.json`）读取 `mcpServers`；项目级安装写入 `<项目>/.qoder/settings.local.json`，不与 Claude Code 争用 `.mcp.json`。
 
 不想打开编辑器、但要让某个项目常驻在线时，用 `fleet` 把目录登记进来即可（不需要懂 JSON）：
 
@@ -654,7 +659,7 @@ npm 包内置 esbuild 单文件 bundle（`dependencies` 为空），`npx zhunzou
 
 ```bash
 npx zhunzou-bridge init
-# 非交互：--hub-url ... --token ... --env ... --target cursor|opencode|claude|codex|all --yes
+# 非交互：--hub-url ... --token ... --env ... --target cursor|opencode|claude|codex|qoder|all --yes
 # 一次性接入码：--hub-url ... --code ABCDE-FGHIJ --yes --global --service
 # 只预览不落盘：--dry-run
 # 仓库内未发布 npm 时：pnpm build && node packages/bridge/bin/cli.js init
@@ -673,11 +678,11 @@ npx zhunzou-bridge wait --ticket 104
 npx zhunzou-bridge wake
 ```
 
-桥接会从启动目录（编辑器打开的 OpenCode / Cursor 工作区）自动推断项目名：优先使用 `ZHUNZOU_PROJECT`，未设置时取 git 仓库根目录（非 git 项目取当前目录）的目录名。每次心跳都会上报它，服务端据此自动完成「工作区 ↔ 项目」绑定，看板的项目下拉框无需手动输入即可选择。
+桥接会自动推断项目名：优先使用 `ZHUNZOU_PROJECT`，其次读编辑器交给 MCP 进程的当前工作区（Cursor 的 `WORKSPACE_FOLDER_PATHS`、MCP `roots/list`），最后才回退到启动目录（git 仓库根目录，非 git 项目取当前目录）的目录名。Windows 上 Cursor 常在别处启动 MCP 进程，前两条兜底让项目名仍然正确。每次心跳都会上报它，服务端据此自动完成「工作区 ↔ 项目」绑定，看板的项目下拉框无需手动输入即可选择。
 
 ### 多个工作区（Cursor 只看到当前工作区）
 
-Cursor / VS Code 的一个窗口只对应一个工作区，MCP Server 的 cwd 就是该工作区。因此「让一个 Cursor 会话同时读写多个仓库」是客户端本身的限制；准奏能做的是**让每个工作区成为独立的接入端**，在看板上同时看到并分别调度：
+Cursor / VS Code 的一个窗口只对应一个工作区，MCP Server 通常也以该工作区为 cwd。因此「让一个 Cursor 会话同时读写多个仓库」是客户端本身的限制；准奏能做的是**让每个工作区成为独立的接入端**，在看板上同时看到并分别调度：
 
 ```bash
 # 在每个仓库根目录各跑一次
@@ -743,7 +748,7 @@ zhunzou-bridge wake --adapter claude     # claude -p
 zhunzou-bridge wake --adapter command --command 'my-agent --task {taskId} {prompt}'
 ```
 
-支持 `opencode` / `opencode-run` / `claude` / `codex` / `gemini` / `cursor-agent` / `aider` /
+支持 `opencode` / `opencode-run` / `claude` / `codex` / `gemini` / `qoder` / `cursor-agent` / `aider` /
 `goose` / `amp` / `command` / `notify` 等适配器。注入模式由 Agent 自己调用
 `agent_hub_complete_task` 回报；一次性模式由守护进程按退出码写回 `DONE` / `FAILED`。
 唤醒失败会自动调用 `POST /api/tasks/:id/release` 重新排队，不会把任务卡在 `CLAIMED`。
@@ -818,7 +823,7 @@ zhunzou-bridge fleet
 
 - `adminToken` 只用于首次登记接入端和签发 Token；签发结果缓存在
   `~/.zhunzou/fleet-tokens.json`（权限 `0600`），之后不再需要管理员 Token。
-- 每个项目在 Hub 里就是一个独立 Agent（`env`），在「下发任务」页选择它即可；
+- 每个项目在 Hub 里就是一个独立 Agent（`env`），在「会话」页的「单次执行」里选择它即可；
   编辑器开没开都不影响。
 - 某个项目的循环崩溃会自动重启；`--refresh-tokens` 强制轮换所有 Token，
   `--once` 只处理一轮（适合 cron / 定时任务）。
@@ -858,9 +863,12 @@ pm2 save
 | `opencode` / `opencode-run` | `opencode run --auto --session <id>`，首次自动生成并保存 session id |
 | `cursor-agent` | `agent -p --force --output-format json [--resume <id>]`，从 JSON 输出捕获 session id |
 | `claude` | `claude -p --output-format json [--resume <id>]` |
+| `qoder` | `qoder -p --output-format json [--resume <id>]`（Qoder CLI，兼容 `qodercli` / `qcode`） |
 | `command` | `ZHUNZOU_WAKE_COMMAND` 模板，支持 `{message}` / `{session}` / `{env}` / `{project}` |
 
 输出会像任务日志一样实时回传；完成后写入一条 assistant 消息，`externalId` 持久化用于下一轮续聊。
+
+会话页还会把**同一环境**（会话指定了项目时再按项目收敛）的待批奏折直接内嵌在消息流末尾，可就地准奏，不必切到「待批奏折」页。端侧正在执行上一轮时继续发送的消息会按 FIFO 排队，并以**参考 Cursor 的紧凑队列卡片固定在输入框上方**，显示顺序、条数和等待状态；点击队列中的消息或铅笔图标可编辑，点 × 可取消，不会打断当前轮。取消后保留为灰色的「已取消」审计占位。
 
 <p align="center">
   <img src="./docs/assets/chat.png" alt="Hub 内与项目 Agent 多轮对话" width="920" />
@@ -893,8 +901,8 @@ pm2 save
 | `HUB_TOKEN` | 是 | - | 与服务端 `HUB_SECRET_TOKEN` 一致 |
 | `HUB_URL` | 否 | `http://127.0.0.1:8787` | 云端地址 |
 | `AGENT_ENV` | 否 | `unknown-<hostname>` | 看板环境标识，如 `company-cursor`；`init` 会按项目写入 `<客户端>-<项目名>`，多个工作区请勿共用 |
-| `ZHUNZOU_AGENT_KIND` | 否 | `other` | 客户端类型：`cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `windsurf` / `other`；`init` 自动写入 |
-| `ZHUNZOU_PROJECT` | 否 | 自动推断 | 当前工作区项目名；默认取启动目录（git 根目录）名，心跳时自动绑定到该环境，下发任务可直接选择 |
+| `ZHUNZOU_AGENT_KIND` | 否 | `other` | 客户端类型：`cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `qoder` / `windsurf` / `other`；`init` 自动写入 |
+| `ZHUNZOU_PROJECT` | 否 | 自动推断 | 当前工作区项目名；依次尝试显式值、编辑器上报的工作区（Cursor `WORKSPACE_FOLDER_PATHS`、MCP `roots/list`）、启动目录（git 根目录）名；心跳时自动绑定到该环境，下发任务可直接选择 |
 | `ZHUNZOU_FALLBACK`（旧名 `AGENT_HUB_FALLBACK`） | 否 | `cli` | `cli` 或 `mcp` |
 | `ZHUNZOU_WAIT_TIMEOUT_MS`（旧名 `AGENT_HUB_WAIT_TIMEOUT_MS`） | 否 | `40000` | 单次长轮询窗口（1s ~ 55s） |
 | `ZHUNZOU_CLI_COMMAND` | 否 | `npx zhunzou-bridge` | `cli` 策略下提示模型执行的命令；直接运行 `bin/mcp.js` 时自动指向同目录 `cli.js` / `cli.mjs` |
@@ -913,11 +921,12 @@ pm2 save
 | `ZHUNZOU_AUTO_UPGRADE_INTERVAL_MS` | 否 | `21600000` | 自更新检查间隔（最小 60s） |
 | `ZHUNZOU_MCP_BIN` / `ZHUNZOU_CLI_BIN` | 否 | 自动推断 | 覆盖 `init` 写进编辑器配置的入口路径 |
 | `CODEX_HOME` | 否 | `~/.codex` | `init --target codex` 读写 `config.toml` 的位置 |
+| `QODER_CONFIG_DIR` | 否 | `~/.qoder` | `init --target qoder` 读写 `settings.json` 的位置 |
 
 ### 接入模板
 
 - `packages/bridge/templates/.cursorrules`：Cursor 的行为约束（何时升级、如何等待）。
-- `packages/bridge/templates/AGENTS.md`：OpenCode 的行为约束；`init --target opencode` 会写入或追加到目标项目的 `AGENTS.md`。
+- `packages/bridge/templates/AGENTS.md`：OpenCode / Codex / Qoder 的行为约束；`init --target opencode|codex|qoder` 会写入或追加到目标项目的 `AGENTS.md`。
 - `packages/bridge/templates/cursor-mcp.json.example`：Cursor `.cursor/mcp.json` 示例。
 - `packages/bridge/templates/opencode.json.example`：OpenCode V2 `mcp.servers` 配置示例。
 - `packages/bridge/templates/launchd.plist.example`：macOS 下让 `zhunzou-bridge wake` 登录自启的 launchd 配置。
@@ -932,7 +941,7 @@ pm2 save
 irm 'https://hub.l1uqi.com/install.ps1?code=ABCDE-FGHIJ' | iex
 ```
 
-会自动准备 Node、下载 bridge、为 Cursor / OpenCode / Claude Code / Codex 各写一份配置，
+会自动准备 Node、下载 bridge、为 Cursor / OpenCode / Claude Code / Codex / Qoder 各写一份配置，
 并用计划任务 `ZhunzouBridge` 做登录自启（多客户端时走 `fleet` 守护）。
 
 离线或内网环境仍然可以用零依赖包——在 Mac/Linux 上生成：

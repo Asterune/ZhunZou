@@ -333,23 +333,62 @@ export function createHubStore(api: HubApi = hubApi) {
     return [...names];
   }
 
+  /**
+   * Projects the machine's fleet scan found, whether or not anything is bound
+   * to them yet.
+   *
+   * A client that cannot tell the bridge which folder it has open (Cursor on
+   * Windows starts the MCP process elsewhere) reports no project, so the
+   * picker used to be empty on that machine even though the fleet had already
+   * walked the same folders. These names give the human something to choose
+   * from; the choice itself creates the binding.
+   */
+  function fleetProjectNamesOnMachine(machine: MachineTarget): string[] {
+    const hosts = new Set<string>();
+    for (const agent of machine.agents) {
+      const host = normalizeMachineHost(agent.host);
+      if (host) hosts.add(host);
+    }
+    if (!hosts.size) return [];
+
+    const names = new Set<string>();
+    for (const candidate of fleetCandidates.value) {
+      if (hosts.has(normalizeMachineHost(candidate.host))) {
+        names.add(candidate.projectName);
+      }
+    }
+    for (const workspace of fleetWorkspaces.value) {
+      if (hosts.has(normalizeMachineHost(workspace.host))) {
+        names.add(workspace.projectName);
+      }
+    }
+    return [...names];
+  }
+
   function projectsForMachine(machine: MachineTarget): string[] {
     const names = new Set<string>();
     for (const agent of machine.agents) {
       for (const project of projectNamesOfEnv(agent.env)) names.add(project);
+    }
+    for (const project of fleetProjectNamesOnMachine(machine)) {
+      names.add(project);
     }
     return [...names].sort((left, right) => left.localeCompare(right));
   }
 
   /** Identities on a machine that take this project; all of them when none is named. */
   function clientsForMachine(machine: MachineTarget, projectName = ''): Agent[] {
-    return sortClients(
-      projectName
-        ? machine.agents.filter((agent) =>
-            projectNamesOfEnv(agent.env).includes(projectName),
-          )
-        : machine.agents,
+    if (!projectName) return sortClients(machine.agents);
+    const bound = machine.agents.filter((agent) =>
+      projectNamesOfEnv(agent.env).includes(projectName),
     );
+    // Nothing is bound yet: a project the fleet discovered on this machine can
+    // still be opened through any of its clients, and creating the session is
+    // what binds it.
+    if (bound.length) return sortClients(bound);
+    return fleetProjectNamesOnMachine(machine).includes(projectName)
+      ? sortClients(machine.agents)
+      : [];
   }
 
   /**

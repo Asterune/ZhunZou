@@ -233,6 +233,19 @@ describe('createHubApi', () => {
     expect(fetchImpl.mock.calls[2]?.[0]).toBe(
       '/api/sessions/1/messages/2/retry',
     );
+
+    await api.editChatMessage(token, '1', '2', 'edited text');
+    expect(fetchImpl.mock.calls[3]?.[0]).toBe('/api/sessions/1/messages/2');
+    expect((fetchImpl.mock.calls[3]?.[1] as RequestInit).method).toBe('PATCH');
+    expect(
+      JSON.parse(String((fetchImpl.mock.calls[3]?.[1] as RequestInit).body)),
+    ).toEqual({ content: 'edited text' });
+
+    await api.cancelChatMessage(token, '1', '2');
+    expect(fetchImpl.mock.calls[4]?.[0]).toBe(
+      '/api/sessions/1/messages/2/cancel',
+    );
+    expect((fetchImpl.mock.calls[4]?.[1] as RequestInit).method).toBe('POST');
   });
 
   it('tails chat events after a cursor', async () => {

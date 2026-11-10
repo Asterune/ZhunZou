@@ -79,7 +79,7 @@ No polling loops, no lost context, and no need to keep the editor in front of yo
 
 - **Decisions, not chat.** Every ticket is constrained to a three-line brief and closed-form options, so “what exactly are you asking?” never becomes another round trip.
 - **Rules first, humans where it matters.** The Meta-Agent applies your `GLOBAL_RULES.md` and recalls similar resolved tickets. Routine choices clear in seconds; judgment calls always reach you.
-- **One inbox for every agent.** Cursor, OpenCode, Claude Code, Codex, Gemini, Windsurf, or any MCP client — desktop, phone, or a signed notification link. One queue, one audit trail.
+- **One inbox for every agent.** Cursor, OpenCode, Claude Code, Codex, Gemini, Qoder, Windsurf, or any MCP client — desktop, phone, or a signed notification link. One queue, one audit trail.
 - **Works when you are away.** Long-polling resumes the exact agent immediately after approval. If you close the editor, a headless `wake` or `fleet` daemon keeps the work moving.
 - **Safe by construction.** Destructive options are never auto-approved, timeout rulings are opt-in, and human decisions always beat a late Meta-Agent or timeout verdict.
 - **Recall instead of repetition.** Resolved decisions are stored and recalled as precedents; each human approval can be distilled into a reusable rule.
@@ -106,7 +106,7 @@ Milestones **M1–M13 are complete**: shared protocol, cloud service, long-poll 
 | Batch approval | Approve many tickets with a 3-second undo window; destructive options are skipped by default |
 | Notifications | Bark, Feishu, Slack, Discord, ntfy, Telegram, generic webhook, console |
 | One-click approval | HMAC-signed, expiring mobile page that works from any notification channel |
-| Human → Agent tasks | Dispatch work from the dashboard; bridges claim it with `agent_hub_next_task` |
+| Human → Agent tasks | Dispatch work from the dashboard; bridges claim it with `agent_hub_next_task`. Lives inside the Chat page as the “One-shot” mode: same env/project picker, no context kept |
 | Stale task recovery | Offline `CLAIMED` tasks are requeued; hard timeouts fail them instead of blocking the queue |
 | Agent registry | Every `env` is manageable: client type, version, host, current project, enable/disable/delete |
 | Scoped tokens | Per-agent Bearer tokens can only touch their own env; rotate or revoke without restarting the hub |
@@ -138,7 +138,7 @@ The dashboard is bilingual (EN/中文), installable as a PWA, and usable from a 
 
 <p align="center">
   <img src="./docs/assets/chat.png" alt="Zhunzou chat: multi-turn conversation with a project agent from the hub" width="920" />
-  <br /><sub>Chat: multi-turn conversation with any project's agent; each turn resumes the CLI session.</sub>
+  <br /><sub>Chat: multi-turn conversation with any project's agent; each turn resumes the CLI session, pending petitions appear inline, and new messages wait in a Cursor-style queue above the composer where they can be edited or withdrawn.</sub>
 </p>
 
 ## Architecture
@@ -266,7 +266,7 @@ curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash
 irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 ```
 
-The command provisions Node 20+ (a portable runtime with SHA256 verification when Node is missing), downloads the matching bridge release, exchanges the code for one scoped token per client, writes user-level Cursor / OpenCode / Claude Code / Codex config, and registers a login daemon. The end user never sees `HUB_SECRET_TOKEN` and never clones the repo.
+The command provisions Node 20+ (a portable runtime with SHA256 verification when Node is missing), downloads the matching bridge release, exchanges the code for one scoped token per client, writes user-level Cursor / OpenCode / Claude Code / Codex / Qoder config, and registers a login daemon. The end user never sees `HUB_SECRET_TOKEN` and never clones the repo.
 
 Codes expire after 15 minutes and can enroll up to 10 clients on the same machine (the first redemption binds the code to that host). To skip the login daemon and stay online only while the editor is open, pass the installer's own flags:
 
@@ -290,12 +290,15 @@ iwr 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' -OutFile install.ps1
 | OpenCode | `opencode-<project or host>` | `opencode` |
 | Claude Code | `claude-<project or host>` | `claude-code` |
 | Codex | `codex-<project or host>` | `codex` |
+| Qoder | `qoder-<project or host>` | `qoder` |
 
 Each env gets its own token and dashboard card, so heartbeats no longer overwrite each other; one project can be bound to several envs. The login daemon switches to `fleet` and keeps every env online (`~/.zhunzou/fleet.json`). Pass `--env` or `--agent-kind` to pin one shared identity instead.
 
-Leave the enrollment dialog's environment field empty so each client derives `<kind>-<project or host>`; if you set it (for example `office`), each client becomes `office-cursor`, `office-opencode`, `office-claude`, `office-codex`, and re-running the installer refreshes that card instead of adding `-2`.
+Leave the enrollment dialog's environment field empty so each client derives `<kind>-<project or host>`; if you set it (for example `office`), each client becomes `office-cursor`, `office-opencode`, `office-claude`, `office-codex`, `office-qoder`, and re-running the installer refreshes that card instead of adding `-2`.
 
 Codex only reads the user-level `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`); `init` writes or replaces `[mcp_servers.zhunzou]` and leaves other servers untouched.
+
+Qoder CLI reads `mcpServers` from `$QODER_CONFIG_DIR/settings.json` (default `~/.qoder/settings.json`); a workspace install writes `<project>/.qoder/settings.local.json` instead of `.mcp.json`, so it never fights Claude Code over that file.
 
 To keep a project online without opening an editor, register the directory with `fleet` (no JSON editing):
 
@@ -346,7 +349,7 @@ Safety: browsing is limited to the user's home directory and `scan.roots`, hidde
 npx -y zhunzou-bridge init
 ```
 
-The wizard asks for the hub URL and token, detects Cursor / OpenCode / Claude Code / Codex, writes the MCP config, copies a rules template, provisions a scoped agent token, and verifies connectivity. It never overwrites unrelated MCP servers.
+The wizard asks for the hub URL and token, detects Cursor / OpenCode / Claude Code / Codex / Qoder, writes the MCP config, copies a rules template, provisions a scoped agent token, and verifies connectivity. It never overwrites unrelated MCP servers.
 
 Run `init` once **per workspace**. The wizard derives `AGENT_ENV` from the project name (`cursor-yikuaomed-erp`) and provisions a scoped token, so multiple Cursor windows show up as separate agents instead of overwriting each other's heartbeat. Cursor can only read the workspace it has open; to work across repositories, use a multi-root workspace or run one agent per repository.
 
@@ -358,7 +361,7 @@ zhunzou-bridge init --hub-url https://hub.example.com --code ABCDE-FGHIJ --yes -
 zhunzou-bridge init --dry-run          # show what would be written, change nothing
 ```
 
-`--target` accepts `cursor` / `opencode` / `claude` / `codex` / `all`, `--global` writes user-level
+`--target` accepts `cursor` / `opencode` / `claude` / `codex` / `qoder` / `all`, `--global` writes user-level
 instead of project-level config, `--service` registers the login daemon, `--no-agent-token` skips
 token provisioning, `--dir` targets another workspace, and `--skip-check` skips the connectivity
 probe. From a checkout (while the package is not on npm), run `pnpm build` first and call
@@ -376,7 +379,7 @@ probe. From a checkout (while the package is not on npm), run `pnpm build` first
 | `service` (`install` · `uninstall` · `status` · `restart`) | Manage the login-time daemon |
 | `upgrade` (`--check` · `--force` · `--rollback`) | Pull the newest bridge bundle from the hub and flip the version pointer |
 
-`wake` adapters: `auto`, `opencode`, `opencode-run`, `claude`, `codex`, `gemini`, `cursor-agent`, `aider`, `goose`, `amp`, `command` (any template command), `notify` (surface the task without running a CLI). `auto` prefers a live OpenCode service, then looks for `claude` → `codex` → `gemini` → `cursor-agent` → `aider` → `goose` → `amp`, and falls back to `notify`. Interactive chat sessions need a resume-capable adapter: `opencode`, `opencode-run`, `cursor-agent`, `claude`, or `command`.
+`wake` adapters: `auto`, `opencode`, `opencode-run`, `claude`, `codex`, `gemini`, `qoder`, `cursor-agent`, `aider`, `goose`, `amp`, `command` (any template command), `notify` (surface the task without running a CLI). `auto` prefers a live OpenCode service, then looks for `claude` → `codex` → `gemini` → `qoder` → `cursor-agent` → `aider` → `goose` → `amp`, and falls back to `notify`. The `qoder` adapter runs Qoder CLI (`qoder -p`; `qodercli` / `qcode` executables are also detected). Interactive chat sessions need a resume-capable adapter: `opencode`, `opencode-run`, `cursor-agent`, `claude`, `qoder`, or `command`.
 
 ### Headless: keep working when the editor is closed
 
@@ -463,8 +466,8 @@ node packages/device/bin/device.js capabilities --json     # alias: `print`
 
 The daemon opens `wss://<hub>/ws/device`, sends a `hello` with protocol version,
 OS/arch/host/shell, PTY backend, a CLI inventory (`claude`, `cursor-agent`,
-`agent`, `opencode`, `codex`, `gemini`, `aider`, `goose`, `amp`, `git`, `node`,
-`pnpm`, `docker`, `tmux`, …) and CPU/load/memory/uptime, then heartbeats with
+`agent`, `opencode`, `codex`, `gemini`, `qoder`, `qodercli`, `aider`, `goose`,
+`amp`, `git`, `node`, `pnpm`, `docker`, `tmux`, …) and CPU/load/memory/uptime, then heartbeats with
 fresh stats every 30 seconds. The dashboard's **Agents** page shows the realtime
 badge, CPU/load/memory and available tools, and marks the device offline as soon
 as the socket dies. Set `REALTIME_ENABLED=false` to keep using only the legacy
@@ -529,8 +532,8 @@ Environment variables:
 | `HUB_TOKEN` | yes | — | Same as server `HUB_SECRET_TOKEN`, or a scoped per-agent token |
 | `HUB_URL` | no | `http://127.0.0.1:8787` | Server URL |
 | `AGENT_ENV` | no | `unknown-<hostname>` | Environment label, e.g. `company-cursor`. `init` writes `<client>-<project>` so each workspace stays distinct |
-| `ZHUNZOU_AGENT_KIND` | no | `other` | Client type: `cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `windsurf` / `other`; written by `init` |
-| `ZHUNZOU_PROJECT` | no | auto-detected | Project name reported in heartbeats; defaults to the git root / cwd basename |
+| `ZHUNZOU_AGENT_KIND` | no | `other` | Client type: `cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `qoder` / `windsurf` / `other`; written by `init` |
+| `ZHUNZOU_PROJECT` | no | auto-detected | Project name reported in heartbeats; falls back from the client's open workspace (Cursor `WORKSPACE_FOLDER_PATHS`, MCP `roots/list`) to the git root / cwd basename |
 | `ZHUNZOU_FALLBACK` | no | `cli` | `cli` or `mcp` after a 40s timeout (legacy alias `AGENT_HUB_FALLBACK`) |
 | `ZHUNZOU_WAIT_TIMEOUT_MS` | no | `40000` | Single long-poll window, clamped 1s–55s (legacy alias `AGENT_HUB_WAIT_TIMEOUT_MS`) |
 | `ZHUNZOU_CLI_COMMAND` | no | `npx zhunzou-bridge` | Command shown in CLI fallback; running `bin/mcp.js` auto-points it at the sibling `cli.js` / `cli.mjs` |
@@ -541,6 +544,7 @@ Environment variables:
 | `ZHUNZOU_AUTO_UPGRADE_INTERVAL_MS` | no | `21600000` | Self-update check interval, minimum 60s |
 | `ZHUNZOU_MCP_BIN` / `ZHUNZOU_CLI_BIN` | no | — | Override the bin paths `init` writes into editor config |
 | `CODEX_HOME` | no | `~/.codex` | Where `init --target codex` reads and writes `config.toml` |
+| `QODER_CONFIG_DIR` | no | `~/.qoder` | Where `init --target qoder` reads and writes `settings.json` |
 
 `wake` and `fleet` daemon defaults (each has a matching CLI flag):
 
@@ -612,6 +616,8 @@ Three auth tiers, all via `Authorization: Bearer <token>`:
 | `DELETE` | `/api/sessions/:id` | admin | Delete a session with its transcript and output |
 | `POST` | `/api/sessions/:id/close` | admin | Close a session |
 | `POST` | `/api/sessions/:id/messages` | admin | Send a user message |
+| `PATCH` | `/api/sessions/:id/messages/:messageId` | admin | Rewrite a queued user message (`PENDING`, human-authored) |
+| `POST` | `/api/sessions/:id/messages/:messageId/cancel` | admin | Cancel a queued user message; kept as `CANCELLED` for audit |
 | `GET` | `/api/sessions/:id/events` | agent | List streamed chat events |
 | `GET` | `/api/sessions/next?env=...` | agent | Runner claims the next message |
 | `POST` | `/api/sessions/:id/messages/:messageId/events` | agent | Append streamed output |

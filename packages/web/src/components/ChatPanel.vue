@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import {
   ArrowUp,
+  Gavel,
+  ListOrdered,
+  Loader2,
+  MessageSquare,
   MessageSquarePlus,
   PanelLeft,
+  PenLine,
   Plus,
   RefreshCw,
   Sparkles,
   X,
   XCircle,
+  Zap,
 } from 'lucide-vue-next';
 import {
   computed,
@@ -26,12 +32,16 @@ import type {
 } from '@zhunzou/shared';
 
 import { hubApi } from '../lib/api';
+import { queuedUserMessages, ticketsForSession } from '../lib/chat';
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
 import ChatSessionList from './ChatSessionList.vue';
 import SessionOutput from './SessionOutput.vue';
+import SingleTaskList from './SingleTaskList.vue';
 import TargetPicker from './TargetPicker.vue';
+import TaskBoard from './TaskBoard.vue';
+import TicketCard from './TicketCard.vue';
 
 const store = useHubStore();
 const { t } = useI18n();
@@ -72,10 +82,57 @@ const retrying = ref('');
 const proposalBusy = ref('');
 const editingProposal = ref('');
 const proposalDraft = ref('');
+const editingQueued = ref('');
+const queuedDraft = ref('');
+const queuedBusy = ref('');
 const error = ref('');
 
 const formOpen = ref(false);
 const sessionListOpen = ref(false);
+
+/**
+ * 「单次执行」is the old 下发任务 page folded in here: same env/project picker,
+ * but the run is one-shot and keeps no context.
+ */
+type ChatMode = 'chat' | 'single';
+const mode = ref<ChatMode>(readInitialMode());
+const focusTaskId = ref('');
+
+function readInitialMode(): ChatMode {
+  if (typeof window === 'undefined') return 'chat';
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('tab') === 'tasks') return 'single';
+  return params.get('mode') === 'single' ? 'single' : 'chat';
+}
+
+function setMode(next: ChatMode): void {
+  mode.value = next;
+  if (next === 'chat') focusTaskId.value = '';
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  url.searchParams.set('tab', 'chat');
+  if (next === 'single') url.searchParams.set('mode', 'single');
+  else url.searchParams.delete('mode');
+  window.history.replaceState(null, '', url);
+}
+
+function openSingleTask(id: string): void {
+  focusTaskId.value = id;
+  setMode('single');
+}
+
+const modes = computed(() => [
+  {
+    key: 'chat' as const,
+    label: t('chat.mode.chat'),
+    hint: t('chat.mode.chatHint'),
+  },
+  {
+    key: 'single' as const,
+    label: t('chat.mode.single'),
+    hint: t('chat.mode.singleHint'),
+  },
+]);
 const sessionListButton = ref<HTMLButtonElement | null>(null);
 const sessionDrawer = ref<HTMLElement | null>(null);
 const form = reactive({
@@ -108,6 +165,27 @@ const runningMessage = computed(() =>
     .find((message) => message.role === 'user' && message.status === 'RUNNING'),
 );
 
+/** Messages accepted by the hub but still waiting behind the running turn. */
+const queuedMessages = computed(() => queuedUserMessages(messages.value));
+
+/**
+ * Queued messages live in the Cursor-style queue card above the composer, not
+ * in the transcript, so the transcript only shows turns the runner has taken.
+ */
+const visibleMessages = computed(() => {
+  const queued = new Set(queuedMessages.value.map((message) => message.id));
+  return messages.value.filter((message) => !queued.has(message.id));
+});
+
+/**
+ * Pending petitions raised in the same environment (and project, when the
+ * chat names one). They are shown inline so approving never means leaving the
+ * conversation.
+ */
+const sessionTickets = computed(() =>
+  ticketsForSession(session.value, store.pendingTickets),
+);
+
 const activeSession = computed(() => session.value);
 
 /**
@@ -116,6 +194,7 @@ const activeSession = computed(() => session.value);
  * scrolled up to read history should not get yanked down by a background poll.
  */
 const messagesEl = ref<HTMLElement | null>(null);
+const ticketsEl = ref<HTMLElement | null>(null);
 let stickToBottom = true;
 
 function updateStick(): void {
@@ -131,8 +210,33 @@ function scrollToBottom(force = false): void {
   element.scrollTop = element.scrollHeight;
 }
 
+/** Jump from the header badge to the inline petitions at the transcript end. */
+function scrollToTickets(): void {
+  ticketsEl.value?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
 watch(
   () => messages.value.map((message) => `${message.id}:${message.status}`).join('|'),
+  () => {
+    // The runner may claim a message while the human is editing it; once it
+    // leaves PENDING the inline editor no longer has anything to save.
+    if (
+      editingQueued.value &&
+      !messages.value.some(
+        (message) =>
+          message.id === editingQueued.value && message.status === 'PENDING',
+      )
+    ) {
+      cancelEditQueued();
+    }
+    void nextTick(() => scrollToBottom());
+  },
+);
+
+// A ticket raised while the chat is open belongs at the end of the transcript,
+// so follow it only when the reader is already parked at the bottom.
+watch(
+  () => sessionTickets.value.map((ticket) => ticket.id).join('|'),
   () => {
     void nextTick(() => scrollToBottom());
   },
@@ -233,6 +337,7 @@ async function openSession(id: string): Promise<void> {
   session.value = null;
   messages.value = [];
   cancelEditProposal();
+  cancelEditQueued();
   await refreshSession({ force: true });
   stickToBottom = true;
   void nextTick(() => scrollToBottom(true));
@@ -348,6 +453,72 @@ async function retryMessage(message: ChatMessage): Promise<void> {
     pushToast(describe(cause), 'error');
   } finally {
     retrying.value = '';
+  }
+}
+
+function startEditQueued(message: ChatMessage): void {
+  if (queuedBusy.value || session.value?.status !== 'ACTIVE') return;
+  editingQueued.value = message.id;
+  queuedDraft.value = message.content;
+}
+
+function cancelEditQueued(): void {
+  editingQueued.value = '';
+  queuedDraft.value = '';
+}
+
+async function saveQueued(message: ChatMessage): Promise<void> {
+  const content = queuedDraft.value.trim();
+  if (
+    !session.value ||
+    queuedBusy.value ||
+    session.value.status !== 'ACTIVE' ||
+    !content
+  ) {
+    return;
+  }
+
+  queuedBusy.value = message.id;
+  try {
+    await hubApi.editChatMessage(
+      store.token,
+      session.value.id,
+      message.id,
+      content,
+    );
+    cancelEditQueued();
+    await refreshSession({ force: true });
+    await loadSessions();
+    pushToast(t('chat.queuedEdited'), 'success');
+  } catch (cause) {
+    pushToast(describe(cause), 'error');
+    await refreshSession({ force: true });
+  } finally {
+    queuedBusy.value = '';
+  }
+}
+
+async function cancelQueued(message: ChatMessage): Promise<void> {
+  if (
+    !session.value ||
+    queuedBusy.value ||
+    session.value.status !== 'ACTIVE'
+  ) {
+    return;
+  }
+
+  queuedBusy.value = message.id;
+  try {
+    await hubApi.cancelChatMessage(store.token, session.value.id, message.id);
+    if (editingQueued.value === message.id) cancelEditQueued();
+    await refreshSession({ force: true });
+    await loadSessions();
+    pushToast(t('chat.queuedCancelled'), 'success');
+  } catch (cause) {
+    pushToast(describe(cause), 'error');
+    await refreshSession({ force: true });
+  } finally {
+    queuedBusy.value = '';
   }
 }
 
@@ -483,6 +654,7 @@ watch(sessionListOpen, async (open) => {
 });
 
 onMounted(() => {
+  if (mode.value === 'single') setMode('single');
   void loadSessions(true);
   startPolling();
 });
@@ -509,14 +681,42 @@ onBeforeUnmount(() => {
           {{ t('chat.subtitle') }}
         </span>
       </div>
-      <button
-        type="button"
-        class="flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[11px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container"
-        @click="openForm"
-      >
-        <MessageSquarePlus :size="14" />
-        {{ t('chat.new') }}
-      </button>
+      <div class="flex flex-wrap items-center gap-2">
+        <div
+          class="flex h-8 items-center rounded-lg bg-surface-container/80 p-0.5 ring-1 ring-inset ring-outline-variant/40"
+          role="tablist"
+          :aria-label="t('chat.title')"
+        >
+          <button
+            v-for="item in modes"
+            :key="item.key"
+            type="button"
+            role="tab"
+            :aria-selected="mode === item.key"
+            :title="item.hint"
+            class="flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[11px] font-medium transition"
+            :class="
+              mode === item.key
+                ? 'bg-primary text-on-primary shadow-sm'
+                : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
+            "
+            @click="setMode(item.key)"
+          >
+            <MessageSquare v-if="item.key === 'chat'" :size="13" />
+            <Zap v-else :size="13" />
+            {{ item.label }}
+          </button>
+        </div>
+        <button
+          v-if="mode === 'chat'"
+          type="button"
+          class="flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[11px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container"
+          @click="openForm"
+        >
+          <MessageSquarePlus :size="14" />
+          {{ t('chat.new') }}
+        </button>
+      </div>
     </div>
 
     <p
@@ -597,21 +797,36 @@ onBeforeUnmount(() => {
       </div>
     </Teleport>
 
-    <div class="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
+    <!-- One-shot runs: the former 下发任务 page, same page and picker. -->
+    <TaskBoard
+      v-if="mode === 'single'"
+      embedded
+      :focus-task-id="focusTaskId"
+    />
+
+    <div v-else class="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
       <!-- Desktop session list -->
       <aside
         class="hidden flex-col lg:flex lg:h-[clamp(420px,calc(100dvh_-_14rem),760px)]"
       >
-        <ChatSessionList
-          :sessions="sessions"
-          :active-id="activeId"
-          :loading="loadingList"
-          :loaded="listLoaded"
-          :deleting-id="deletingId"
-          @open="openSession"
-          @delete="deleteSession"
-          @refresh="loadSessions(true)"
-        />
+        <div class="min-h-0 flex-1">
+          <ChatSessionList
+            :sessions="sessions"
+            :active-id="activeId"
+            :loading="loadingList"
+            :loaded="listLoaded"
+            :deleting-id="deletingId"
+            @open="openSession"
+            @delete="deleteSession"
+            @refresh="loadSessions(true)"
+          />
+        </div>
+        <div class="mt-3 shrink-0 border-t border-outline-variant/30 pt-2">
+          <SingleTaskList
+            :active-task-id="focusTaskId"
+            @open="openSingleTask"
+          />
+        </div>
       </aside>
 
       <!-- Mobile session drawer: the transcript stays on screen. -->
@@ -638,18 +853,26 @@ onBeforeUnmount(() => {
               tabindex="-1"
               class="absolute inset-y-0 left-0 flex w-[86vw] max-w-xs flex-col bg-surface px-3 pb-[calc(0.75rem_+_env(safe-area-inset-bottom))] pt-[calc(0.75rem_+_env(safe-area-inset-top))] shadow-2xl outline-none"
             >
-              <ChatSessionList
-                :sessions="sessions"
-                :active-id="activeId"
-                :loading="loadingList"
-                :loaded="listLoaded"
-                :deleting-id="deletingId"
-                dismissible
-                @open="openSession"
-                @delete="deleteSession"
-                @refresh="loadSessions(true)"
-                @close="closeSessionList"
-              />
+              <div class="min-h-0 flex-1">
+                <ChatSessionList
+                  :sessions="sessions"
+                  :active-id="activeId"
+                  :loading="loadingList"
+                  :loaded="listLoaded"
+                  :deleting-id="deletingId"
+                  dismissible
+                  @open="openSession"
+                  @delete="deleteSession"
+                  @refresh="loadSessions(true)"
+                  @close="closeSessionList"
+                />
+              </div>
+              <div class="mt-3 shrink-0 border-t border-outline-variant/30 pt-2">
+                <SingleTaskList
+                  :active-task-id="focusTaskId"
+                  @open="openSingleTask"
+                />
+              </div>
             </aside>
           </div>
         </Transition>
@@ -694,6 +917,16 @@ onBeforeUnmount(() => {
                 <span class="h-1.5 w-1.5 rounded-full bg-error" />
                 {{ t('chat.agentOffline') }}
               </span>
+              <button
+                v-if="sessionTickets.length"
+                type="button"
+                class="flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary transition hover:bg-primary/15"
+                :title="t('chat.pendingTicketsHint')"
+                @click="scrollToTickets"
+              >
+                <Gavel :size="11" />
+                {{ t('chat.pendingTicketsTitle') }} {{ sessionTickets.length }}
+              </button>
             </p>
           </div>
           <button
@@ -714,7 +947,7 @@ onBeforeUnmount(() => {
           @scroll.passive="updateStick"
         >
           <div
-            v-for="message in messages"
+            v-for="message in visibleMessages"
             :key="message.id"
             :class="message.role === 'user' ? 'flex justify-end' : 'flex justify-start'"
           >
@@ -813,6 +1046,23 @@ onBeforeUnmount(() => {
             </div>
 
             <div
+              v-else-if="message.status === 'CANCELLED'"
+              class="max-w-[85%] rounded-2xl border border-dashed border-outline-variant/40 bg-surface-container/60 px-3.5 py-2.5 text-[13px] leading-6 text-on-surface-variant"
+            >
+              <p
+                class="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium tracking-wide uppercase text-on-surface-variant"
+              >
+                <XCircle :size="12" />
+                {{ t('chat.cancelledBadge') }}
+              </p>
+              <p
+                class="whitespace-pre-wrap break-words line-through decoration-on-surface-variant/40"
+              >
+                {{ message.content }}
+              </p>
+            </div>
+
+            <div
               v-else
               class="max-w-[85%] rounded-2xl px-3.5 py-2 text-[13px] leading-6"
               :class="
@@ -844,17 +1094,11 @@ onBeforeUnmount(() => {
               >
                 {{ t('chat.autoAdopted', { reason: message.rationale ?? '' }) }}
               </p>
-              <p
-                v-if="message.role === 'user' && message.status === 'PENDING'"
-                class="mt-1 text-[10px] text-on-primary/70"
-              >
-                {{ sessionOnline ? t('chat.waiting') : t('chat.waitingOffline') }}
-              </p>
             </div>
           </div>
 
           <p
-            v-if="!messages.length"
+            v-if="!visibleMessages.length && !queuedMessages.length"
             class="py-10 text-center text-[12px] text-on-surface-variant"
           >
             {{ t('chat.firstMessage') }}
@@ -867,9 +1111,183 @@ onBeforeUnmount(() => {
             :message-id="runningMessage.id"
             :active="true"
           />
+
+          <section
+            v-if="sessionTickets.length"
+            ref="ticketsEl"
+            class="space-y-2 rounded-xl border border-primary/20 bg-primary/[0.03] p-2.5"
+          >
+            <div
+              class="flex flex-wrap items-center gap-1.5 px-0.5 text-[11px] font-medium text-primary"
+            >
+              <Gavel :size="13" />
+              {{ t('chat.pendingTicketsTitle') }} · {{ sessionTickets.length }}
+              <span class="font-normal text-on-surface-variant">
+                {{ t('chat.pendingTicketsHint') }}
+              </span>
+            </div>
+            <TicketCard
+              v-for="ticket in sessionTickets"
+              :key="ticket.id"
+              :ticket="ticket"
+              compact
+            />
+          </section>
         </div>
 
         <div class="shrink-0 border-t border-outline-variant/30 p-3">
+          <!-- Cursor-style queue: compact rows sit below the active turn and
+               above the composer, so the transcript only holds sent turns. -->
+          <section
+            v-if="queuedMessages.length"
+            class="mb-2 overflow-hidden rounded-xl border border-outline-variant/40 bg-surface-container-lowest shadow-sm"
+          >
+            <header
+              class="flex flex-wrap items-center gap-1.5 border-b border-outline-variant/25 bg-surface-container-low/60 px-3 py-2 text-[11px]"
+            >
+              <ListOrdered :size="13" class="shrink-0 text-primary" />
+              <span class="font-medium text-on-surface">
+                {{ t('chat.queuedTitle') }}
+              </span>
+              <span
+                class="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary"
+              >
+                {{ queuedMessages.length }}
+              </span>
+              <span
+                class="ml-auto hidden text-[10px] text-on-surface-variant/60 sm:inline"
+              >
+                {{
+                  runningMessage
+                    ? t('chat.queuedHint')
+                    : sessionOnline
+                      ? t('chat.waiting')
+                      : t('chat.waitingOffline')
+                }}
+              </span>
+            </header>
+
+            <ul
+              class="max-h-32 divide-y divide-outline-variant/20 overflow-y-auto overscroll-contain sm:max-h-48"
+            >
+              <li
+                v-for="(message, index) in queuedMessages"
+                :key="message.id"
+                class="group px-2.5 py-1.5"
+              >
+                <div
+                  v-if="editingQueued === message.id"
+                  class="rounded-lg border border-primary/40 bg-surface-container p-2"
+                >
+                  <textarea
+                    v-model="queuedDraft"
+                    rows="2"
+                    maxlength="32000"
+                    class="w-full resize-none rounded-md border border-outline-variant/50 bg-surface-container-lowest px-2.5 py-1.5 text-[12px] leading-5 text-on-surface outline-none focus:border-primary"
+                    @keydown.enter.exact.prevent="saveQueued(message)"
+                    @keydown.esc.prevent="cancelEditQueued"
+                  />
+                  <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      class="rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-on-primary transition hover:opacity-90 disabled:opacity-50"
+                      :disabled="queuedBusy === message.id || !queuedDraft.trim()"
+                      @click="saveQueued(message)"
+                    >
+                      {{
+                        queuedBusy === message.id
+                          ? t('chat.savingQueued')
+                          : t('chat.saveQueued')
+                      }}
+                    </button>
+                    <button
+                      type="button"
+                      class="rounded-md px-2 py-1 text-[11px] text-on-surface-variant transition hover:bg-surface-container-high"
+                      @click="cancelEditQueued"
+                    >
+                      {{ t('chat.cancel') }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-else class="flex items-center gap-2">
+                  <span
+                    class="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-surface-container-high font-mono text-[10px] font-semibold text-on-surface-variant"
+                  >
+                    {{ index + 1 }}
+                  </span>
+                  <button
+                    v-if="message.origin === 'human'"
+                    type="button"
+                    class="min-w-0 flex-1 truncate text-left text-[12px] leading-5 text-on-surface transition hover:text-primary disabled:opacity-60"
+                    :title="message.content"
+                    :disabled="
+                      queuedBusy === message.id ||
+                      activeSession.status !== 'ACTIVE'
+                    "
+                    @click="startEditQueued(message)"
+                  >
+                    {{ message.content }}
+                  </button>
+                  <p
+                    v-else
+                    class="min-w-0 flex-1 truncate text-[12px] leading-5 text-on-surface"
+                    :title="message.content"
+                  >
+                    {{ message.content }}
+                  </p>
+                  <span
+                    v-if="message.origin === 'agent'"
+                    class="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[9px] text-on-surface-variant"
+                  >
+                    {{ t('chat.autoAdoptedShort') }}
+                  </span>
+                  <div
+                    v-else
+                    class="flex shrink-0 items-center gap-0.5 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                  >
+                    <button
+                      type="button"
+                      class="grid h-6 w-6 place-items-center rounded-md text-on-surface-variant transition hover:bg-surface-container-high hover:text-on-surface disabled:opacity-40"
+                      :title="t('chat.editQueued')"
+                      :aria-label="t('chat.editQueued')"
+                      :disabled="
+                        queuedBusy === message.id ||
+                        activeSession.status !== 'ACTIVE'
+                      "
+                      @click="startEditQueued(message)"
+                    >
+                      <PenLine :size="13" />
+                    </button>
+                    <button
+                      type="button"
+                      class="grid h-6 w-6 place-items-center rounded-md text-on-surface-variant transition hover:bg-error-container hover:text-on-error-container disabled:opacity-40"
+                      :title="t('chat.cancelQueued')"
+                      :aria-label="t('chat.cancelQueued')"
+                      :disabled="
+                        queuedBusy === message.id ||
+                        activeSession.status !== 'ACTIVE'
+                      "
+                      @click="cancelQueued(message)"
+                    >
+                      <X :size="14" />
+                    </button>
+                  </div>
+                </div>
+              </li>
+            </ul>
+          </section>
+
+          <div
+            v-if="runningMessage && !queuedMessages.length"
+            class="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-surface-container px-2.5 py-1.5 text-[11px] text-on-surface-variant"
+          >
+            <span class="flex items-center gap-1 font-medium text-primary">
+              <Loader2 :size="12" class="animate-spin" />
+              {{ t('chat.runningNow') }}
+            </span>
+            <span class="text-on-surface-variant/60">{{ t('chat.queueHint') }}</span>
+          </div>
           <div class="flex items-end gap-2">
             <textarea
               v-model="draft"

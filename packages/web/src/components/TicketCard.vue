@@ -23,11 +23,12 @@ import {
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 
-const props = defineProps<{ ticket: DecisionTicket }>();
+const props = defineProps<{ ticket: DecisionTicket; compact?: boolean }>();
 
 const store = useHubStore();
 const { t } = useI18n();
 const instruction = ref('');
+const showInstruction = ref(false);
 const submitting = ref(false);
 const pendingKey = ref('');
 const confirmingKey = ref('');
@@ -147,9 +148,13 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
 
 <template>
   <article
-    class="relative overflow-hidden rounded-xl border border-outline-variant/35 bg-surface-container-lowest shadow-[0_10px_30px_-24px_rgba(30,27,25,0.5)] transition-shadow hover:shadow-[0_16px_40px_-28px_rgba(30,27,25,0.55)]"
+    class="relative overflow-hidden border border-outline-variant/35 bg-surface-container-lowest shadow-[0_10px_30px_-24px_rgba(30,27,25,0.5)] transition-shadow hover:shadow-[0_16px_40px_-28px_rgba(30,27,25,0.55)]"
+    :class="compact ? 'rounded-lg' : 'rounded-xl'"
   >
-    <div class="pointer-events-none absolute right-3 top-3 select-none opacity-15">
+    <div
+      v-if="!compact"
+      class="pointer-events-none absolute right-3 top-3 select-none opacity-15"
+    >
       <div
         class="grid h-16 w-16 rotate-6 place-items-center rounded border-2 border-primary text-lg font-black tracking-widest text-primary"
         style="font-family: var(--font-serif)"
@@ -158,15 +163,22 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
       </div>
     </div>
 
-    <div class="p-4 sm:p-5">
-      <header class="flex flex-wrap items-start justify-between gap-2 pr-14">
+    <div :class="compact ? 'p-3' : 'p-4 sm:p-5'">
+      <header
+        class="flex flex-wrap items-start justify-between gap-2"
+        :class="compact ? '' : 'pr-14'"
+      >
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="font-mono text-lg font-bold tracking-tight text-primary">
+            <span
+              class="font-mono font-bold tracking-tight text-primary"
+              :class="compact ? 'text-sm' : 'text-lg'"
+            >
               #{{ ticket.id }}
             </span>
             <h3
-              class="text-lg font-semibold text-on-surface"
+              class="font-semibold text-on-surface"
+              :class="compact ? 'text-sm' : 'text-lg'"
               style="font-family: var(--font-serif)"
             >
               {{ ticket.projectName }}
@@ -192,7 +204,10 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
         </span>
       </header>
 
-      <div class="mt-3.5 space-y-2 rounded-lg bg-surface-container-low p-3">
+      <div
+        class="rounded-lg bg-surface-container-low"
+        :class="compact ? 'mt-2.5 space-y-1.5 p-2.5' : 'mt-3.5 space-y-2 p-3'"
+      >
         <div class="flex items-start gap-2.5">
           <span
             class="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-secondary-container text-on-secondary-container"
@@ -203,7 +218,12 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
             <span class="block text-[11px] font-medium text-on-surface-variant">
               {{ t('ticket.done') }}
             </span>
-            <p class="text-sm leading-6 text-on-surface">{{ ticket.doneSummary }}</p>
+            <p
+              class="text-on-surface"
+              :class="compact ? 'text-xs leading-5' : 'text-sm leading-6'"
+            >
+              {{ ticket.doneSummary }}
+            </p>
           </div>
         </div>
 
@@ -216,7 +236,10 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
               <Gavel :size="16" />
               <span class="text-[13px] font-bold">{{ t('ticket.blocker') }}</span>
             </div>
-            <p class="break-words text-sm font-medium leading-6 text-on-surface">
+            <p
+              class="break-words font-medium text-on-surface"
+              :class="compact ? 'text-xs leading-5' : 'text-sm leading-6'"
+            >
               {{ ticket.blockerQuestion }}
             </p>
           </div>
@@ -232,7 +255,12 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
             <span class="block text-[11px] font-medium text-on-surface-variant">
               {{ t('ticket.next') }}
             </span>
-            <p class="text-sm leading-6 text-on-surface">{{ ticket.nextStepPlan }}</p>
+            <p
+              class="text-on-surface"
+              :class="compact ? 'text-xs leading-5' : 'text-sm leading-6'"
+            >
+              {{ ticket.nextStepPlan }}
+            </p>
           </div>
         </div>
       </div>
@@ -309,7 +337,16 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
         </button>
       </div>
 
-      <div class="mt-3.5">
+      <button
+        v-if="compact && !showInstruction"
+        type="button"
+        class="mt-2 text-[11px] font-medium text-primary transition hover:opacity-80"
+        @click="showInstruction = true"
+      >
+        + {{ t('ticket.instructionLabel') }}
+      </button>
+
+      <div v-if="!compact || showInstruction" class="mt-3.5">
         <label
           :for="`instruction-${ticket.id}`"
           class="flex items-center justify-between px-0.5 text-[11px] text-on-surface-variant"
@@ -344,14 +381,15 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
           :key="option.key"
           type="button"
           :disabled="submitting"
-          class="group flex min-h-[54px] w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-60"
-          :class="
+          class="group flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-60"
+          :class="[
+            compact ? 'min-h-[44px]' : 'min-h-[54px]',
             option.risk === 'destructive'
               ? 'border-error/25 bg-error-container/20 shadow-xs hover:bg-error-container/35'
               : isRecommended(option.key)
                 ? 'border-primary/20 bg-surface-container shadow-sm hover:bg-surface-container-high'
-                : 'border-transparent bg-surface-container-low shadow-xs hover:bg-surface-container'
-          "
+                : 'border-transparent bg-surface-container-low shadow-xs hover:bg-surface-container',
+          ]"
           @click="approve(option.key)"
         >
           <span class="flex min-w-0 items-center gap-2.5">
@@ -414,6 +452,7 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
       </div>
 
       <div
+        v-if="!compact"
         class="mt-3 flex items-center gap-1.5 border-t border-outline-variant/30 pt-2.5 text-[11px] text-on-surface-variant/75"
       >
         <BadgeCheck :size="13" class="text-primary" />

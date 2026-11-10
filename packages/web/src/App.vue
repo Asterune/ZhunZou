@@ -2,16 +2,17 @@
 import {
   Bot,
   CheckCircle2,
+  ChevronDown,
   Ellipsis,
   Gavel,
   LogOut,
   MessageSquare,
   RefreshCw,
   ScrollText,
-  Send,
   SlidersHorizontal,
   SquareTerminal,
   WifiOff,
+  Wrench,
   X,
 } from 'lucide-vue-next';
 import {
@@ -32,7 +33,6 @@ import LoginGate from './components/LoginGate.vue';
 import LocaleToggle from './components/LocaleToggle.vue';
 import RulesEditor from './components/RulesEditor.vue';
 import StatusBar from './components/StatusBar.vue';
-import TaskBoard from './components/TaskBoard.vue';
 import TicketCard from './components/TicketCard.vue';
 import ToastStack from './components/ToastStack.vue';
 import UpdatePrompt from './components/UpdatePrompt.vue';
@@ -40,7 +40,7 @@ import { relativeTime, formatUptime } from './lib/format';
 import { useI18n } from './lib/i18n';
 import { useHubStore } from './stores/hub';
 
-type Tab = 'pending' | 'tasks' | 'chat' | 'terminal' | 'agents' | 'history' | 'rules';
+type Tab = 'pending' | 'chat' | 'terminal' | 'agents' | 'history' | 'rules';
 
 const TerminalPanel = defineAsyncComponent(
   () => import('./components/TerminalPanel.vue'),
@@ -52,8 +52,9 @@ const { t } = useI18n();
 function initialTab(): Tab {
   if (typeof window === 'undefined') return 'pending';
   const value = new URLSearchParams(window.location.search).get('tab');
-  return value === 'tasks' ||
-    value === 'chat' ||
+  // `?tab=tasks` is a legacy bookmark: the page now lives inside Chat.
+  if (value === 'tasks') return 'chat';
+  return value === 'chat' ||
     value === 'terminal' ||
     value === 'agents' ||
     value === 'history' ||
@@ -65,6 +66,7 @@ function initialTab(): Tab {
 const activeTab = ref<Tab>(initialTab());
 const batchOpen = ref(false);
 
+// 下发任务 is now a mode inside 会话, so it no longer earns a nav slot.
 const tabs = computed(() => [
   {
     key: 'pending' as const,
@@ -73,20 +75,10 @@ const tabs = computed(() => [
     count: store.pendingTickets.length,
   },
   {
-    key: 'tasks' as const,
-    label: t('app.tabs.tasks'),
-    icon: Send,
-    count: store.activeTasks.length,
-  },
-  {
     key: 'chat' as const,
     label: t('app.tabs.chat'),
     icon: MessageSquare,
-  },
-  {
-    key: 'terminal' as const,
-    label: t('app.tabs.terminal'),
-    icon: SquareTerminal,
+    count: store.activeTasks.length,
   },
   {
     key: 'agents' as const,
@@ -98,20 +90,44 @@ const tabs = computed(() => [
   { key: 'rules' as const, label: t('app.tabs.rules'), icon: SlidersHorizontal },
 ]);
 
-// The mobile/PWA bottom bar only keeps the three high-frequency tabs and
-// folds the rest into a "More" sheet (see docs/UI_REDESIGN_BRIEF.md §16.3).
-const primaryTabKeys: ReadonlySet<Tab> = new Set(['pending', 'tasks', 'chat']);
+/**
+ * Low-frequency but necessary entry points. The terminal is a debugging tool,
+ * not a peer of the approval queue, so it lives behind a "工具" menu instead of
+ * taking a top-level slot.
+ */
+const toolTabs = computed(() => [
+  {
+    key: 'terminal' as const,
+    label: t('app.tools.terminal'),
+    hint: t('app.tools.terminalHint'),
+    icon: SquareTerminal,
+    count: 0,
+  },
+]);
+
+// The mobile/PWA bottom bar only keeps the high-frequency tabs and folds the
+// rest into a "More" sheet (see docs/UI_REDESIGN_BRIEF.md §16.3).
+const primaryTabKeys: ReadonlySet<Tab> = new Set([
+  'pending',
+  'chat',
+  'agents',
+]);
 
 const primaryTabs = computed(() =>
   tabs.value.filter((tab) => primaryTabKeys.has(tab.key)),
 );
 
-const moreTabs = computed(() =>
-  tabs.value.filter((tab) => !primaryTabKeys.has(tab.key)),
-);
+const moreTabs = computed(() => [
+  ...tabs.value.filter((tab) => !primaryTabKeys.has(tab.key)),
+  ...toolTabs.value,
+]);
 
 const moreActive = computed(() =>
   moreTabs.value.some((tab) => tab.key === activeTab.value),
+);
+
+const toolActive = computed(() =>
+  toolTabs.value.some((tab) => tab.key === activeTab.value),
 );
 
 const moreCount = computed(() =>
@@ -121,6 +137,37 @@ const moreCount = computed(() =>
 const moreOpen = ref(false);
 const moreButton = ref<HTMLButtonElement | null>(null);
 const moreSheet = ref<HTMLElement | null>(null);
+
+const toolsOpen = ref(false);
+const toolsWrap = ref<HTMLElement | null>(null);
+
+function selectTool(tab: Tab): void {
+  activeTab.value = tab;
+  toolsOpen.value = false;
+}
+
+function onDocumentPointerDown(event: PointerEvent): void {
+  if (!toolsOpen.value) return;
+  const target = event.target as Node | null;
+  if (target && toolsWrap.value && !toolsWrap.value.contains(target)) {
+    toolsOpen.value = false;
+  }
+}
+
+function onToolsKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') toolsOpen.value = false;
+}
+
+watch(toolsOpen, (open) => {
+  if (typeof document === 'undefined') return;
+  if (open) {
+    document.addEventListener('pointerdown', onDocumentPointerDown);
+    document.addEventListener('keydown', onToolsKeydown);
+  } else {
+    document.removeEventListener('pointerdown', onDocumentPointerDown);
+    document.removeEventListener('keydown', onToolsKeydown);
+  }
+});
 
 function selectTab(tab: Tab): void {
   activeTab.value = tab;
@@ -199,6 +246,8 @@ watch(activeTab, (tab) => {
     const url = new URL(window.location.href);
     if (tab === 'pending') url.searchParams.delete('tab');
     else url.searchParams.set('tab', tab);
+    // The chat mode is per-page state; do not leak it into other tabs.
+    if (tab !== 'chat') url.searchParams.delete('mode');
     window.history.replaceState(null, '', url);
   }
 });
@@ -311,6 +360,73 @@ onBeforeUnmount(() => {
         </nav>
 
         <div class="ml-auto flex shrink-0 items-center gap-1">
+          <div ref="toolsWrap" class="relative">
+            <button
+              type="button"
+              class="flex h-9 items-center gap-1 rounded-lg px-2.5 transition"
+              :class="
+                toolActive || toolsOpen
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface'
+              "
+              :aria-expanded="toolsOpen"
+              :aria-label="t('app.tools')"
+              :title="t('app.tools.title')"
+              @click="toolsOpen = !toolsOpen"
+            >
+              <Wrench :size="17" />
+              <span class="hidden text-[12px] font-medium sm:inline">
+                {{ t('app.tools') }}
+              </span>
+              <ChevronDown :size="14" class="hidden sm:block" />
+            </button>
+
+            <Transition
+              enter-active-class="transition duration-150 ease-out"
+              enter-from-class="opacity-0 -translate-y-1"
+              leave-active-class="transition duration-100 ease-in"
+              leave-to-class="opacity-0 -translate-y-1"
+            >
+              <div
+                v-if="toolsOpen"
+                class="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-xl border border-outline-variant/40 bg-surface p-1 shadow-xl"
+                role="menu"
+                :aria-label="t('app.tools.title')"
+              >
+                <p class="px-2.5 pb-1 pt-1.5 text-[10px] text-on-surface-variant/70">
+                  {{ t('app.tools.desc') }}
+                </p>
+                <button
+                  v-for="tool in toolTabs"
+                  :key="tool.key"
+                  type="button"
+                  role="menuitem"
+                  class="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition hover:bg-surface-container"
+                  :class="
+                    activeTab === tool.key
+                      ? 'bg-primary/5 text-on-surface'
+                      : 'text-on-surface'
+                  "
+                  @click="selectTool(tool.key)"
+                >
+                  <component
+                    :is="tool.icon"
+                    :size="16"
+                    class="mt-0.5 shrink-0 text-primary"
+                  />
+                  <span class="min-w-0">
+                    <span class="block truncate text-[13px] font-medium">
+                      {{ tool.label }}
+                    </span>
+                    <span class="block text-[11px] text-on-surface-variant">
+                      {{ tool.hint }}
+                    </span>
+                  </span>
+                </button>
+              </div>
+            </Transition>
+          </div>
+
           <LocaleToggle />
           <button
             type="button"
@@ -422,8 +538,6 @@ onBeforeUnmount(() => {
           />
         </div>
       </section>
-
-      <TaskBoard v-else-if="activeTab === 'tasks'" />
 
       <ChatPanel v-else-if="activeTab === 'chat'" />
 

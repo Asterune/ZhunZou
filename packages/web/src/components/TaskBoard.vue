@@ -9,7 +9,7 @@ import {
   Terminal,
   XCircle,
 } from 'lucide-vue-next';
-import { computed, reactive, ref } from 'vue';
+import { computed, nextTick, reactive, ref, watch } from 'vue';
 
 import type { CreateTaskInput } from '@zhunzou/shared';
 
@@ -22,9 +22,15 @@ import {
 } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
-import ProjectBindings from './ProjectBindings.vue';
 import TargetPicker from './TargetPicker.vue';
 import TaskLogViewer from './TaskLogViewer.vue';
+
+const props = defineProps<{
+  /** Rendered inside the Chat page, so the page-level title is redundant. */
+  embedded?: boolean;
+  /** Task picked from the merged sidebar; scroll to and ring it. */
+  focusTaskId?: string;
+}>();
 
 const store = useHubStore();
 const { t } = useI18n();
@@ -42,6 +48,19 @@ const openLogs = ref('');
 function toggleLogs(taskId: string): void {
   openLogs.value = openLogs.value === taskId ? '' : taskId;
 }
+
+/** The sidebar and this list share a page, so a click must scroll the card in. */
+watch(
+  () => props.focusTaskId,
+  async (id) => {
+    if (!id || typeof document === 'undefined') return;
+    await nextTick();
+    document
+      .querySelector(`[data-task-id="${id}"]`)
+      ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  },
+  { immediate: true },
+);
 
 function ticketsForTask(taskId: string) {
   return store.tickets.filter((ticket) => ticket.taskId === taskId);
@@ -85,7 +104,10 @@ async function cancel(taskId: string): Promise<void> {
 
 <template>
   <section>
-    <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+    <div
+      v-if="!embedded"
+      class="mb-4 flex flex-wrap items-end justify-between gap-3"
+    >
       <div>
         <div class="flex items-center gap-2 text-[11px] uppercase tracking-wider text-on-surface-variant">
           <span>{{ t('tasks.eyebrow') }}</span>
@@ -121,15 +143,9 @@ async function cancel(taskId: string): Promise<void> {
         :no-project-text="t('tasks.noProject')"
       />
 
-      <div
-        class="mt-3 rounded-lg border border-dashed border-outline-variant/70 bg-surface-container-low/50 px-3 py-2.5"
-      >
-        <ProjectBindings :env="form.env" />
-        <p class="mt-1.5 text-[11px] leading-4 text-on-surface-variant/70">
-          {{ t('tasks.bindingHint') }}
-        </p>
-      </div>
-
+      <p class="mt-2 text-[11px] leading-4 text-on-surface-variant/70">
+        {{ t('tasks.bindingHint') }}
+      </p>
       <label class="mt-3 block">
         <span class="text-[11px] font-medium text-on-surface-variant">
           {{ t('tasks.titleLabel') }} <span class="text-primary">*</span>
@@ -205,7 +221,13 @@ async function cancel(taskId: string): Promise<void> {
       <article
         v-for="task in store.activeTasks"
         :key="task.id"
-        class="rounded-xl border border-outline-variant/35 bg-surface-container-lowest p-4 shadow-sm"
+        :data-task-id="task.id"
+        class="rounded-xl border bg-surface-container-lowest p-4 shadow-sm"
+        :class="
+          focusTaskId === task.id
+            ? 'border-primary ring-2 ring-primary/25'
+            : 'border-outline-variant/35'
+        "
       >
         <div class="flex flex-wrap items-start justify-between gap-2">
           <div class="min-w-0">

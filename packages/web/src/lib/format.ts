@@ -155,6 +155,7 @@ const CLIENT_KIND_LABELS: Record<AgentKind, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
   gemini: 'Gemini',
+  qoder: 'Qoder',
   windsurf: 'Windsurf',
   other: 'Other',
 };

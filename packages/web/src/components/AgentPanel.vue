@@ -3,6 +3,7 @@ import {
   Bot,
   Check,
   Copy,
+  Folder,
   KeyRound,
   Monitor,
   Pencil,
@@ -17,7 +18,7 @@ import {
   X,
   Zap,
 } from 'lucide-vue-next';
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 
 import { AGENT_KINDS } from '@zhunzou/shared';
 import type {
@@ -31,6 +32,7 @@ import { clientKindLabel, relativeTime } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 import FleetWorkspaces from './FleetWorkspaces.vue';
+import ProjectBindings from './ProjectBindings.vue';
 
 const store = useHubStore();
 const { t } = useI18n();
@@ -57,7 +59,24 @@ const enrollCopied = ref(false);
 const enrollForm = reactive({ env: '', project: '' });
 
 const agentCount = computed(() => store.agents.length);
-const offlineCount = computed(
+
+/**
+ * Project bindings used to live on the 下发任务 page. That page is now a mode
+ * inside 会话, so its binding editor belongs with the environments it applies to.
+ */
+const bindEnv = ref('');
+const bindEnvOptions = computed(() => store.envs.map((env) => env.env));
+
+watch(
+  bindEnvOptions,
+  (options) => {
+    if (!bindEnv.value && options.length) bindEnv.value = options[0] ?? '';
+    else if (bindEnv.value && !options.includes(bindEnv.value)) {
+      bindEnv.value = options[0] ?? '';
+    }
+  },
+  { immediate: true },
+);const offlineCount = computed(
   () => store.agents.filter((agent) => !agent.online).length,
 );
 
@@ -375,6 +394,33 @@ async function copyEnrollmentCommand(): Promise<void> {
           </p>
         </article>
       </div>
+    </div>
+
+    <div v-if="agentCount" class="mb-5 rounded-xl border border-outline-variant/35 bg-surface-container-low p-3.5 shadow-sm">
+      <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-1.5 text-[11px] font-medium text-on-surface-variant">
+          <Folder :size="13" />
+          {{ t('agents.bindings') }}
+          <span v-if="bindEnv" class="ml-1 font-mono text-on-surface">
+            {{ bindEnv }}
+          </span>
+        </div>
+        <label class="flex items-center gap-1.5 text-[11px] text-on-surface-variant">
+          {{ t('agents.bindingsEnv') }}
+          <select
+            v-model="bindEnv"
+            class="h-7 rounded-md border border-outline-variant/50 bg-surface-container-lowest px-1.5 font-mono text-[11px] text-on-surface outline-none focus:border-primary"
+          >
+            <option v-for="option in bindEnvOptions" :key="option" :value="option">
+              {{ option }}
+            </option>
+          </select>
+        </label>
+      </div>
+      <ProjectBindings v-if="bindEnv" :env="bindEnv" />
+      <p class="mt-1.5 text-[11px] leading-4 text-on-surface-variant/70">
+        {{ t('agents.bindingsHint') }}
+      </p>
     </div>
 
     <div
