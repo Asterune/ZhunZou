@@ -20,6 +20,8 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      # Typecheck reads @zhunzou/shared's emitted d.ts, which is not checked in.
+      - run: pnpm --filter @zhunzou/shared build
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
