@@ -255,6 +255,7 @@ const ADAPTER_ENV_PREFIX: Record<string, string> = {
   claude: 'claude',
   codex: 'codex',
   gemini: 'gemini',
+  qoder: 'qoder',
   'cursor-agent': 'cursor',
 };
 

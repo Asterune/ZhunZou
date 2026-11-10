@@ -186,6 +186,8 @@ export function renderCommandTemplate(
 interface Preset {
   name: WakeAdapterName;
   binary: string;
+  /** Alternative executable names on PATH (installers disagree on the name). */
+  aliases?: string[];
   args: (prompt: string, extra: string[]) => string[];
 }
 
@@ -208,6 +210,14 @@ const PRESETS: Record<string, Preset> = {
   gemini: {
     name: 'gemini',
     binary: 'gemini',
+    args: (prompt, extra) => ['-p', ...extra, prompt],
+  },
+  qoder: {
+    name: 'qoder',
+    binary: 'qoder',
+    // Native installs expose `qoder`, npm installs `qodercli`; some setups
+    // alias the CLI as `qcode`.
+    aliases: ['qodercli', 'qcode'],
     args: (prompt, extra) => ['-p', ...extra, prompt],
   },
   'cursor-agent': {
@@ -239,18 +249,33 @@ const AUTO_ORDER: WakeAdapterName[] = [
   'claude',
   'codex',
   'gemini',
+  'qoder',
   'cursor-agent',
   'aider',
   'goose',
   'amp',
 ];
 
+function presetBinary(preset: Preset): string | undefined {
+  for (const name of [preset.binary, ...(preset.aliases ?? [])]) {
+    const found = whichSync(name);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** Executable a preset would spawn, searching PATH (installer aliases included). */
+export function findPresetBinary(name: WakeAdapterName): string | undefined {
+  const preset = PRESETS[name];
+  return preset ? presetBinary(preset) : undefined;
+}
+
 function createPresetAdapter(preset: Preset): WakeAdapter {
   return {
     name: preset.name,
     delivery: 'run',
     async wake(task, context) {
-      const binary = whichSync(preset.binary);
+      const binary = presetBinary(preset);
       if (!binary) {
         throw new Error(`找不到 ${preset.binary} 可执行文件（PATH 中不存在）`);
       }
@@ -488,7 +513,7 @@ export function detectAutoAdapter(): WakeAdapterName {
   if (whichSync('opencode')) return 'opencode';
   for (const name of AUTO_ORDER) {
     const candidate = PRESETS[name];
-    if (candidate && whichSync(candidate.binary)) return name;
+    if (candidate && presetBinary(candidate)) return name;
   }
   return 'notify';
 }
@@ -508,6 +533,7 @@ const ADAPTER_KINDS: Partial<Record<WakeAdapterName, AgentKind>> = {
   claude: 'claude-code',
   codex: 'codex',
   gemini: 'gemini',
+  qoder: 'qoder',
   'cursor-agent': 'cursor',
 };
 
@@ -534,7 +560,7 @@ export async function resolveWakeAdapter(config: WakeConfig): Promise<WakeAdapte
 
   for (const name of AUTO_ORDER) {
     const candidate = PRESETS[name];
-    if (candidate && whichSync(candidate.binary)) {
+    if (candidate && presetBinary(candidate)) {
       return createPresetAdapter(candidate);
     }
   }

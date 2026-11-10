@@ -10,6 +10,7 @@ import { maybeAutoUpgrade } from './auto-upgrade.js';
 import { delegateToActiveRelease } from './launcher.js';
 import { createMcpServer } from './mcp-server.js';
 import { createPresenceReporter } from './presence.js';
+import { adoptProjectFromRoots } from './project-roots.js';
 
 async function main(): Promise<void> {
   // After `upgrade`, current.json points at a newer versions/<v>/mcp.mjs.
@@ -44,6 +45,16 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   presence.start();
+
+  // The editor knows which folder is open; cwd does not always. Ask once the
+  // handshake is done, and only let it correct a cwd guess or fill a blank.
+  if (!config.projectName || config.projectSource === 'cwd') {
+    void adoptProjectFromRoots({
+      listRoots: () => server.server.listRoots(undefined, { timeout: 5_000 }),
+      presence,
+      log: (line) => console.error(`[zhunzou] ${line}`),
+    });
+  }
 
   const shutdown = (): void => {
     presence.stop();

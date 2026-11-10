@@ -1,4 +1,4 @@
-# 准奏 Windows 接入包（Cursor / OpenCode / Claude Code / Codex）
+# 准奏 Windows 接入包（Cursor / OpenCode / Claude Code / Codex / Qoder）
 
 这个文件夹已经打好包，**不需要安装 npm 依赖，也不需要克隆源码**。Windows 上只需要 Node.js。
 
@@ -6,8 +6,8 @@
 > ```powershell
 > irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 > ```
-> 它会自动准备 Node、下载 bridge，并为 Cursor / OpenCode / Claude Code / Codex
-> 各写一份配置（一台电脑 4 张卡，互不覆盖心跳），然后注册登录自启。
+> 它会自动准备 Node、下载 bridge，并为 Cursor / OpenCode / Claude Code / Codex / Qoder
+> 各写一份配置（一台电脑多张卡，互不覆盖心跳），然后注册登录自启。
 > 下面 2~4 节是**手动解压版**的做法。
 
 ## 1. 安装 Node.js
@@ -115,6 +115,33 @@ args = ["C:/Users/你的用户名/zhunzou-bridge/mcp.mjs"]
 env = { HUB_URL = "https://hub.l1uqi.com", HUB_TOKEN = "zz_xxx", AGENT_ENV = "codex-my-project", ZHUNZOU_PROJECT = "my-project", ZHUNZOU_AGENT_KIND = "codex", ZHUNZOU_FALLBACK = "cli" }
 ```
 
+### Qoder CLI（可选）
+
+Qoder CLI 从用户级配置 `C:\Users\<你>\.qoder\settings.json`（可用 `QODER_CONFIG_DIR` 改位置）
+读取 `mcpServers`。在文件中合并写入（保留其它配置项）：
+
+```json
+{
+  "mcpServers": {
+    "zhunzou": {
+      "command": "node",
+      "args": ["C:/Users/你的用户名/zhunzou-bridge/mcp.mjs"],
+      "env": {
+        "HUB_URL": "https://hub.l1uqi.com",
+        "HUB_TOKEN": "zz_xxx",
+        "AGENT_ENV": "qoder-my-project",
+        "ZHUNZOU_PROJECT": "my-project",
+        "ZHUNZOU_AGENT_KIND": "qoder",
+        "ZHUNZOU_FALLBACK": "cli"
+      }
+    }
+  }
+}
+```
+
+也可以让 `init --target qoder` 自动写入；项目级安装会写
+`<项目>\.qoder\settings.local.json`，不与 Claude Code 的 `.mcp.json` 冲突。
+
 每个客户端用**不同的 `AGENT_ENV` 和 Token**（看板「接入端」里给每个 env 单独签发），
 否则多开时心跳会互相覆盖，看板只剩一张卡。
 
@@ -145,7 +172,7 @@ env = { HUB_URL = "https://hub.l1uqi.com", HUB_TOKEN = "zz_xxx", AGENT_ENV = "co
 
 1. 打开看板「下发任务」页；
 2. 目标环境填 `company-windows`，写清标题与详细指令；
-3. 项目名可以直接从下拉框选择：配置了 `ZHUNZOU_PROJECT` 后，这个工作区会自动绑定该项目；也可在表单下方手动绑定更多项目；
+3. 项目名可以直接从下拉框选择：配置了 `ZHUNZOU_PROJECT` 后，这个工作区会自动绑定该项目；没配也能自动推断（先读 Cursor 交给 MCP 进程的当前工作区，再读启动目录），也可在表单下方手动绑定更多项目；
 4. 下发后 Agent 调用 `agent_hub_next_task` 领取，状态会变成「执行中」；
 5. Agent 完成后调用 `agent_hub_complete_task`，看板状态回到「空闲」。
 

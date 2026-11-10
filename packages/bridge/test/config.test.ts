@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -61,6 +62,67 @@ describe('loadBridgeConfig', () => {
       '/workspace/other-project',
     );
     expect(config.projectName).toBe('agent-hub');
+    expect(config.projectSource).toBe('explicit');
+  });
+
+  it('reads the open folder the client hands to the MCP process', () => {
+    const root = mkdtempSync(join(tmpdir(), 'zhunzou-env-'));
+    const workspace = join(root, 'erp-console');
+    mkdirSync(join(workspace, '.git'), { recursive: true });
+
+    // Cursor on Windows starts the server outside the workspace, but reports
+    // the folder it has open; the server directory must not become the project.
+    const serverDir = join(root, 'System32');
+    mkdirSync(serverDir, { recursive: true });
+
+    const config = loadBridgeConfig(
+      {
+        HUB_TOKEN: 'secret',
+        WORKSPACE_FOLDER_PATHS: workspace,
+      },
+      serverDir,
+    );
+    expect(config.projectName).toBe('erp-console');
+    expect(config.projectSource).toBe('workspace');
+  });
+
+  it('reads several workspace folders from one variable', () => {
+    const root = mkdtempSync(join(tmpdir(), 'zhunzou-multi-'));
+    const first = join(root, 'not-a-repo');
+    const second = join(root, 'real-project');
+    mkdirSync(join(first, '.git'), { recursive: true });
+    mkdirSync(second, { recursive: true });
+
+    const config = loadBridgeConfig({
+      HUB_TOKEN: 'secret',
+      WORKSPACE_FOLDER_PATHS: `"${first}"\n"${second}"`,
+    });
+    expect(config.projectName).toBe('not-a-repo');
+  });
+
+  it('accepts a file URI when the client reports the workspace that way', () => {
+    const root = mkdtempSync(join(tmpdir(), 'zhunzou-uri-'));
+    const workspace = join(root, 'frappe-site');
+    mkdirSync(workspace, { recursive: true });
+
+    const config = loadBridgeConfig({
+      HUB_TOKEN: 'secret',
+      WORKSPACE_FOLDER_PATHS: pathToFileURL(workspace).href,
+    });
+    expect(config.projectName).toBe('frappe-site');
+  });
+
+  it('ignores a placeholder the client failed to expand', () => {
+    const root = mkdtempSync(join(tmpdir(), 'zhunzou-placeholder-'));
+    const workspace = join(root, 'opus-app');
+    mkdirSync(workspace, { recursive: true });
+
+    const unresolved = loadBridgeConfig(
+      { HUB_TOKEN: 'secret', ZHUNZOU_PROJECT: '${workspaceFolderBasename}' },
+      workspace,
+    );
+    expect(unresolved.projectName).toBe('opus-app');
+    expect(unresolved.projectSource).toBe('cwd');
   });
 
   it('accepts a custom CLI command for self-hosted bridges', () => {

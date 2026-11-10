@@ -347,8 +347,26 @@ describe('defaultEnvForProject', () => {
     expect(defaultEnvForProject('auto', 'demo')).toBe('claude-demo');
   });
 
+  it('detects qoder when it is the only client on PATH', () => {
+    const dir = tempDir();
+    stubPathWith(dir, ['qoder']);
+
+    expect(defaultEnvForProject('auto', 'demo')).toBe('qoder-demo');
+  });
+
+  it('detects the qodercli / qcode installer aliases too', () => {
+    const npm = tempDir();
+    stubPathWith(npm, ['qodercli']);
+    expect(defaultEnvForProject('auto', 'demo')).toBe('qoder-demo');
+
+    const alias = tempDir();
+    stubPathWith(alias, ['qcode']);
+    expect(defaultEnvForProject('auto', 'demo')).toBe('qoder-demo');
+  });
+
   it('keeps explicit adapter prefixes and falls back for unknown ones', () => {
     expect(defaultEnvForProject('cursor-agent', 'demo')).toBe('cursor-demo');
+    expect(defaultEnvForProject('qoder', 'demo')).toBe('qoder-demo');
     expect(defaultEnvForProject('command', 'demo')).toBe('agent-demo');
   });
 });
@@ -358,6 +376,7 @@ describe('agentKindForAdapter', () => {
     expect(agentKindForAdapter('cursor-agent')).toBe('cursor');
     expect(agentKindForAdapter('opencode-run')).toBe('opencode');
     expect(agentKindForAdapter('claude')).toBe('claude-code');
+    expect(agentKindForAdapter('qoder')).toBe('qoder');
     expect(agentKindForAdapter('command')).toBe('other');
   });
 });

@@ -28,12 +28,14 @@ irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 npx zhunzou-bridge init --hub-url https://hub.example.com --code ABCDE-FGHIJ --yes --global --service
 ```
 
-`--target all`（默认的全局安装就是它）会为 Cursor / OpenCode / Claude Code / Codex 各派生一个 env
-（`cursor-<项目>`、`opencode-<项目>`、`claude-<项目>`、`codex-<项目>`）和独立 Token，
-所以四个编辑器在看板上是四张卡，心跳不会互相覆盖。显式传 `--env` 或 `--agent-kind` 可退回到共用同一个 env。
+`--target all`（默认的全局安装就是它）会为 Cursor / OpenCode / Claude Code / Codex / Qoder 各派生一个 env
+（`cursor-<项目>`、`opencode-<项目>`、`claude-<项目>`、`codex-<项目>`、`qoder-<项目>`）和独立 Token，
+所以这些客户端在看板上各是一张卡，心跳不会互相覆盖。显式传 `--env` 或 `--agent-kind` 可退回到共用同一个 env。
 
 > Codex 的配置写在 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的
 > `[mcp_servers.zhunzou]` 段，`init` 只替换这一段。
+> Qoder CLI 的配置写在 `$QODER_CONFIG_DIR/settings.json`（默认 `~/.qoder/settings.json`）的
+> `mcpServers.zhunzou`；项目级安装则写 `<项目>/.qoder/settings.local.json`。
 
 不开编辑器、只想让某个目录常驻领取任务时：
 
@@ -53,7 +55,7 @@ npx zhunzou-bridge service restart
 npx zhunzou-bridge init
 ```
 
-向导会询问 `HUB_URL` / `HUB_TOKEN` / `AGENT_ENV` / 项目名，检测 Cursor / OpenCode / Claude Code / Codex，
+向导会询问 `HUB_URL` / `HUB_TOKEN` / `AGENT_ENV` / 项目名，检测 Cursor / OpenCode / Claude Code / Codex / Qoder，
 写入对应 MCP 配置（保留其他 server），安装决策规则（Cursor 复制 `.cursorrules`，其余写入或追加 `AGENTS.md`），并校验服务端连通性。
 
 > 在仓库内本地使用（尚未发布 npm）时：先 `pnpm build`，再运行
@@ -126,8 +128,8 @@ Windows 上的文件占用打架，回滚也只是改一行指针。
 | `HUB_TOKEN` | 是 | - | 与服务端 `HUB_SECRET_TOKEN` 一致 |
 | `HUB_URL` | 否 | `http://127.0.0.1:8787` | 云端地址 |
 | `AGENT_ENV` | 否 | `unknown-<hostname>` | 看板上的环境标识，如 `company-cursor`；`init` 会按项目写入 `<客户端>-<项目名>`，多个工作区请勿共用 |
-| `ZHUNZOU_AGENT_KIND` | 否 | `other` | 客户端类型：`cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `windsurf` / `other`；`init` 自动写入 |
-| `ZHUNZOU_PROJECT` | 否 | 空 | 当前工作区的项目名，如 `agent-hub`；每次心跳自动绑定到该环境，下发任务的项目下拉框可直接选择 |
+| `ZHUNZOU_AGENT_KIND` | 否 | `other` | 客户端类型：`cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `qoder` / `windsurf` / `other`；`init` 自动写入 |
+| `ZHUNZOU_PROJECT` | 否 | 空 | 当前工作区的项目名，如 `agent-hub`；未设置时依次读编辑器上报的工作区（Cursor `WORKSPACE_FOLDER_PATHS`、MCP `roots/list`）和启动目录名。每次心跳自动绑定到该环境，下发任务的项目下拉框可直接选择 |
 | `ZHUNZOU_FALLBACK`（旧名 `AGENT_HUB_FALLBACK`） | 否 | `cli` | 超时策略：`cli`（策略 1）或 `mcp`（策略 2） |
 | `ZHUNZOU_WAIT_TIMEOUT_MS`（旧名 `AGENT_HUB_WAIT_TIMEOUT_MS`） | 否 | `40000` | 单次长轮询窗口，1s ~ 55s |
 | `ZHUNZOU_CLI_COMMAND` | 否 | `npx zhunzou-bridge` | `cli` 策略下提示模型执行的命令；直接运行 `bin/mcp.js` 时自动指向同目录 `cli.js` / `cli.mjs` |
@@ -199,7 +201,7 @@ MCP 工具只能在**对话回合内**被调用。如果没有人操作编辑器
 把本机任意一个 AI 客户端唤醒。
 
 ```bash
-# 自动选择：OpenCode → claude / codex / gemini / cursor-agent / aider / goose / amp → 桌面通知
+# 自动选择：OpenCode → claude / codex / gemini / qoder / cursor-agent / aider / goose / amp → 桌面通知
 zhunzou-bridge wake
 
 # 指定客户端
@@ -221,6 +223,7 @@ zhunzou-bridge wake --once
 | `claude` | 一次性 | `claude -p "<prompt>"`（Claude Code） |
 | `codex` | 一次性 | `codex exec "<prompt>"` |
 | `gemini` | 一次性 | `gemini -p "<prompt>"` |
+| `qoder` | 一次性 | `qoder -p "<prompt>"`（Qoder CLI，也识别 `qodercli` / `qcode`） |
 | `cursor-agent` | 一次性 | `cursor-agent -p "<prompt>"` |
 | `aider` | 一次性 | `aider --message "<prompt>"` |
 | `goose` | 一次性 | `goose run -t "<prompt>"` |
@@ -279,7 +282,7 @@ zhunzou-bridge fleet
 - 没有 `scan` 配置时，`fleet` 会自动纳入最近在 Cursor / VS Code 打开过的 git 仓库（Windows 读 `%APPDATA%\Cursor|Code\User\globalStorage\storage.json`），不需要 `fleet scan --add`，也不需要看板点「关联」。自动纳入是尽力而为：缺少 `adminToken` / 缓存 Token 时只跳过该项目，不拖垮其它项目；`--no-auto-discover` 可关闭。
 - 看板「接入端 → 关联目录」可以一键把本机目录变成常驻项目：`fleet` 每 30 秒上报候选目录、每 3 秒拉取待关联列表（含目录浏览请求），自动写入 `fleet.json`（`source: "hub"`）、启动 Agent；看板解除关联后自动停止并移除。目录浏览限定在主目录和 `scan.roots` 下，隐藏目录与跳出范围的符号链接会被拒绝。
 - 每个项目会同时跑**任务循环**和**会话循环**：会话消息用 `opencode run --session` /
-  `agent -p --resume` / `claude -p --resume` 续聊，`command` 适配器支持
+  `agent -p --resume` / `claude -p --resume` / `qoder -p --resume` 续聊，`command` 适配器支持
   `{message}` / `{session}` 占位符。
 - 没有 `token` 时会自动登记并签发专属 Token，缓存在
   `~/.zhunzou/fleet-tokens.json`（`0600`）；`--refresh-tokens` 强制轮换。

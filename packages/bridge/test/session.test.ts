@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   ChatEvent,
@@ -15,7 +15,7 @@ import type {
 
 import { HubApiError, type HubApi } from '../src/hub-client.js';
 import { RunnerState } from '../src/runner-state.js';
-import { openCodeSessionId, parseChatOutput, runSessionDaemon } from '../src/session.js';
+import { openCodeSessionId, parseChatOutput, runSessionDaemon, supportsChat } from '../src/session.js';
 import { loadWakeConfig } from '../src/wake/config.js';
 import { testConfig } from './helpers.js';
 
@@ -33,6 +33,7 @@ function runnerState(dir: string, env = 'company-cursor'): RunnerState {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -122,6 +123,13 @@ describe('parseChatOutput', () => {
   });
 });
 
+describe('supportsChat', () => {
+  it('treats qoder as resumable', () => {
+    const wake = loadWakeConfig({ ZHUNZOU_WAKE_ADAPTER: 'qoder' }, '/tmp');
+    expect(supportsChat(wake)).toBe(true);
+  });
+});
+
 describe('runSessionDaemon', () => {
   it('runs one message, streams output and completes it', async () => {
     const dir = tempDir();
@@ -154,6 +162,46 @@ describe('runSessionDaemon', () => {
     expect(calls.runnerIds).toHaveLength(1);
     expect(calls.runnerIds?.[0]).toBeTruthy();
   });
+
+  // A real executable is spawned without a shell; .cmd needs a shell on
+  // Windows, so this end-to-end check runs on POSIX only.
+  it.skipIf(process.platform === 'win32')(
+    'runs a qoder turn and keeps the CLI session id for resume',
+    async () => {
+      const dir = tempDir();
+      const bin = join(dir, 'bin');
+      mkdirSync(bin);
+      const fake = join(bin, 'qoder');
+      writeFileSync(
+        fake,
+        '#!/bin/sh\necho \'{"result":"qoder 回复","session_id":"q-session-1"}\'\n',
+        'utf8',
+      );
+      chmodSync(fake, 0o755);
+      vi.stubEnv('PATH', bin);
+
+      const calls: Calls = { events: [], completions: [] };
+      const wake = loadWakeConfig({ ZHUNZOU_WAKE_ADAPTER: 'qoder' }, dir);
+
+      const code = await runSessionDaemon({
+        client: makeClient(calls),
+        hub: testConfig({ agentEnv: 'company-qoder', projectName: 'demo' }),
+        wake,
+        state: runnerState(dir, 'company-qoder'),
+        once: true,
+        stdout: () => undefined,
+        stderr: () => undefined,
+      });
+
+      expect(code).toBe(0);
+      expect(calls.completions).toHaveLength(1);
+      expect(calls.completions[0]).toMatchObject({
+        status: 'DONE',
+        content: 'qoder 回复',
+        externalId: 'q-session-1',
+      });
+    },
+  );
 
   it('retries completion while the hub is restarting', async () => {
     const dir = tempDir();

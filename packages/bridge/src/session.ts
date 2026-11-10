@@ -10,7 +10,7 @@ import type { BridgeConfig } from './config.js';
 import { HubApiError, type HubApi } from './hub-client.js';
 import type { PresenceReporter } from './presence.js';
 import { RunnerState } from './runner-state.js';
-import { runProcess, shellQuote, whichSync, type ProcessResult } from './wake/adapters.js';
+import { runProcess, shellQuote, whichSync, findPresetBinary, type ProcessResult } from './wake/adapters.js';
 import type { WakeAdapterName, WakeConfig } from './wake/config.js';
 import { createLogSink, type LogStream } from './wake/log-sink.js';
 
@@ -18,9 +18,9 @@ import { createLogSink, type LogStream } from './wake/log-sink.js';
  * Interactive sessions over resumable CLI agents.
  *
  * Each user message becomes one non-interactive CLI call: OpenCode creates or
- * resumes `--session <id>`, Cursor resumes `--resume <id>`, Claude resumes
- * `--resume <id>`. The hub owns the message queue, so the editor does not have
- * to be open.
+ * resumes `--session <id>`, Cursor resumes `--resume <id>`, Claude and Qoder
+ * resume `--resume <id>`. The hub owns the message queue, so the editor does
+ * not have to be open.
  */
 
 export interface SessionDaemonOptions {
@@ -51,6 +51,7 @@ const RESUME_CAPABLE: WakeAdapterName[] = [
   'opencode-run',
   'cursor-agent',
   'claude',
+  'qoder',
   'command',
 ];
 
@@ -69,6 +70,7 @@ function resolveChatAdapter(wake: WakeConfig): WakeAdapterName {
   if (whichSync('opencode')) return 'opencode-run';
   if (whichSync('agent') || whichSync('cursor-agent')) return 'cursor-agent';
   if (whichSync('claude')) return 'claude';
+  if (findPresetBinary('qoder')) return 'qoder';
   return 'command';
 }
 
@@ -152,6 +154,18 @@ function buildChatRun(
           message.content,
         ],
       };
+    case 'qoder':
+      return {
+        binary: findPresetBinary('qoder') ?? 'qoder',
+        args: [
+          '-p',
+          '--output-format',
+          'json',
+          ...(wake.chatModel ? ['--model', wake.chatModel] : []),
+          ...(externalId ? ['--resume', externalId] : []),
+          message.content,
+        ],
+      };
     case 'command': {
       if (!wake.command) {
         throw new Error(
@@ -176,7 +190,7 @@ function buildChatRun(
     }
     default:
       throw new Error(
-        `adapter ${adapter} 不支持可恢复会话；请使用 opencode / cursor-agent / claude / command`,
+        `adapter ${adapter} 不支持可恢复会话；请使用 opencode / cursor-agent / claude / qoder / command`,
       );
   }
 }

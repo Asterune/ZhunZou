@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   AgentTask,
@@ -19,6 +23,28 @@ import { loadWakeConfig, type WakeConfig } from '../src/wake/config.js';
 import { runWakeDaemon } from '../src/wake/daemon.js';
 import { buildInjectPrompt, buildRunPrompt } from '../src/wake/prompt.js';
 import { makeTask, testConfig } from './helpers.js';
+
+const dirs: string[] = [];
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const dir of dirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** Put one fake executable on a throwaway PATH so detection is stable. */
+function stubBinaryOnPath(name: string): void {
+  const dir = mkdtempSync(join(tmpdir(), 'zhunzou-wake-'));
+  dirs.push(dir);
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  const suffix = process.platform === 'win32' ? '.cmd' : '';
+  const file = join(bin, `${name}${suffix}`);
+  writeFileSync(file, 'exit 0\n', 'utf8');
+  chmodSync(file, 0o755);
+  vi.stubEnv('PATH', bin);
+}
 
 const wakeConfig: WakeConfig = {
   adapter: 'command',
@@ -196,6 +222,12 @@ describe('loadWakeConfig', () => {
       adapter: 'auto',
     });
   });
+
+  it('accepts the qoder adapter', () => {
+    expect(
+      loadWakeConfig({ ZHUNZOU_WAKE_ADAPTER: 'qoder' }, '/tmp').adapter,
+    ).toBe('qoder');
+  });
 });
 
 describe('resolveWakeAdapter', () => {
@@ -207,6 +239,20 @@ describe('resolveWakeAdapter', () => {
   it('returns the command adapter without probing binaries', async () => {
     const adapter = await resolveWakeAdapter({ ...wakeConfig, adapter: 'command' });
     expect(adapter.name).toBe('command');
+    expect(adapter.delivery).toBe('run');
+  });
+
+  it('resolves the qoder preset as a run adapter', async () => {
+    stubBinaryOnPath('qoder');
+    const adapter = await resolveWakeAdapter({ ...wakeConfig, adapter: 'qoder' });
+    expect(adapter.name).toBe('qoder');
+    expect(adapter.delivery).toBe('run');
+  });
+
+  it('auto picks qoder when only its npm alias is installed', async () => {
+    stubBinaryOnPath('qodercli');
+    const adapter = await resolveWakeAdapter({ ...wakeConfig, adapter: 'auto' });
+    expect(adapter.name).toBe('qoder');
     expect(adapter.delivery).toBe('run');
   });
 });

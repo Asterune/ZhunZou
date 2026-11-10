@@ -8,6 +8,7 @@ export const WAKE_ADAPTERS = [
   'claude',
   'codex',
   'gemini',
+  'qoder',
   'cursor-agent',
   'aider',
   'goose',

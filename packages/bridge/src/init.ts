@@ -10,13 +10,13 @@ import { dirname, join, basename, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
-import type { AgentKind } from '@zhunzou/shared';
+import { AGENT_KINDS, type AgentKind } from '@zhunzou/shared';
 
 import { machineId } from './machine-id.js';
 import { installService } from './service.js';
 import { BRIDGE_VERSION } from './version.js';
 
-export type InitTarget = 'cursor' | 'opencode' | 'claude' | 'codex' | 'all';
+export type InitTarget = 'cursor' | 'opencode' | 'claude' | 'codex' | 'qoder' | 'all';
 
 /** Targets that own a config file; `all` expands to these. */
 export type ClientTarget = Exclude<InitTarget, 'all'>;
@@ -26,6 +26,7 @@ const CLIENT_TARGETS: readonly ClientTarget[] = [
   'opencode',
   'claude',
   'codex',
+  'qoder',
 ];
 
 export interface InitSettings {
@@ -166,6 +167,14 @@ export function mergeCursorConfig(
 }
 
 export function mergeClaudeConfig(
+  existing: unknown,
+  settings: InitSettings,
+): Record<string, unknown> {
+  return mergeCursorConfig(existing, settings);
+}
+
+/** Qoder CLI keeps MCP servers under `mcpServers` in its settings JSON. */
+export function mergeQoderConfig(
   existing: unknown,
   settings: InitSettings,
 ): Record<string, unknown> {
@@ -379,6 +388,32 @@ function writeClientConfig(
     return;
   }
 
+  if (target === 'qoder') {
+    // Qoder also reads `.mcp.json`, but a workspace install uses the
+    // local-scope settings instead: Claude owns `.mcp.json` here, and the
+    // local file keeps the token out of anything committed.
+    const path = options.global
+      ? globalConfigFile('qoder')
+      : join(dir, '.qoder', 'settings.local.json');
+    writeJson(
+      path,
+      mergeQoderConfig(readJson(path), settings),
+      dryRun,
+    );
+    if (options.global) {
+      const instruction = globalInstructionFile('qoder')!;
+      upsertInstructionFile(
+        instruction.dir,
+        instruction.file,
+        instruction.template,
+        dryRun,
+      );
+    } else {
+      upsertInstructionFile(dir, 'AGENTS.md', 'AGENTS.md', dryRun);
+    }
+    return;
+  }
+
   // Codex only reads `$CODEX_HOME/config.toml` (default ~/.codex), even for a
   // workspace install, so the file is always user-level.
   const path = globalConfigFile('codex');
@@ -451,6 +486,7 @@ function writeFleetConfig(
 function detectTarget(dir: string): InitTarget {
   if (existsSync(join(dir, '.cursor'))) return 'cursor';
   if (existsSync(join(dir, 'opencode.json'))) return 'opencode';
+  if (existsSync(join(dir, '.qoder'))) return 'qoder';
   if (existsSync(join(dir, '.mcp.json'))) return 'claude';
   return 'cursor';
 }
@@ -463,12 +499,13 @@ function parseTarget(raw: string | undefined, fallback: InitTarget): InitTarget 
     value === 'opencode' ||
     value === 'claude' ||
     value === 'codex' ||
+    value === 'qoder' ||
     value === 'all'
   ) {
     return value;
   }
   throw new Error(
-    `未知 target "${raw}"，可选 cursor / opencode / claude / codex / all`,
+    `未知 target "${raw}"，可选 cursor / opencode / claude / codex / qoder / all`,
   );
 }
 
@@ -477,6 +514,7 @@ function kindForTarget(target: InitTarget): AgentKind {
   if (target === 'opencode') return 'opencode';
   if (target === 'claude') return 'claude-code';
   if (target === 'codex') return 'codex';
+  if (target === 'qoder') return 'qoder';
   return 'other';
 }
 
@@ -502,9 +540,11 @@ function defaultAgentEnv(kind: AgentKind, project: string): string {
             ? 'codex'
             : kind === 'gemini'
               ? 'gemini'
-              : kind === 'windsurf'
-                ? 'windsurf'
-                : 'agent';
+              : kind === 'qoder'
+                ? 'qoder'
+                : kind === 'windsurf'
+                  ? 'windsurf'
+                  : 'agent';
   const slug = envSlug(project) || envSlug(hostname()) || 'agent';
   return `${prefix}-${slug}`.slice(0, 64);
 }
@@ -512,15 +552,7 @@ function defaultAgentEnv(kind: AgentKind, project: string): string {
 function parseAgentKind(raw: string | undefined): AgentKind | undefined {
   if (!raw) return undefined;
   const value = raw.trim().toLowerCase();
-  const allowed: AgentKind[] = [
-    'cursor',
-    'opencode',
-    'claude-code',
-    'codex',
-    'gemini',
-    'windsurf',
-    'other',
-  ];
+  const allowed: readonly AgentKind[] = AGENT_KINDS;
   if (!allowed.includes(value as AgentKind)) {
     throw new Error(
       `未知 agent kind "${raw}"，可选 ${allowed.join(' / ')}`,
@@ -622,6 +654,12 @@ function codexHome(): string {
   return raw ? resolve(raw) : join(homedir(), '.codex');
 }
 
+/** Qoder CLI keeps user-level settings in ~/.qoder; QODER_CONFIG_DIR relocates it. */
+function qoderHome(): string {
+  const raw = process.env.QODER_CONFIG_DIR?.trim();
+  return raw ? resolve(raw) : join(homedir(), '.qoder');
+}
+
 /** Global (user-level) config locations, so one install covers all projects. */
 function globalTargetDir(target: Exclude<InitTarget, 'all'>): string {
   const configHome =
@@ -629,6 +667,7 @@ function globalTargetDir(target: Exclude<InitTarget, 'all'>): string {
   if (target === 'cursor') return join(homedir(), '.cursor');
   if (target === 'opencode') return join(configHome, 'opencode');
   if (target === 'codex') return codexHome();
+  if (target === 'qoder') return qoderHome();
   return homedir();
 }
 
@@ -638,6 +677,7 @@ function globalConfigFile(target: Exclude<InitTarget, 'all'>): string {
     return join(globalTargetDir(target), 'opencode.json');
   }
   if (target === 'codex') return join(globalTargetDir(target), 'config.toml');
+  if (target === 'qoder') return join(globalTargetDir(target), 'settings.json');
   return join(homedir(), '.claude.json');
 }
 
@@ -654,6 +694,13 @@ function globalInstructionFile(target: Exclude<InitTarget, 'all'>): {
     };
   }
   if (target === 'codex') {
+    return {
+      dir: globalTargetDir(target),
+      file: 'AGENTS.md',
+      template: 'AGENTS.md',
+    };
+  }
+  if (target === 'qoder') {
     return {
       dir: globalTargetDir(target),
       file: 'AGENTS.md',
@@ -818,7 +865,7 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
         (rl
           ? await ask(
               rl,
-              '写入哪个客户端 cursor / opencode / claude / all',
+              '写入哪个客户端 cursor / opencode / claude / codex / qoder / all',
               targetFallback,
             )
           : targetFallback),
@@ -965,7 +1012,7 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
           const message = (error as Error).message;
           throw new Error(
             identities.length > 1
-              ? `${message}\n提示：一台电脑接入多个客户端需要能多次兑换的接入码（新版默认 10 次）。也可以改用 --target cursor|opencode|claude|codex 逐个接入。`
+              ? `${message}\n提示：一台电脑接入多个客户端需要能多次兑换的接入码（新版默认 10 次）。也可以改用 --target cursor|opencode|claude|codex|qoder 逐个接入。`
               : message,
           );
         }

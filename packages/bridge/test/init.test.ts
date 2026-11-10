@@ -1,5 +1,12 @@
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -413,10 +420,12 @@ describe('one code, several clients', () => {
       HOME: process.env.HOME,
       XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
       CODEX_HOME: process.env.CODEX_HOME,
+      QODER_CONFIG_DIR: process.env.QODER_CONFIG_DIR,
     };
     process.env.HOME = home;
     process.env.XDG_CONFIG_HOME = join(home, '.config');
     process.env.CODEX_HOME = join(home, '.codex');
+    delete process.env.QODER_CONFIG_DIR;
 
     const received: Array<Record<string, unknown>> = [];
     const server = createServer((request, response) => {
@@ -457,11 +466,13 @@ describe('one code, several clients', () => {
         'opencode',
         'claude-code',
         'codex',
+        'qoder',
       ]);
       const envs = received.map((body) => String(body.env));
-      expect(new Set(envs).size).toBe(4);
+      expect(new Set(envs).size).toBe(5);
       expect(envs[0]).toMatch(/^cursor-/);
       expect(envs[3]).toMatch(/^codex-/);
+      expect(envs[4]).toMatch(/^qoder-/);
 
       const cursor = JSON.parse(
         readFileSync(join(home, '.cursor', 'mcp.json'), 'utf8'),
@@ -493,6 +504,14 @@ describe('one code, several clients', () => {
       expect(codex).toContain('[mcp_servers.zhunzou]');
       expect(codex).toContain('HUB_TOKEN = "zz_codex"');
       expect(codex).toContain('ZHUNZOU_AGENT_KIND = "codex"');
+
+      const qoder = JSON.parse(
+        readFileSync(join(home, '.qoder', 'settings.json'), 'utf8'),
+      ) as { mcpServers: { zhunzou: { env: Record<string, string> } } };
+      expect(qoder.mcpServers.zhunzou.env).toMatchObject({
+        HUB_TOKEN: 'zz_qoder',
+        ZHUNZOU_AGENT_KIND: 'qoder',
+      });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       process.env.HOME = previous.HOME ?? '';
@@ -507,6 +526,11 @@ describe('one code, several clients', () => {
       } else {
         process.env.CODEX_HOME = previous.CODEX_HOME;
       }
+      if (previous.QODER_CONFIG_DIR === undefined) {
+        delete process.env.QODER_CONFIG_DIR;
+      } else {
+        process.env.QODER_CONFIG_DIR = previous.QODER_CONFIG_DIR;
+      }
     }
   });
 
@@ -517,10 +541,12 @@ describe('one code, several clients', () => {
       HOME: process.env.HOME,
       XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
       CODEX_HOME: process.env.CODEX_HOME,
+      QODER_CONFIG_DIR: process.env.QODER_CONFIG_DIR,
     };
     process.env.HOME = home;
     process.env.XDG_CONFIG_HOME = join(home, '.config');
     process.env.CODEX_HOME = join(home, '.codex');
+    delete process.env.QODER_CONFIG_DIR;
 
     try {
       const code = await runInit({
@@ -540,6 +566,7 @@ describe('one code, several clients', () => {
         join(home, '.cursor', 'mcp.json'),
         join(home, '.config', 'opencode', 'opencode.json'),
         join(home, '.claude.json'),
+        join(home, '.qoder', 'settings.json'),
       ]) {
         const text = readFileSync(file, 'utf8');
         expect(text).toContain('company-windows');
@@ -561,6 +588,39 @@ describe('one code, several clients', () => {
       } else {
         process.env.CODEX_HOME = previous.CODEX_HOME;
       }
+      if (previous.QODER_CONFIG_DIR === undefined) {
+        delete process.env.QODER_CONFIG_DIR;
+      } else {
+        process.env.QODER_CONFIG_DIR = previous.QODER_CONFIG_DIR;
+      }
     }
+  });
+
+  it('writes Qoder workspace config without touching the shared .mcp.json', async () => {
+    const dir = tempDir();
+    const code = await runInit({
+      dir,
+      hubUrl: 'https://hub.example.com',
+      token: 'admin-token',
+      env: 'qoder-demo',
+      target: 'qoder',
+      yes: true,
+      skipCheck: true,
+      noAgentToken: true,
+    });
+    expect(code).toBe(0);
+
+    const config = JSON.parse(
+      readFileSync(join(dir, '.qoder', 'settings.local.json'), 'utf8'),
+    ) as { mcpServers: { zhunzou: { env: Record<string, string> } } };
+    expect(config.mcpServers.zhunzou.env).toMatchObject({
+      AGENT_ENV: 'qoder-demo',
+      ZHUNZOU_AGENT_KIND: 'qoder',
+    });
+    // Claude owns `.mcp.json` in a shared workspace; Qoder must not claim it.
+    expect(existsSync(join(dir, '.mcp.json'))).toBe(false);
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf8')).toContain(
+      'agent_hub_escalate',
+    );
   });
 });

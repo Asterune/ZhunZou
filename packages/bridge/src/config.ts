@@ -5,6 +5,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import type { AgentKind } from '@zhunzou/shared';
 import { AGENT_KINDS } from '@zhunzou/shared';
 
+import { fileUriToPath } from './workspaces.js';
+
 export type FallbackStrategy = 'cli' | 'mcp';
 export type TransportMode = 'auto' | 'ws' | 'http';
 
@@ -20,6 +22,12 @@ export interface BridgeConfig {
    * Defaults to the git root / cwd basename when ZHUNZOU_PROJECT is unset.
    */
   projectName?: string;
+  /**
+   * Where `projectName` came from. Only `cwd` is a guess — an editor that
+   * starts the server outside the workspace can make it wrong — so the MCP
+   * server may replace it with the workspace the client advertises.
+   */
+  projectSource?: 'explicit' | 'workspace' | 'cwd';
   /** What to tell the model after a 40s wait times out. */
   fallback: FallbackStrategy;
   /** Single long-poll window (ms). */
@@ -96,6 +104,83 @@ export function detectWorkspaceProject(cwd: string = process.cwd()): string | un
   return name && name !== '.' && name !== '/' ? name : undefined;
 }
 
+/**
+ * Reject values that are not a real project name.
+ *
+ * A client that does not expand `${workspaceFolderBasename}` hands the literal
+ * placeholder to the server process. Reporting it would bind every ticket on
+ * that machine to a project called `${…}`, so an unexpanded placeholder counts
+ * as "unknown" and lets the other detectors run.
+ */
+function cleanProjectName(raw: string | undefined): string | undefined {
+  const value = (raw ?? '').trim();
+  if (!value || value.includes('${') || value.includes('$(')) return undefined;
+  return value.slice(0, 128);
+}
+
+/**
+ * Variables editors use to tell an MCP server which folder is open.
+ *
+ * Cursor starts stdio servers with a working directory it does not let us
+ * control (on Windows it is often not the workspace), but it does hand the
+ * process the open folder — `WORKSPACE_FOLDER_PATHS` is the undocumented
+ * variable its servers read it from. Treat it as a hint: only an existing
+ * directory counts, and cwd remains the fallback when it is absent.
+ */
+const WORKSPACE_PATH_KEYS = [
+  'CURSOR_WORKSPACE_FOLDER',
+  'VSCODE_WORKSPACE_FOLDER',
+];
+
+/** Paths the client advertises for the open workspace, in declaration order. */
+export function workspacePathsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const candidates: string[] = [];
+  const raw = env.WORKSPACE_FOLDER_PATHS?.trim();
+  if (raw) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = undefined;
+    }
+    if (Array.isArray(parsed)) {
+      candidates.push(
+        ...parsed.filter((item): item is string => typeof item === 'string'),
+      );
+    } else {
+      // Windows lists use `;`; a single folder is the common case elsewhere.
+      candidates.push(...raw.split(/[;\n]/));
+    }
+  }
+  for (const key of WORKSPACE_PATH_KEYS) {
+    const single = env[key]?.trim();
+    if (single) candidates.push(single);
+  }
+  return candidates
+    .map((candidate) => candidate.trim().replace(/^"(.*)"$/, '$1'))
+    .filter(Boolean);
+}
+
+/** Project of the folder the client says it has open, when it can be read. */
+export function detectProjectFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  for (const candidate of workspacePathsFromEnv(env)) {
+    if (candidate.includes('${')) continue;
+    const path = candidate.startsWith('file://')
+      ? fileUriToPath(candidate)
+      : candidate;
+    if (!path) continue;
+    const absolute = resolve(path);
+    if (!existsSync(absolute)) continue;
+    const name = detectWorkspaceProject(absolute);
+    if (name) return name;
+  }
+  return undefined;
+}
+
 export function loadBridgeConfig(
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
@@ -109,8 +194,23 @@ export function loadBridgeConfig(
 
   const rawUrl = (env.HUB_URL ?? DEFAULT_HUB_URL).trim().replace(/\/+$/, '');
   const chatSessionId = (env.ZHUNZOU_CHAT_SESSION_ID ?? '').trim();
-  const projectName =
-    (env.ZHUNZOU_PROJECT ?? '').trim() || detectWorkspaceProject(cwd) || '';
+  // The client's own idea of the open folder beats cwd: on Windows a global
+  // Cursor install starts the server from a directory that is not the
+  // workspace (home, System32), which used to leave the project unknown — or
+  // worse, name the project after System32.
+  const explicitProject = cleanProjectName(env.ZHUNZOU_PROJECT);
+  const workspaceProject = explicitProject ? undefined : detectProjectFromEnv(env);
+  const cwdProject = explicitProject || workspaceProject
+    ? undefined
+    : detectWorkspaceProject(cwd);
+  const projectName = explicitProject || workspaceProject || cwdProject || '';
+  const projectSource: BridgeConfig['projectSource'] = explicitProject
+    ? 'explicit'
+    : workspaceProject
+      ? 'workspace'
+      : cwdProject
+        ? 'cwd'
+        : undefined;
   const fallbackRaw = env.ZHUNZOU_FALLBACK ?? env.AGENT_HUB_FALLBACK;
   const waitRaw = env.ZHUNZOU_WAIT_TIMEOUT_MS ?? env.AGENT_HUB_WAIT_TIMEOUT_MS;
   let parsedUrl: URL;
@@ -128,6 +228,7 @@ export function loadBridgeConfig(
     token,
     agentEnv: (env.AGENT_ENV ?? '').trim() || `unknown-${hostname()}`,
     ...(projectName ? { projectName } : {}),
+    ...(projectSource ? { projectSource } : {}),
     fallback: fallbackRaw === 'mcp' ? 'mcp' : 'cli',
     waitTimeoutMs: clamp(
       readInt(waitRaw, DEFAULT_WAIT_TIMEOUT_MS),
