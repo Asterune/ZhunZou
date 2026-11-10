@@ -100,12 +100,13 @@ describe('one-click enrollment', () => {
   it('enrolls several clients on one machine from a single code', async () => {
     const ctx = await createTestContext();
     try {
-      const created = await createCode(ctx, { maxUses: 5 });
+      const created = await createCode(ctx, { maxUses: 6 });
       const kinds = [
         ['cursor', 'cursor-win'],
         ['opencode', 'opencode-win'],
         ['claude-code', 'claude-win'],
         ['codex', 'codex-win'],
+        ['qoder', 'qoder-win'],
       ] as const;
 
       const envs: string[] = [];
@@ -124,7 +125,7 @@ describe('one-click enrollment', () => {
         expect(body.token.startsWith('zz_')).toBe(true);
         envs.push(body.env);
       }
-      expect(new Set(envs).size).toBe(4);
+      expect(new Set(envs).size).toBe(5);
 
       // Host comparison is case-insensitive: macOS reports
       // `QideMacBook-Pro.local`, a shell may send `qidemacbook-pro.local`.
@@ -221,6 +222,7 @@ describe('one-click enrollment', () => {
       expect(await enroll('opencode')).toBe('公司-opencode');
       expect(await enroll('claude-code')).toBe('公司-claude');
       expect(await enroll('codex')).toBe('公司-codex');
+      expect(await enroll('qoder')).toBe('公司-qoder');
       // Same client again: same env, not `公司-cursor-2`.
       expect(await enroll('cursor')).toBe('公司-cursor');
     } finally {

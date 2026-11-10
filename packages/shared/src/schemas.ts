@@ -559,6 +559,11 @@ export const sendChatMessageSchema = z.object({
   content: z.string().trim().min(1).max(32_000),
 });
 
+/** Rewrite a queued message before the runner claims it. */
+export const editChatMessageSchema = z.object({
+  content: z.string().trim().min(1).max(32_000),
+});
+
 /**
  * Draft a reply on the human's behalf (L1 "draft mode").
  *
@@ -1200,6 +1205,7 @@ export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ChatEvent = z.infer<typeof chatEventSchema>;
 export type CreateChatSessionInput = z.infer<typeof createChatSessionSchema>;
 export type SendChatMessageInput = z.infer<typeof sendChatMessageSchema>;
+export type EditChatMessageInput = z.infer<typeof editChatMessageSchema>;
 export type ProposeChatReplyInput = z.infer<typeof proposeChatReplySchema>;
 export type AdoptChatProposalInput = z.infer<typeof adoptChatProposalSchema>;
 export type DecisionRequest = z.infer<typeof decisionRequestSchema>;

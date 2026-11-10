@@ -45,6 +45,7 @@ const CLIENT_PREFIXES: Record<string, string> = {
   'claude-code': 'claude',
   codex: 'codex',
   gemini: 'gemini',
+  qoder: 'qoder',
   windsurf: 'windsurf',
   other: 'agent',
 };

@@ -82,6 +82,8 @@ export const CHAT_MESSAGE_STATUSES = [
   'FAILED',
   /** A draft that was rejected; kept in the transcript for audit. */
   'DISCARDED',
+  /** A queued message the human withdrew before the runner claimed it. */
+  'CANCELLED',
 ] as const;
 export type ChatMessageStatus = (typeof CHAT_MESSAGE_STATUSES)[number];
 
@@ -172,6 +174,7 @@ export const AGENT_KINDS = [
   'claude-code',
   'codex',
   'gemini',
+  'qoder',
   'windsurf',
   'other',
 ] as const;

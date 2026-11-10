@@ -137,6 +137,155 @@ describe('interactive sessions', () => {
     }
   });
 
+  it('lets a human rewrite a queued message before the agent claims it', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const agentAuth = await issueAgentToken(ctx);
+
+      const send = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: { content: '先看看登录页' },
+      });
+      const queued = send.json().message as ChatMessage;
+
+      const edited = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/sessions/${session.id}/messages/${queued.id}`,
+        headers: ctx.auth,
+        payload: { content: '先看看登录页，再跑一次测试' },
+      });
+      expect(edited.statusCode).toBe(200);
+      expect(edited.json().message).toMatchObject({
+        id: queued.id,
+        status: 'PENDING',
+        content: '先看看登录页，再跑一次测试',
+      });
+
+      const claimed = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10`,
+        headers: agentAuth,
+      });
+      expect(claimed.json().message.content).toBe('先看看登录页，再跑一次测试');
+
+      // Once the runner owns the turn the text is no longer a draft.
+      const tooLate = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/sessions/${session.id}/messages/${queued.id}`,
+        headers: ctx.auth,
+        payload: { content: '改晚了' },
+      });
+      expect(tooLate.statusCode).toBe(409);
+      expect(tooLate.json().error.code).toBe('INVALID_MESSAGE_STATUS');
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('cancels a queued message and keeps it in the transcript for audit', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const agentAuth = await issueAgentToken(ctx);
+
+      const send = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: { content: '这条先不要发了' },
+      });
+      const queued = send.json().message as ChatMessage;
+
+      const cancelled = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages/${queued.id}/cancel`,
+        headers: ctx.auth,
+      });
+      expect(cancelled.statusCode).toBe(200);
+      expect(cancelled.json().message.status).toBe('CANCELLED');
+
+      // Cancelled messages are not deliverable to the runner.
+      const next = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10`,
+        headers: agentAuth,
+      });
+      expect(next.json().timedOut).toBe(true);
+      expect(next.json().message).toBeNull();
+
+      const transcript = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}`,
+        headers: ctx.auth,
+      });
+      expect(
+        (transcript.json().messages as ChatMessage[]).find(
+          (message) => message.id === queued.id,
+        )?.status,
+      ).toBe('CANCELLED');
+
+      const list = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/sessions',
+        headers: ctx.auth,
+      });
+      expect(list.json().sessions[0]).toMatchObject({
+        id: session.id,
+        pendingCount: 0,
+      });
+
+      const again = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages/${queued.id}/cancel`,
+        headers: ctx.auth,
+      });
+      expect(again.statusCode).toBe(409);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('does not let a human rewrite an auto-adopted agent reply', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const agentAuth = await issueAgentToken(ctx);
+
+      const drafted = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/sessions/proposals',
+        headers: agentAuth,
+        payload: { env: ENV, sessionId: session.id, content: 'Agent 起草的回复' },
+      });
+      const proposal = drafted.json().message as ChatMessage;
+
+      const adopted = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/proposals/${proposal.id}/adopt`,
+        headers: ctx.auth,
+      });
+      expect(adopted.statusCode).toBe(201);
+      expect(adopted.json().message).toMatchObject({
+        status: 'PENDING',
+        origin: 'agent',
+      });
+
+      const edited = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/sessions/${session.id}/messages/${proposal.id}`,
+        headers: ctx.auth,
+        payload: { content: '冒充人工改写' },
+      });
+      expect(edited.statusCode).toBe(409);
+      expect(edited.json().error.code).toBe('INVALID_MESSAGE_STATUS');
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('deletes a session together with its transcript', async () => {
     const ctx = await createTestContext();
     try {

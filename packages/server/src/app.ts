@@ -39,6 +39,7 @@ import {
   fleetBrowseResultInputSchema,
   fleetWorkspaceStatusInputSchema,
   extendTicketSchema,
+  editChatMessageSchema,
   formatTicketId,
   heartbeatSchema,
   isResolvedStatus,
@@ -1186,7 +1187,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return explicit?.trim() ?? '';
       };
 
-      const fleetKindOf = (adapter?: string): 'cursor' | 'opencode' | 'claude-code' | 'codex' | 'gemini' | 'other' => {
+      const fleetKindOf = (adapter?: string): 'cursor' | 'opencode' | 'claude-code' | 'codex' | 'gemini' | 'qoder' | 'other' => {
         switch (adapter) {
           case 'cursor':
           case 'cursor-agent':
@@ -1200,6 +1201,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
             return 'codex';
           case 'gemini':
             return 'gemini';
+          case 'qoder':
+            return 'qoder';
           default:
             return 'other';
         }
@@ -1995,6 +1998,73 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         sessionBus.publish(session);
         return { session, message };
       });
+
+      // A queued message is still the human's draft until the runner claims
+      // it, so let them rewrite it without losing its place in the queue.
+      api.patch('/sessions/:id/messages/:messageId', async (request) => {
+        requireAdmin(request);
+        const { id, messageId } = chatMessageParamsSchema.parse(request.params);
+        const session = repo.getChatSession(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+        if (session.status !== 'ACTIVE') {
+          throw new ConflictError(
+            `session ${formatTicketId(id)} is ${session.status}`,
+            'SESSION_CLOSED',
+          );
+        }
+
+        const input = editChatMessageSchema.parse(request.body);
+        const message = repo.editQueuedChatMessage(
+          Number(session.id),
+          parseTicketId(messageId),
+          input,
+        );
+        if (!message) {
+          throw new ConflictError(
+            `message ${formatTicketId(messageId)} is not an editable queued message`,
+            'INVALID_MESSAGE_STATUS',
+          );
+        }
+
+        sessionBus.publish(session);
+        return { session, message };
+      });
+
+      // Withdraw a queued message. It stays in the transcript as CANCELLED so
+      // the audit trail still shows what was pulled back.
+      api.post(
+        '/sessions/:id/messages/:messageId/cancel',
+        async (request) => {
+          requireAdmin(request);
+          const { id, messageId } = chatMessageParamsSchema.parse(request.params);
+          const session = repo.getChatSession(parseTicketId(id));
+          if (!session) {
+            throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+          }
+          if (session.status !== 'ACTIVE') {
+            throw new ConflictError(
+              `session ${formatTicketId(id)} is ${session.status}`,
+              'SESSION_CLOSED',
+            );
+          }
+
+          const message = repo.cancelQueuedChatMessage(
+            Number(session.id),
+            parseTicketId(messageId),
+          );
+          if (!message) {
+            throw new ConflictError(
+              `message ${formatTicketId(messageId)} is not a queued message`,
+              'INVALID_MESSAGE_STATUS',
+            );
+          }
+
+          sessionBus.publish(session);
+          return { session, message };
+        },
+      );
 
       // Bridge hands a claimed task back when no local agent could be woken.
       // Requeueing lets the next bridge / wake adapter retry it immediately

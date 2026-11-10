@@ -692,6 +692,19 @@ export interface TicketStore {
     messageId: number,
     now?: number,
   ): ChatMessage | null;
+  /** Rewrite a human message that is still waiting in the queue. */
+  editQueuedChatMessage(
+    sessionId: number,
+    messageId: number,
+    input: { content: string },
+    now?: number,
+  ): ChatMessage | null;
+  /** Withdraw a queued message; the transcript keeps it as `CANCELLED`. */
+  cancelQueuedChatMessage(
+    sessionId: number,
+    messageId: number,
+    now?: number,
+  ): ChatMessage | null;
   claimNextChatMessage(
     env: string,
     now?: number,
@@ -2312,6 +2325,76 @@ export class TicketRepository implements TicketStore {
       .returning()
       .get();
 
+    if (!row) return null;
+
+    this.db
+      .update(chatSessions)
+      .set({ updatedAt: now })
+      .where(eq(chatSessions.id, sessionId))
+      .run();
+
+    return toChatMessage(row);
+  }
+
+  /**
+   * Edit a message that is still `PENDING`. Only human-typed messages are
+   * editable: an agent-authored reply went through its own review path and
+   * must not silently turn into the human's words.
+   */
+  editQueuedChatMessage(
+    sessionId: number,
+    messageId: number,
+    input: { content: string },
+    now = Date.now(),
+  ): ChatMessage | null {
+    const row = this.db
+      .update(chatMessages)
+      .set({ content: input.content, updatedAt: now })
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.sessionId, sessionId),
+          eq(chatMessages.role, 'user'),
+          eq(chatMessages.status, 'PENDING'),
+          eq(chatMessages.origin, 'human'),
+        ),
+      )
+      .returning()
+      .get();
+    if (!row) return null;
+
+    this.db
+      .update(chatSessions)
+      .set({ updatedAt: now, lastMessageAt: now })
+      .where(eq(chatSessions.id, sessionId))
+      .run();
+
+    return toChatMessage(row);
+  }
+
+  /**
+   * Withdraw a queued message before the runner claims it. Cancelling keeps
+   * the row as `CANCELLED` so the transcript still shows what was withdrawn.
+   */
+  cancelQueuedChatMessage(
+    sessionId: number,
+    messageId: number,
+    now = Date.now(),
+  ): ChatMessage | null {
+    const row = this.db
+      .update(chatMessages)
+      .set({ status: 'CANCELLED', updatedAt: now })
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.sessionId, sessionId),
+          eq(chatMessages.role, 'user'),
+          eq(chatMessages.status, 'PENDING'),
+          eq(chatMessages.origin, 'human'),
+        ),
+      )
+      .returning()
+      .get();
     if (!row) return null;
 
     this.db
