@@ -107,7 +107,8 @@ ${JSON.stringify(
   )}`;
 }
 
-function extractJsonObject(raw: string): string {
+/** Shared with the L2 diagnosis, so no second fence-stripper exists. */
+export function extractJsonObject(raw: string): string {
   const withoutFence = raw
     .trim()
     .replace(/^```(?:json)?\s*/i, '')

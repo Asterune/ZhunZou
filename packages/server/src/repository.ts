@@ -350,6 +350,7 @@ function toTask(row: AgentTaskRow): AgentTask {
     managedBySupervisor: row.managedBySupervisor !== 0,
     retryCount: row.retryCount ?? 0,
     ...(row.workspacePath ? { workspacePath: row.workspacePath } : {}),
+    ...(row.fixPrompt ? { fixPrompt: row.fixPrompt } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ...(row.claimedAt !== null ? { claimedAt: row.claimedAt } : {}),
@@ -729,6 +730,15 @@ export interface TicketStore {
     reason: string,
     now?: number,
   ): { task: AgentTask; changed: boolean };
+  /**
+   * The L2 diagnosis ordered a retry: the task becomes claimable again and
+   * carries one fix prompt, which the claim that takes it delivers and clears.
+   */
+  retryTask(id: number, fixPrompt: string, now?: number): AgentTask | null;
+  /** Stop the loop. No further retry, no further token, a human decides. */
+  blockTask(id: number, now?: number): AgentTask | null;
+  /** A human overrode the breaker: same task, a fresh retry budget. */
+  reopenTask(id: number, now?: number): AgentTask | null;
   /** CLAIMED tasks, oldest claim first (used by the stale-task sweeper). */
   listClaimedTasks(limit?: number): AgentTask[];
   /** Requeue a lost task, or fail it after too many attempts. */
@@ -3416,15 +3426,21 @@ export class TicketRepository implements TicketStore {
   }
 
   /**
-   * Atomically claim the oldest pending task for an env. If another bridge
-   * wins the race, try the next pending task until none remain.
+   * Atomically claim the oldest task an env may run: one waiting to start, or
+   * one the supervisor just ordered a retry on. If another bridge wins the
+   * race, try the next candidate until none remain.
    */
   claimNextTask(env: string, now = Date.now()): AgentTask | null {
     for (;;) {
       const candidate = this.db
         .select()
         .from(agentTasks)
-        .where(and(eq(agentTasks.env, env), eq(agentTasks.status, 'PENDING')))
+        .where(
+          and(
+            eq(agentTasks.env, env),
+            inArray(agentTasks.status, ['PENDING', 'HEALING']),
+          ),
+        )
         .orderBy(asc(agentTasks.createdAt), asc(agentTasks.id))
         .limit(1)
         .get();
@@ -3439,12 +3455,24 @@ export class TicketRepository implements TicketStore {
           leaseAt: now,
           updatedAt: now,
           attempts: sql`${agentTasks.attempts} + 1`,
+          // The fix prompt is written for exactly this claim, so it is spent
+          // here. `.returning()` gives the row after the clear, which is why
+          // the value handed back comes from the candidate read above.
+          fixPrompt: null,
         })
-        .where(and(eq(agentTasks.id, candidate.id), eq(agentTasks.status, 'PENDING')))
+        .where(
+          and(
+            eq(agentTasks.id, candidate.id),
+            inArray(agentTasks.status, ['PENDING', 'HEALING']),
+          ),
+        )
         .returning()
         .get();
 
-      if (row) return toTask(row);
+      if (row) {
+        const task = toTask(row);
+        return candidate.fixPrompt ? { ...task, fixPrompt: candidate.fixPrompt } : task;
+      }
     }
   }
 
@@ -3478,6 +3506,55 @@ export class TicketRepository implements TicketStore {
     }
 
     return toTask(row);
+  }
+
+  retryTask(id: number, fixPrompt: string, now = Date.now()): AgentTask | null {
+    const row = this.db
+      .update(agentTasks)
+      .set({
+        status: 'HEALING',
+        fixPrompt,
+        completedAt: null,
+        claimedAt: null,
+        leaseAt: null,
+        updatedAt: now,
+        retryCount: sql`${agentTasks.retryCount} + 1`,
+      })
+      .where(and(eq(agentTasks.id, id), eq(agentTasks.status, 'FAILED')))
+      .returning()
+      .get();
+
+    return row ? toTask(row) : null;
+  }
+
+  blockTask(id: number, now = Date.now()): AgentTask | null {
+    const row = this.db
+      .update(agentTasks)
+      .set({ status: 'BLOCKED', updatedAt: now })
+      .where(and(eq(agentTasks.id, id), eq(agentTasks.status, 'FAILED')))
+      .returning()
+      .get();
+
+    return row ? toTask(row) : null;
+  }
+
+  reopenTask(id: number, now = Date.now()): AgentTask | null {
+    const row = this.db
+      .update(agentTasks)
+      .set({
+        status: 'PENDING',
+        retryCount: 0,
+        fixPrompt: null,
+        completedAt: null,
+        claimedAt: null,
+        leaseAt: null,
+        updatedAt: now,
+      })
+      .where(and(eq(agentTasks.id, id), eq(agentTasks.status, 'BLOCKED')))
+      .returning()
+      .get();
+
+    return row ? toTask(row) : null;
   }
 
   cancelTask(id: number, now = Date.now()): AgentTask | null {

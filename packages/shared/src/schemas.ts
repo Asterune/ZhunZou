@@ -444,6 +444,12 @@ export const agentTaskSchema = z.object({
    * path only means something on the node that created it.
    */
   workspacePath: workspacePathSchema.optional(),
+  /**
+   * What the L2 diagnosis told the engine to do differently. Handed over by
+   * the claim that runs the retry and then cleared: a fix prompt describes one
+   * attempt, and replaying it would have the next run repair the wrong fault.
+   */
+  fixPrompt: z.string().trim().min(1).max(4_000).optional(),
 
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),

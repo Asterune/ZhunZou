@@ -278,6 +278,8 @@ export const agentTasks = sqliteTable(  'agent_tasks',
     retryCount: integer('retry_count').notNull().default(0),
     /** Absolute path on the node that ran it; the hub only stores the string. */
     workspacePath: text('workspace_path'),
+    /** The L2 fix prompt the next claim hands to the engine, then clears. */
+    fixPrompt: text('fix_prompt'),
 
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),

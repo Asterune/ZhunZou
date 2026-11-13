@@ -2,6 +2,7 @@ import type { AgentTask, HeartbeatInput } from '@zhunzou/shared';
 
 import type { BridgeConfig } from '../config.js';
 import { WorktreeManager } from '../git/worktree.js';
+import { readWorkspaceFingerprint } from '../git/delta.js';
 import type { HubApi } from '../hub-client.js';
 import type { PresenceReporter } from '../presence.js';
 import { createLogSanitizer, type LogSanitizer } from '../sanitizer/log-sanitizer.js';
@@ -14,7 +15,7 @@ import {
 } from './adapters.js';
 import type { WakeConfig } from './config.js';
 import { createEventSink } from './event-sink.js';
-import { createLogSink } from './log-sink.js';
+import { createLogSink, type LogSink } from './log-sink.js';
 import { resolveWorkspace, type WorkspaceIsolation } from './isolation.js';
 
 export interface WakeDaemonOptions {
@@ -129,10 +130,30 @@ function createTaskLogSink(
         stream,
         chunk,
         ...(meta.errorSignature ? { errorSignature: meta.errorSignature } : {}),
+        ...(meta.diffHash ? { diffHash: meta.diffHash } : {}),
       }),
     (message) => onError(`任务 #${taskId} ${message}`),
     { sanitizer },
   );
+}
+
+/**
+ * Tell the hub what the workspace looks like now, while the task is still
+ * CLAIMED and before its outcome lands. A node that cannot answer simply says
+ * nothing; the run's completion must not depend on git.
+ */
+async function pushWorkspaceFingerprint(
+  sink: LogSink,
+  cwd: string,
+  logError: (message: string) => void,
+): Promise<void> {
+  try {
+    const diffHash = await readWorkspaceFingerprint(cwd);
+    if (!diffHash) return;
+    sink.push('system', `[zhunzou] 工作树指纹 ${diffHash}\n`, { diffHash });
+  } catch (error) {
+    logError(`工作树指纹上报失败：${(error as Error).message}`);
+  }
 }
 
 /** A failed run reports what broke, not the last four kilobytes of noise. */
@@ -296,6 +317,7 @@ async function runClaimLoop(
           'system',
           `\n[zhunzou] 任务 #${task.id} → ${completion.status}\n`,
         );
+        await pushWorkspaceFingerprint(sink, workspace.cwd, logError);
         await sink.close();
         await client.completeTask(task.id, {
           ...refineResult(completion, sanitizer),

@@ -36,6 +36,11 @@ const LINE_CHARS = 200;
 
 export interface LogChunkMeta {
   errorSignature?: string;
+  /**
+   * Worktree fingerprint, reported by the node that owns the checkout. The
+   * sanitizer never fills it in — only a caller that looked at git does.
+   */
+  diffHash?: string;
 }
 
 export interface LogSanitizer {

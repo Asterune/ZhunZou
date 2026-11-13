@@ -312,3 +312,16 @@ export const SUPERVISOR_PERMISSION_TIMEOUT_MS = 55_000;
 /** The L2 diagnosis is a one-liner for the inbox card, in characters. */
 export const DIAGNOSIS_SUMMARY_MAX_CHARS = 50;
 
+/**
+ * How many times the supervisor may order a retry before it gives up on the
+ * task and stops spending. The ceiling is the hub's, never the model's.
+ */
+export const SUPERVISOR_RETRY_CEILING = 3;
+
+/**
+ * Two attempts whose normalised error text overlaps by more than this are the
+ * same fault, so another retry would only repeat it. Compared with the
+ * bigram overlap in `textSimilarity`, where 1 means identical.
+ */
+export const SUPERVISOR_SIGNATURE_SIMILARITY = 0.85;
+

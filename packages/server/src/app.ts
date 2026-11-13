@@ -114,6 +114,13 @@ import {
   evaluateL1,
   selectPermissionAction,
 } from './supervisor/guard.js';
+import {
+  collectEvidence,
+  createHealer,
+  evaluateBreaker,
+  type FailureEvidence,
+  type SupervisorHealer,
+} from './supervisor/healer.js';
 import { allocateEnv } from './env-allocator.js';
 import {
   ApiError,
@@ -187,6 +194,9 @@ const approvalResolveSchema = z.object({
   customInstruction: z.string().trim().max(2000).optional(),
   confirmDestructive: z.union([z.string(), z.boolean()]).optional(),
 });
+const reopenTaskSchema = z.object({
+  reason: z.string().trim().min(1).max(500).optional(),
+});
 
 export interface BuildAppOptions {
   config: ServerConfig;
@@ -194,6 +204,8 @@ export interface BuildAppOptions {
   repo?: TicketStore;
   metaAgent?: MetaAgent;
   ruleDistiller?: RuleDistiller;
+  /** L2 diagnosis client; defaults to the same provider as the judge. */
+  healer?: SupervisorHealer;
   notifiers?: Notifier[];
   plugins?: HubPlugin[];
   logger?: FastifyServerOptions['logger'];
@@ -363,6 +375,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const ruleDistiller =
     options.ruleDistiller ??
     createRuleDistiller(config.metaAgent, fetch, app.log);
+  const healer = options.healer ?? createHealer(config.metaAgent, fetch, app.log);
   const notifiers = options.notifiers ?? createNotifiers(config.notifications, app.log);
   let plugins: HubPlugin[] = [];
   let sweeper: ReturnType<typeof setInterval> | null = null;
@@ -789,6 +802,93 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         );
       }
     }
+  };
+
+  /**
+   * The supervisor's own row for one handled attempt. It carries the evidence
+   * it judged, so the next attempt compares node signature against node
+   * signature rather than against a paraphrase of it.
+   */
+  const writeHealRow = (
+    taskId: number,
+    evidence: FailureEvidence,
+    diagnosis: string,
+  ): void => {
+    repo.appendTaskLog(taskId, {
+      stream: 'system',
+      chunk: `总管：${diagnosis}`,
+      diagnosis,
+      ...(evidence.lastSignature ? { errorSignature: evidence.lastSignature } : {}),
+      ...(evidence.lastDiffHash ? { diffHash: evidence.lastDiffHash } : {}),
+    });
+  };
+
+  /**
+   * L2: what happens after a run reports FAILED. Runs after the response, so
+   * the engine's own conclusion is what the client sees; this only adds the
+   * hub's conclusion about it. The breaker is asked before the model is, so a
+   * run that is provably going in circles costs nothing.
+   */
+  const healFailure = async (taskId: number): Promise<void> => {
+    const task = repo.getTask(taskId);
+    if (!task || task.status !== 'FAILED') return;
+    // A person still sitting at that terminal is the supervisor of that run.
+    if (task.origin !== 'HUB_DISPATCH' && !task.managedBySupervisor) return;
+
+    const evidence = collectEvidence(
+      task,
+      repo.listTaskLogs(taskId, { after: 0, limit: 500 }).logs,
+    );
+
+    const breakerReason = evaluateBreaker(evidence);
+    if (breakerReason) {
+      const blocked = repo.blockTask(taskId);
+      if (!blocked) return;
+      writeHealRow(taskId, evidence, breakerReason);
+      taskBus.publish(blocked);
+      app.log.warn(
+        { task: formatTicketId(blocked.id), env: blocked.env, reason: breakerReason },
+        'L2 breaker stopped a retry loop',
+      );
+      return;
+    }
+
+    const diagnosis = await healer.diagnose(evidence);
+    if (!diagnosis) return;
+
+    if (diagnosis.decision === 'ESCALATE_TO_HUMAN') {
+      const blocked = repo.blockTask(taskId);
+      if (!blocked) return;
+      writeHealRow(taskId, evidence, diagnosis.diagnosisSummary);
+      taskBus.publish(blocked);
+      app.log.warn(
+        { task: formatTicketId(blocked.id), env: blocked.env },
+        'L2 parked a failed task for a human',
+      );
+      return;
+    }
+
+    if (diagnosis.decision === 'RETRY_WITH_FIX') {
+      const fixPrompt = diagnosis.fixPrompt;
+      if (!fixPrompt) return;
+      const healing = repo.retryTask(taskId, fixPrompt);
+      if (!healing) return;
+      writeHealRow(taskId, evidence, diagnosis.diagnosisSummary);
+      taskBus.publish(healing);
+      app.log.info(
+        {
+          task: formatTicketId(healing.id),
+          env: healing.env,
+          retries: healing.retryCount,
+        },
+        'L2 ordered a self-healing retry',
+      );
+      return;
+    }
+
+    // APPROVE: the failure was a legitimate outcome. The engine's FAILED stands;
+    // the supervisor has no handle on it, only a note for the inbox.
+    writeHealRow(taskId, evidence, diagnosis.diagnosisSummary);
   };
 
   const sweepStaleTasks = async (): Promise<void> => {
@@ -1695,6 +1795,21 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         requireEnvAccess(request, current.env);
         const input = completeTaskSchema.parse(request.body);
         const task = repo.completeTask(taskId, input);
+
+        if (task.status === 'FAILED') {
+          setImmediate(() => {
+            void healFailure(taskId).catch((error: unknown) => {
+              app.log.warn(
+                {
+                  err: (error as Error).message,
+                  task: formatTicketId(id),
+                },
+                'L2 healing pass failed',
+              );
+            });
+          });
+        }
+
         return { task };
       });
 
@@ -2337,6 +2452,40 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         }
 
         return { task: cancelled };
+      });
+
+      /**
+       * A human overrides the breaker: the task goes back to the queue with a
+       * fresh retry budget. The evidence stays in the log rows, so repeating
+       * the same failure straight away trips the breaker again.
+       */
+      api.post('/tasks/:id/retry', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const taskId = parseTicketId(id);
+        const current = repo.getTask(taskId);
+        if (!current) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+        const input = reopenTaskSchema.parse(request.body ?? {});
+
+        const reopened = repo.reopenTask(taskId);
+        if (!reopened) {
+          throw new ConflictError(
+            `task ${formatTicketId(id)} is ${current.status}, expected BLOCKED`,
+            'INVALID_TASK_STATUS',
+          );
+        }
+
+        repo.appendTaskLog(taskId, {
+          stream: 'system',
+          chunk: `人工放行：${input.reason ?? '重新排队，自愈次数归零'}`,
+        });
+        taskBus.publish(reopened);
+        app.log.info(
+          { task: formatTicketId(id), env: reopened.env },
+          'blocked task reopened by a human',
+        );
+
+        return { task: reopened };
       });
 
       // Agent mirrors the human's question and its conclusion for one turn.

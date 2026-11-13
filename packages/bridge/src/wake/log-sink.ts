@@ -13,7 +13,11 @@ import type { LogChunkMeta, LogSanitizer } from '../sanitizer/log-sanitizer.js';
 export type LogStream = 'stdout' | 'stderr' | 'system';
 
 export interface LogSink {
-  push: (stream: LogStream, chunk: string) => void;
+  /**
+   * `meta` states a fact about this exact text that the sanitizer cannot know
+   * — a worktree fingerprint, say — so the chunk ships with it verbatim.
+   */
+  push: (stream: LogStream, chunk: string, meta?: LogChunkMeta) => void;
   close: () => Promise<void>;
 }
 
@@ -22,10 +26,18 @@ export interface LogSinkOptions {
   sanitizer?: LogSanitizer;
 }
 
+interface Segment {
+  text: string;
+  /** Absent means "describe this block with the sanitizer" — the common case. */
+  meta?: LogChunkMeta;
+}
+
 const FLUSH_INTERVAL_MS = 600;
 const CHUNK_BYTES = 12_000;
 const BUFFER_BYTES = 24_000;
 const MAX_BUFFER_BYTES = 1_000_000;
+
+const STREAMS = ['stdout', 'stderr', 'system'] as const;
 
 export function createLogSink(
   send: (stream: LogStream, chunk: string, meta: LogChunkMeta) => Promise<unknown>,
@@ -33,10 +45,10 @@ export function createLogSink(
   options: LogSinkOptions = {},
 ): LogSink {
   const sanitizer = options.sanitizer;
-  const buffers: Record<LogStream, string> = {
-    stdout: '',
-    stderr: '',
-    system: '',
+  const segments: Record<LogStream, Segment[]> = {
+    stdout: [],
+    stderr: [],
+    system: [],
   };
   let flushing = false;
   let closed = false;
@@ -48,25 +60,62 @@ export function createLogSink(
     onError(message);
   };
 
+  const bytesOf = (stream: LogStream): number =>
+    segments[stream].reduce((total, segment) => total + segment.text.length, 0);
+
+  const append = (stream: LogStream, text: string, meta?: LogChunkMeta): void => {
+    if (!text) return;
+    const list = segments[stream];
+    const last = list[list.length - 1];
+    // Plain text keeps joining into one block; a block with its own metadata
+    // stays separate, so the fact never lands on somebody else's output.
+    if (!meta && last && !last.meta) last.text += text;
+    else list.push(meta ? { text, meta } : { text });
+  };
+
+  const prepend = (stream: LogStream, text: string): void => {
+    if (!text) return;
+    const list = segments[stream];
+    const first = list[0];
+    if (first && !first.meta) first.text = text + first.text;
+    else list.unshift({ text });
+  };
+
   const trim = (stream: LogStream): void => {
-    if (buffers[stream].length <= MAX_BUFFER_BYTES) return;
-    buffers[stream] = buffers[stream].slice(-MAX_BUFFER_BYTES);
+    let drop = bytesOf(stream) - MAX_BUFFER_BYTES;
+    if (drop <= 0) return;
+    const list = segments[stream];
+    while (drop > 0 && list.length > 0) {
+      const first = list[0]!;
+      if (first.text.length <= drop) {
+        drop -= first.text.length;
+        list.shift();
+      } else {
+        first.text = first.text.slice(drop);
+        drop = 0;
+      }
+    }
     warnOnce('日志缓冲超过上限，已丢弃最旧内容');
   };
 
   const take = (): Array<{ stream: LogStream; chunk: string; meta: LogChunkMeta }> => {
     const chunks: Array<{ stream: LogStream; chunk: string; meta: LogChunkMeta }> = [];
-    for (const stream of ['stdout', 'stderr', 'system'] as const) {
+    for (const stream of STREAMS) {
       // A sanitizer holds the last line of a run until the run ends; a flush
       // is the hub asking what happened, so ask the sanitizer instead.
       const held = sanitizer?.settle(stream);
-      if (held) buffers[stream] += held;
-      const text = buffers[stream];
-      if (!text) continue;
-      buffers[stream] = '';
-      for (let index = 0; index < text.length; index += CHUNK_BYTES) {
-        const chunk = text.slice(index, index + CHUNK_BYTES);
-        chunks.push({ stream, chunk, meta: sanitizer?.describe(chunk) ?? {} });
+      if (held) append(stream, held);
+      const pending = segments[stream];
+      segments[stream] = [];
+      for (const segment of pending) {
+        for (let index = 0; index < segment.text.length; index += CHUNK_BYTES) {
+          const chunk = segment.text.slice(index, index + CHUNK_BYTES);
+          chunks.push({
+            stream,
+            chunk,
+            meta: segment.meta ?? sanitizer?.describe(chunk) ?? {},
+          });
+        }
       }
     }
     return chunks;
@@ -103,9 +152,8 @@ export function createLogSink(
               const pending = chunks[rest]!;
               requeue[pending.stream] += pending.chunk;
             }
-            for (const stream of ['stdout', 'stderr', 'system'] as const) {
-              if (!requeue[stream]) continue;
-              buffers[stream] = requeue[stream] + buffers[stream];
+            for (const stream of STREAMS) {
+              prepend(stream, requeue[stream]);
               trim(stream);
             }
             return;
@@ -123,13 +171,15 @@ export function createLogSink(
   timer.unref?.();
 
   return {
-    push(stream, chunk) {
+    push(stream, chunk, meta) {
       if (closed || !chunk) return;
-      const text = sanitizer ? sanitizer.feed(stream, chunk) : chunk;
+      // Text the caller labelled is already final; the sanitizer's job is to
+      // make unlabelled terminal noise safe to ship.
+      const text = meta ? chunk : sanitizer ? sanitizer.feed(stream, chunk) : chunk;
       if (!text) return;
-      buffers[stream] += text;
+      append(stream, text, meta);
       trim(stream);
-      if (buffers[stream].length >= BUFFER_BYTES) {
+      if (bytesOf(stream) >= BUFFER_BYTES) {
         void flush();
       }
     },

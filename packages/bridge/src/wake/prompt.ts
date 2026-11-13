@@ -10,6 +10,19 @@ function header(task: AgentTask): string {
 }
 
 /**
+ * The hub's verdict on the previous attempt, handed over by the claim that
+ * requeued this one. It is advice about what to do next, not part of the ask.
+ */
+function healSection(task: AgentTask): string[] {
+  if (!task.fixPrompt) return [];
+  return [
+    '',
+    '总管诊断与修复要求（上一次尝试失败的结论，不是原始需求）：',
+    task.fixPrompt,
+  ];
+}
+
+/**
  * Prompt used when the daemon injects into a live session (OpenCode).
  *
  * The daemon has already claimed the task, so the agent must not call
@@ -22,6 +35,7 @@ export function buildInjectPrompt(task: AgentTask): string {
     '',
     '指令：',
     task.instruction,
+    ...healSection(task),
     '',
     '这条任务已经由唤醒守护进程领取（状态 CLAIMED），不要再调用 agent_hub_next_task。',
     `请直接执行；完成后调用 agent_hub_complete_task(taskId: "${task.id}", status: "DONE", result: "简述改动与验证")。`,
@@ -41,6 +55,7 @@ export function buildRunPrompt(task: AgentTask): string {
     '',
     '指令：',
     task.instruction,
+    ...healSection(task),
     '',
     '请直接在当前工作区内完成上述任务，完成后输出一段简要总结（改了什么、如何验证）。',
     '如果遇到需要人类拍板的卡点，按项目规则调用 agent_hub_escalate 上奏并等待结果；不要自行决定不可逆操作。',

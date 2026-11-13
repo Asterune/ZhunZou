@@ -68,7 +68,7 @@ packages/
 ### Phase 3 — Supervisor Agent（降噪、分级风控、自愈、自学习）
 - [x] **Step 3.1 (`bridge/src/sanitizer`)** `LogSanitizer`：剥离 ANSI；折叠重复进度条/构建输出；提炼 `Error:`、TS 错误码、单测断言与堆栈，输出 ≤2000 字符高密度诊断。
 - [x] **Step 3.2 (`server/src/supervisor/guard.ts`)** L1 确定性风控：只读命令/单测编译/工作区内源码变更 0ms 放行；`rm -rf`、跨工作区、`.env*` 与 `~/.ssh/*`、`git push -f`、`git reset --hard` 0ms 拦截挂起；查 `learned_rules` 正则/通配命中自动放行。
-- [ ] **Step 3.3 (`server/src/supervisor/healer.ts`)** L2 轻量 LLM 结构化诊断（`decision:'APPROVE'|'RETRY_WITH_FIX'|'ESCALATE_TO_HUMAN'` + `diagnosisSummary`≤50 字 + `fixPrompt`）；熔断：`retryCount>=3`、连续两次报错相似度 >85% 或 Git diff hash 无变动 → `BLOCKED`。
+- [x] **Step 3.3 (`server/src/supervisor/healer.ts`)** L2 轻量 LLM 结构化诊断（`decision:'APPROVE'|'RETRY_WITH_FIX'|'ESCALATE_TO_HUMAN'` + `diagnosisSummary`≤50 字 + `fixPrompt`）；熔断：`retryCount>=3`、连续两次报错相似度 >85% 或 Git diff hash 无变动 → `BLOCKED`。
 
 ### Phase 4 — 上帝视角控制台与移动端闭环（本次范围外，待后续）
 - [ ] **Step 4.1 (`web`)** 决策收件箱（仅 BLOCKED/DONE，设备标签 + 管家一句话诊断 + Git 变更摘要 + 审批按钮组）、设备矩阵（在线/空闲内存/Worktree 数/托管开关）、快速派单弹窗。
@@ -102,7 +102,7 @@ packages/
 | 2.3 伴随与托管 | 完成 | `feat(bridge)` | `zz run` 包裹本地 CLI + 空闲自动托管；`POST /tasks/local`、`takeover` 留痕；全仓 95 files / 839 tests 通过 |
 | 3.1 日志降噪 | 完成 | `feat(bridge)` | `bridge/src/sanitizer/*` 四段（ANSI/进度折叠/错误提炼/状态机）；`errorSignature` 第一个写入方；全仓 99 files / 901 tests 通过 |
 | 3.2 L1 确定性风控 | 完成 | `feat(server)` | `server/src/supervisor/guard.ts` 新增；`runMetaReview` 前插确定性前置；`/api/learned-rules` 三条路由上线；全仓 103 files / 970 tests 通过 |
-| 3.3 L2 诊断与熔断 | 未开始 | — | — |
+| 3.3 L2 诊断与熔断 | 完成 | `feat(server)` | `server/src/supervisor/healer.ts` 新增；`retryTask`/`blockTask`/`reopenTask` 三条状态边 + `fix_prompt` 一次性投递；`POST /api/tasks/:id/retry`；bridge 侧工作树指纹上报；全仓 108 files / 1041 tests 通过 |
 
 **Step 1.1 落地说明（与蓝图的差异）**
 
@@ -222,3 +222,20 @@ packages/
 - **不落表**：`supervisor_decisions` 在 3.2 没有第二个读者（结构化结论的读者就是工单本身），`[L1] ` 前缀写进既有 `resolutionReason` + `app.log` 足够审计；等 3.3 熔断要比较连续两次 `errorSignature` 时再决定要不要落表。`diagnosis`/`diffHash` 继续留空等 3.3 的写入方，`HEALING`/`BLOCKED` 本步不写。
 - 范围外：L2 诊断与熔断（Step 3.3）、`rule_candidates → learned_rules` 自动学习（Phase 4 的"批准并记住规则"，本步 `learned_rules` 的写入方只有 `POST /api/learned-rules`）、ReDoS 的统一时间箱（regex 由 admin 写入且写时校验可编译、评审在 `setImmediate` 里跑不阻塞建票响应；真正的超时留给 3.3 给 L1/L2 一起加）、仪表盘展示（延续"数据层留字段、UI 不先动"）。
 - 测试：新增 `packages/server/test/supervisor-guard.test.ts`（41 项纯函数：D1–D10 毁灭与越界、R1–R9 规则匹配、A1–A12 内在安全放行、G1–G6 灰区、C1–C4 契约与不变量）、`supervisor-link.test.ts`（13 项：P1–P6 票与动作的配对与新鲜度、O1–O7 批准键词表）、`api-supervisor.test.ts`（9 项集成，全部用 spy metaAgent 断言 `calls===0` 让"0 Token"成为可验证事实）、`api-learned-rules.test.ts`（6 项路由与权限）。全仓 103 files / 970 tests（本步 +4 files / +69 tests）与 `pnpm -r typecheck` 全绿；`grep -rn evaluateL1 packages/server/src` 只有 `app.ts` 一个生产调用方，既有 `meta-agent`/`tickets`/`decisions`/`task-events` 用例**一条断言未改**。
+
+**Step 3.3 落地说明（与蓝图的差异）**
+
+设计全文见 `docs/design/supervisor-healer-3.3.md`（18 条现状核实 + B/E/N/A/R/H/W 七张矩阵）；此处只记偏离。
+
+- **熔断在模型之前，且是纯函数**：`evaluateBreaker` 只做算术与 `textSimilarity`，命中即 `blockTask`，`healer.diagnose` 根本不会被叫醒——H5/H6 用 `asked.length===0` 把"0ms、0 Token"钉成事实，而不是靠注释承诺。
+- **不建 `supervisor_decisions` 表**（回答 3.2 §7 留的问题）：管家每次动手写**一行 `task_logs`**，`diagnosis IS NOT NULL` 既是"这一行代表一次被处置的尝试"的判别式，也是 B2/B3 的比较锚点。零新表、零新查询，Phase 4 收件箱要的"一句话诊断"已经在行里。
+- **`blockTask` 不接 `reason`**：蓝图式的 `blockTask(id, reason)` 会把管家的话写进任务行，而 `result` 必须永远是引擎原话（H2/H5 断言它没被覆盖）。理由落在管家日志行，`app.log` 再记一次——审计分得清"谁说的"。
+- **`FAILED` 是唯一入口，`HEALING` 不能直接熔断**：测试写第一版时踩到的。`HEALING` 的语义是"等节点来领"，要熔断它只能等它跑完再报 `FAILED`；因此 H5 的"到顶那一次"必须正在运行中，三轮旧重试走仓储层、第四轮走 HTTP。
+- **`fix_prompt` 是本步唯一的新列，投递口径是一次性**：`retryTask` 写、`claimNextTask` 读并清空（`.returning()` 给的是更新后的行，所以值取自先读到的候选行——13 号事实防的坑）。否决了"拼进 `instruction`"（污染人类原文、多次重试叠罗汉）与"造工单放 `customInstruction`"（派单路线不读工单，事实 17）。
+- **B2 只比节点签名，不混模型签名**：`supervisorDiagnosisSchema.errorSignature` 字段仍然收（契约不改），但**不入 `heals` 比较序列**——否则就是拿节点的话比模型对它的转述，跨口径的相似度没有意义。缺证据时宁可多问一次模型，也不误关正常任务（§7 的取舍方向）。
+- **`log-sink` 由单缓冲改成分段缓冲**：`push(stream, chunk, meta?)` 要成立，带自己事实的文本就不能和邻居合并成一块。既有 11 个 `log-sink` 用例（含"瞬时失败后按序重投"）一条断言未改，分段与合并口径由它们保证。
+- **`createHealer` 比草案多一个可选 `logger`**：500/超时全降成 `undefined` 是设计要的，但没有这行 `warn` 运维上就是黑盒；A5 钉住"失败只响一次、且不抛给调用方"。
+- **两处判据在实现里定形**：① `clipTail` 保留的是**尾部**且总长含省略号仍 ≤2000（E6 用 112KB 输入钉）；② 提示词里缺证据一律写成"（节点未上报）/（管家没有处置过）"（N2b），不给模型留编造的口子。
+- **L1 的 ReDoS 时间箱仍然欠着**：3.2 §7 说"等 3.3 给 L1/L2 一起加"。L2 真加了（`AbortController` + `timeoutMs`，A6 兑现）；L1 没加——它是同进程纯内存匹配，要限时只能上 worker 或加字符预算，比本步该有的改动更大。如实记录，不留假承诺。
+- 范围外：`permission.request` 帧仍然没有生产方（同 3.2）；`rule_candidates → learned_rules` 自动学习、"批准并补充指令"按钮、仪表盘 BLOCKED 推送与展示全部留给 Phase 4（本步把 `fix_prompt` 通道打通，Phase 4 不必再改 schema）。
+- 测试：新增 `packages/server/test/supervisor-heal.test.ts`（30 项纯函数：B1–B12 熔断、E1–E8 证据、N1–N9 提示词与解析）、`supervisor-healer.test.ts`（9 项：A1–A8 客户端与时间箱，A1/A2/A8b 断言 `fetch` 调用数为 0）、`db-task-heal.test.ts`（10 项：R1–R10 三条边 + 旧库 `DROP COLUMN` 再升级）、`api-healer.test.ts`（13 项：H1–H13 端到端，含 `POST /tasks/:id/retry` 的 403）、`packages/bridge/test/wake-heal.test.ts`（9 项：W1–W8，真实 git 仓库跑指纹）。全仓 108 files / 1041 tests（本步 +5 files / +71 tests）与 `pnpm -r typecheck` 全绿；`tasks`/`stale-tasks`/`task-protocol`/`task-logs`/`log-sink`/`wake` 等既有用例**一条断言未改**。
