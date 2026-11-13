@@ -1,12 +1,17 @@
+import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import type { DecisionTicket } from '@zhunzou/shared';
+import type { AgentTask, DecisionTicket } from '@zhunzou/shared';
 
 import {
   buildApprovalToken,
   buildApprovalUrl,
+  buildTaskApprovalToken,
+  buildTaskApprovalUrl,
   renderApprovalPage,
+  renderTaskApprovalPage,
   verifyApprovalToken,
+  verifyTaskApprovalToken,
 } from '../src/approval-link.js';
 import {
   createTestContext,
@@ -196,5 +201,97 @@ describe('signed approval page', () => {
       payload: 'selectedOption=A',
     });
     expect(second.statusCode).toBe(409);
+  });
+});
+
+const stoppedTask: AgentTask = {
+  id: '77',
+  env: 'desk-b',
+  projectName: 'pte-dojo',
+  title: '修好登录页的单测',
+  instruction: '跑测试并修',
+  status: 'BLOCKED',
+  attempts: 2,
+  origin: 'HUB_DISPATCH',
+  managedBySupervisor: true,
+  retryCount: 3,
+  workspacePath: '/repo/.zhunzou/wt/77',
+  createdAt: 1,
+  updatedAt: 2,
+};
+
+describe('signed task link', () => {
+  it('round-trips inside its own namespace', () => {
+    const token = buildTaskApprovalToken('77', 10_000, SECRET);
+    expect(token.split('.')).toHaveLength(4);
+    expect(token.split('.')[0]).toBe('task');
+    expect(verifyTaskApprovalToken(token, SECRET, 9_000)).toMatchObject({
+      taskId: '77',
+      expiresAt: 10_000,
+    });
+    expect(verifyTaskApprovalToken(token, SECRET, 10_001)).toBeNull();
+    expect(verifyTaskApprovalToken(token, 'wrong-secret', 9_000)).toBeNull();
+    expect(verifyTaskApprovalToken(`${token.slice(0, -1)}x`, SECRET, 9_000)).toBeNull();
+    expect(buildTaskApprovalUrl(`${BASE}/`, token)).toBe(`${BASE}/t/${token}`);
+  });
+
+  it('cannot be replayed as a ticket link, or the other way round', () => {
+    expect(
+      verifyApprovalToken(
+        buildTaskApprovalToken('77', 10_000, SECRET),
+        SECRET,
+        9_000,
+      ),
+    ).toBeNull();
+    expect(
+      verifyTaskApprovalToken(
+        buildApprovalToken('104', 10_000, SECRET),
+        SECRET,
+        9_000,
+      ),
+    ).toBeNull();
+  });
+
+  it('leaves the ticket token byte-for-byte the format it always was', () => {
+    const payload = '104.10000';
+    expect(buildApprovalToken('104', 10_000, SECRET)).toBe(
+      `${payload}.${createHmac('sha256', SECRET).update(payload).digest('base64url')}`,
+    );
+  });
+
+  it('escapes task content and points the form at the release route', () => {
+    const html = renderTaskApprovalPage(
+      stoppedTask,
+      {
+        diagnosis: '<script>alert(1)</script> 三轮都在同一个用例上打转',
+        errorSignature: 'TS2345',
+        branch: 'wip/zz-77',
+        workspacePath: '/repo/.zhunzou/wt/<b>77</b>',
+      },
+      'tok',
+      BASE,
+    );
+
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).not.toContain('<script>alert');
+    expect(html).not.toContain('/repo/.zhunzou/wt/<b>');
+    expect(html).toContain(`${BASE}/t/tok/release`);
+    expect(html).toContain('wip/zz-77');
+    expect(html).toContain('批 准 继 续');
+  });
+
+  it('does not offer a merge action the hub cannot honestly take', () => {
+    const html = renderTaskApprovalPage(
+      stoppedTask,
+      { branch: 'wip/zz-77', workspacePath: '/repo/.zhunzou/wt/77' },
+      'tok',
+      BASE,
+    );
+
+    expect(html).toContain('Hub 不代为执行');
+    // One form, and the only thing it can submit is the release.
+    expect(html.match(/<form/g)).toHaveLength(1);
+    expect(html).not.toContain('/merge');
+    expect(html).not.toContain('/squash');
   });
 });

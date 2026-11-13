@@ -11,11 +11,13 @@ import Fastify, {
 import { z, ZodError } from 'zod';
 
 import type {
+  AgentTask,
   DecisionTicket,
   FleetBrowseCurrent,
   FleetBrowseEntry,
   FleetBrowseStatus,
   FleetWorkspace,
+  RuleCandidate,
   SyncState,
 } from '@zhunzou/shared';
 import {
@@ -85,15 +87,21 @@ import {
   updateAgentSchema,
   updateLearnedRuleSchema,
   updateRulesSchema,
+  wipBranchName,
   waitQuerySchema,
 } from '@zhunzou/shared';
 
 import {
   buildApprovalToken,
   buildApprovalUrl,
+  buildTaskApprovalToken,
+  buildTaskApprovalUrl,
   renderApprovalPage,
   renderApprovalResultPage,
+  renderTaskApprovalPage,
   verifyApprovalToken,
+  verifyTaskApprovalToken,
+  type TaskApprovalFacts,
 } from './approval-link.js';
 import { createAuthHook, hashToken, requireAdmin, requireEnvAccess } from './auth.js';
 import type { ServerConfig } from './config.js';
@@ -135,6 +143,7 @@ import { SyncEventBus, TaskEventBus, SessionEventBus, TicketEventBus } from './e
 import { createMetaAgent, type MetaAgent } from './meta-agent.js';
 import {
   createNotifiers,
+  notifyTaskOutcome,
   notifyTicketPendingHuman,
   type Notifier,
 } from './notifications.js';
@@ -194,7 +203,17 @@ const approvalResolveSchema = z.object({
   selectedOption: z.string().trim().min(1).max(8),
   customInstruction: z.string().trim().max(2000).optional(),
   confirmDestructive: z.union([z.string(), z.boolean()]).optional(),
+  /** Sent only by the「准奏并记住规则」button on the signed page. */
+  rememberRule: z.union([z.string(), z.boolean()]).optional(),
 });
+const taskReleaseSchema = z.object({
+  customInstruction: z.string().trim().max(500).optional(),
+});
+
+/** An HTML form sends `'true'`; a button that was not pressed sends nothing. */
+function isTrueFlag(value: unknown): boolean {
+  return value === true || value === 'true';
+}
 const reopenTaskSchema = z.object({
   reason: z.string().trim().min(1).max(500).optional(),
 });
@@ -720,12 +739,38 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   // Rule distillation: turn a human approval into a candidate rule.
   // Runs after the approval response, so the human never waits on the LLM.
   // -----------------------------------------------------------------
-  const distillRule = async (ticket: DecisionTicket): Promise<void> => {
+
+  /**
+   * Write a candidate into the rules document the judge reads, and mark it
+   * adopted. The accept route and「准奏并记住规则」share this one meaning of
+   * "remembered" — note that it is the document, not the L1 pattern table.
+   */
+  const adoptRuleCandidate = (
+    candidate: RuleCandidate,
+  ): { updated: RuleCandidate; rules: { content: string; updatedAt: number } } | null => {
+    const rules = rulesStore.append(candidate.content);
+    const updated = repo.markRuleCandidate(Number(candidate.id), 'ACCEPTED');
+    if (!updated) return null;
+    return { updated, rules };
+  };
+
+  const distillRule = async (
+    ticket: DecisionTicket,
+    accept = false,
+  ): Promise<void> => {
     if (ticket.status !== 'HUMAN_RESOLVED') return;
 
     try {
       const content = await ruleDistiller.distill(ticket);
-      if (!content) return;
+      if (!content) {
+        if (accept) {
+          app.log.info(
+            { ticket: formatTicketId(ticket.id) },
+            'nothing to remember from this approval',
+          );
+        }
+        return;
+      }
 
       const candidate = repo.createRuleCandidate(Number(ticket.id), content);
       if (!candidate) return;
@@ -737,6 +782,39 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         },
         'rule candidate distilled from human approval',
       );
+
+      if (!accept) return;
+
+      try {
+        const adopted = adoptRuleCandidate(candidate);
+        if (!adopted) {
+          app.log.warn(
+            {
+              candidate: formatTicketId(candidate.id),
+              ticket: formatTicketId(ticket.id),
+            },
+            'rule candidate changed before it could be adopted',
+          );
+          return;
+        }
+        app.log.info(
+          {
+            candidate: formatTicketId(candidate.id),
+            ticket: formatTicketId(ticket.id),
+          },
+          'rule adopted straight from a human approval',
+        );
+      } catch (error) {
+        // The approval itself is already decided and sent; losing the note
+        // about it must not look like the ruling failed.
+        app.log.warn(
+          {
+            err: (error as Error).message,
+            ticket: formatTicketId(ticket.id),
+          },
+          'rule could not be written to the rules document',
+        );
+      }
     } catch (error) {
       app.log.warn(
         {
@@ -757,6 +835,85 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       config.approvalLinkSecret,
     );
     return buildApprovalUrl(config.publicBaseUrl, token);
+  };
+
+  const inboxUrl = (): string | undefined =>
+    config.publicBaseUrl ? `${config.publicBaseUrl}/?tab=inbox` : undefined;
+
+  /**
+   * Only a stopped task earns a link: releasing it is a real action. A finished
+   * one has nothing to approve, so its notification points at the board.
+   */
+  const taskApprovalUrlFor = (task: AgentTask): string | undefined => {
+    if (!config.publicBaseUrl) return undefined;
+    const expiresAt = Date.now() + config.approvalLinkTtlMs;
+    return buildTaskApprovalUrl(
+      config.publicBaseUrl,
+      buildTaskApprovalToken(task.id, expiresAt, config.approvalLinkSecret),
+    );
+  };
+
+  /** The supervisor's last word about a task, from the log row it was written to. */
+  const lastSupervisorNote = (
+    taskId: number,
+  ): { diagnosis: string; errorSignature?: string } | undefined => {
+    const logs = repo.listTaskLogs(taskId, { after: 0, limit: 500 }).logs;
+    for (let index = logs.length - 1; index >= 0; index -= 1) {
+      const log = logs[index];
+      if (log?.diagnosis) {
+        return {
+          diagnosis: log.diagnosis,
+          ...(log.errorSignature ? { errorSignature: log.errorSignature } : {}),
+        };
+      }
+    }
+    return undefined;
+  };
+
+  const worktreeFacts = (task: AgentTask): TaskApprovalFacts =>
+    task.workspacePath
+      ? {
+          workspacePath: task.workspacePath,
+          branch: wipBranchName(task.id),
+        }
+      : {};
+
+  const announceBlocked = (
+    task: AgentTask,
+    note: { diagnosis?: string; errorSignature?: string },
+  ): void => {
+    const approvalUrl = taskApprovalUrlFor(task);
+    const refUrl = inboxUrl();
+    notifyTaskOutcome(
+      notifiers,
+      task,
+      {
+        kind: 'blocked',
+        ...note,
+        ...worktreeFacts(task),
+        ...(approvalUrl ? { approvalUrl } : {}),
+        ...(refUrl ? { refUrl } : {}),
+      },
+      app.log,
+    );
+  };
+
+  /** Called for every task that reaches a terminal state, on either transport. */
+  const announceTaskSettled = (task: AgentTask): void => {
+    if (task.status !== 'DONE') return;
+    // Someone who ran this in their own terminal already saw it end.
+    if (task.origin !== 'HUB_DISPATCH' && !task.managedBySupervisor) return;
+    const refUrl = inboxUrl();
+    notifyTaskOutcome(
+      notifiers,
+      task,
+      {
+        kind: 'done',
+        ...worktreeFacts(task),
+        ...(refUrl ? { refUrl } : {}),
+      },
+      app.log,
+    );
   };
 
   const autoResolveEligible = (projectName: string): boolean => {
@@ -851,6 +1008,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         { task: formatTicketId(blocked.id), env: blocked.env, reason: breakerReason },
         'L2 breaker stopped a retry loop',
       );
+      announceBlocked(blocked, {
+        diagnosis: breakerReason,
+        ...(evidence.lastSignature
+          ? { errorSignature: evidence.lastSignature }
+          : {}),
+      });
       return;
     }
 
@@ -866,6 +1029,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         { task: formatTicketId(blocked.id), env: blocked.env },
         'L2 parked a failed task for a human',
       );
+      announceBlocked(blocked, {
+        diagnosis: diagnosis.diagnosisSummary,
+        ...(evidence.lastSignature
+          ? { errorSignature: evidence.lastSignature }
+          : {}),
+      });
       return;
     }
 
@@ -1304,7 +1473,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       });
       bus.publish(resolved);
       emitPluginEvent(plugins, 'onTicketResolved', resolved, app.log);
-      void distillRule(resolved);
+      void distillRule(resolved, isTrueFlag(input.rememberRule));
 
       return reply
         .type('text/html; charset=utf-8')
@@ -1329,6 +1498,161 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           ),
         );
     }
+  });
+
+  // -----------------------------------------------------------------
+  // Signed task pages: a stopped task can be released from a phone, without
+  // handing out the admin token. The signature is the whole credential, and
+  // the only action it buys is the one the dashboard already offers.
+  // -----------------------------------------------------------------
+
+  app.get('/t/:token', async (request, reply) => {
+    const { token } = approvalParamsSchema.parse(request.params);
+    const payload = verifyTaskApprovalToken(token, config.approvalLinkSecret);
+
+    if (!payload) {
+      return reply
+        .code(410)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '链接已失效',
+            '这条放行链接已过期或无效，请打开看板处理。',
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    const task = repo.getTask(Number(payload.taskId));
+    if (!task) {
+      return reply
+        .code(404)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '任务不存在',
+            '这桩活可能已被清理，请打开看板确认。',
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    if (task.status !== 'BLOCKED') {
+      return reply
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '这桩活不用放行',
+            `当前状态：${task.status}`,
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    return reply
+      .type('text/html; charset=utf-8')
+      .send(
+        renderTaskApprovalPage(
+          task,
+          {
+            ...worktreeFacts(task),
+            ...(task.result ? { result: task.result } : {}),
+            ...(lastSupervisorNote(Number(payload.taskId)) ?? {}),
+          },
+          token,
+          config.publicBaseUrl,
+        ),
+      );
+  });
+
+  app.post('/t/:token/release', async (request, reply) => {
+    const { token } = approvalParamsSchema.parse(request.params);
+    const payload = verifyTaskApprovalToken(token, config.approvalLinkSecret);
+
+    if (!payload) {
+      return reply
+        .code(410)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '链接已失效',
+            '这条放行链接已过期或无效，请打开看板重新审批。',
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    const taskId = Number(payload.taskId);
+    const current = repo.getTask(taskId);
+    if (!current) {
+      return reply
+        .code(404)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '任务不存在',
+            '这桩活可能已被清理，请打开看板确认。',
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    if (current.status !== 'BLOCKED') {
+      return reply
+        .code(409)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '这桩活已处理',
+            `当前状态：${current.status}`,
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    const input = taskReleaseSchema.parse(request.body ?? {});
+    const reopened = repo.reopenTask(taskId);
+    if (!reopened) {
+      return reply
+        .code(409)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderApprovalResultPage(
+            '这桩活已处理',
+            '任务状态刚刚变了，请打开看板确认。',
+            false,
+            config.publicBaseUrl,
+          ),
+        );
+    }
+
+    repo.appendTaskLog(taskId, {
+      stream: 'system',
+      chunk: `人工放行：${input.customInstruction ?? '重新排队，自愈次数归零'}`,
+    });
+    taskBus.publish(reopened);
+    refreshSyncFingerprint();
+    app.log.info(
+      { task: formatTicketId(reopened.id), env: reopened.env },
+      'blocked task released from a signed link',
+    );
+
+    return reply
+      .type('text/html; charset=utf-8')
+      .send(
+        renderApprovalResultPage(
+          '已放行',
+          `任务 ${formatTicketId(reopened.id)} 已重新排队，自愈次数归零。`,
+          true,
+          config.publicBaseUrl,
+        ),
+      );
   });
 
   // -----------------------------------------------------------------
@@ -1608,7 +1932,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
         bus.publish(ticket);
         emitPluginEvent(plugins, 'onTicketResolved', ticket, app.log);
-        void distillRule(ticket);
+        void distillRule(ticket, input.rememberRule);
         return { ticket };
       });
 
@@ -1796,6 +2120,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         requireEnvAccess(request, current.env);
         const input = completeTaskSchema.parse(request.body);
         const task = repo.completeTask(taskId, input);
+
+        announceTaskSettled(task);
 
         if (task.status === 'FAILED') {
           setImmediate(() => {
@@ -3179,17 +3505,15 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           );
         }
 
-        const rules = rulesStore.append(candidate.content);
-        const updated = repo.markRuleCandidate(candidateId, 'ACCEPTED');
-
-        if (!updated) {
+        const adopted = adoptRuleCandidate(candidate);
+        if (!adopted) {
           throw new ConflictError(
             `rule candidate ${formatTicketId(id)} changed while accepting`,
             'RACE_LOST',
           );
         }
 
-        return { candidate: updated, rules };
+        return { candidate: adopted.updated, rules: adopted.rules };
       });
 
       api.post('/rules/candidates/:id/dismiss', async (request) => {
@@ -3296,6 +3620,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       taskBus,
       sessionBus,
       onChanged: refreshSyncFingerprint,
+      onTaskSettled: announceTaskSettled,
     });
   }
 

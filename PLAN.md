@@ -72,7 +72,7 @@ packages/
 
 ### Phase 4 — 上帝视角控制台与移动端闭环（本次范围外，待后续）
 - [x] **Step 4.1 (`web`)** 决策收件箱（仅 BLOCKED/DONE，设备标签 + 管家一句话诊断 + Git 变更摘要 + 审批按钮组）、设备矩阵（在线/空闲内存/Worktree 数/托管开关）、快速派单弹窗。
-- [ ] **Step 4.2 (`server/src/notify`)** 飞书/企微交互卡片 + 通用 Webhook；`BLOCKED`/`DONE` 推送带 `[批准继续]` `[批准并记住规则]` `[一键 Squash 变基合并]`。
+- [x] **Step 4.2 (`server/src/notify`)** 飞书/企微交互卡片 + 通用 Webhook；`BLOCKED`/`DONE` 推送带 `[批准继续]` `[批准并记住规则]` `[一键 Squash 变基合并]`（落地为"卡片按钮＝签名深链，不是回调"、合并按钮改为"合并信息"只读入口，见 §5 说明）。
 
 ## 5. 实施进度记录（AI 自动维护）
 
@@ -103,6 +103,8 @@ packages/
 | 3.1 日志降噪 | 完成 | `feat(bridge)` | `bridge/src/sanitizer/*` 四段（ANSI/进度折叠/错误提炼/状态机）；`errorSignature` 第一个写入方；全仓 99 files / 901 tests 通过 |
 | 3.2 L1 确定性风控 | 完成 | `feat(server)` | `server/src/supervisor/guard.ts` 新增；`runMetaReview` 前插确定性前置；`/api/learned-rules` 三条路由上线；全仓 103 files / 970 tests 通过 |
 | 3.3 L2 诊断与熔断 | 完成 | `feat(server)` | `server/src/supervisor/healer.ts` 新增；`retryTask`/`blockTask`/`reopenTask` 三条状态边 + `fix_prompt` 一次性投递；`POST /api/tasks/:id/retry`；bridge 侧工作树指纹上报；全仓 108 files / 1041 tests 通过 |
+| 4.1 上帝视角控制台 | 完成 | `feat(web)` | 决策收件箱（`GET /api/supervisor/inbox`）+ 设备矩阵 + 快速派单；合并只做信息透出，不动 git；全仓 114 files / 1092 tests 通过 |
+| 4.2 通知闭环 | 完成 | `feat(server)` | `wecom` 渠道 + 飞书交互卡片；`BLOCKED`/`DONE` 推送与 `task.<id>.<expiry>` 签名深链；`GET/POST /t/:token(/release)`；`rememberRule`；全仓 117 files / 1130 tests 通过 |
 
 **Step 1.1 落地说明（与蓝图的差异）**
 
@@ -254,3 +256,19 @@ packages/
 - **动作失败只 toast，不写 `lastError`**：沿用 `fail()`（`loadAgents`/`loadRules` 的既有口径，401 才登出）；`lastError` 专用于 sync 健康灯，收件箱读失败去点亮"同步中断"横幅是假信号。矩阵 I5 按实现改写。
 - 范围外：`BLOCKED`/`DONE` 的飞书/企微推送与审批深链（Step 4.2）、真合并（节点自己的 git）、`rule_candidates → learned_rules` 自动学习、组件渲染测试（事实 3：无 `@vue/test-utils`/jsdom，可断言的全在 lib 与 store，形状由 `vue-tsc` 兜）。
 - 测试：新增 `packages/shared/test/supervisor-inbox.test.ts`（8 项：S1–S5 分支名与契约，含"可选键缺席时不注入 `undefined`"）、`packages/server/test/db-inbox.test.ts`（8 项：R1–R8，含旧库 `DROP COLUMN` 后仍可读写）、`api-inbox.test.ts`（6 项：H1–H6，H1 用真发出去的 Agent Token 断言 403）、`packages/web/test/inbox.test.ts`（15 项：I1–I8，`loadInbox` 不并发、409 原文进 toast、放行后卡片消失且只 refresh 一次）、`matrix.test.ts`（11 项：M1–M5）、`tickets.test.ts`（3 项：T1–T3）。web 测试 7 files/56 tests → 10 files/85 tests，**既有 7 个文件一条断言未改**。第一版 R4 把三张票开在同一环境里逐个 claim，撞上 `claimNextTask` 的 oldest-first（`ConflictError: task #48 is PENDING`），改为排队票自占一环并断言 claim 的返回 id——矩阵 R4 只要求"FAILED/CLAIMED 不入箱"，断言没有放松。全仓 114 files / 1092 tests、`pnpm -r typecheck`、`pnpm --filter @zhunzou/web build` 全绿。
+
+**Step 4.2 落地说明（与蓝图的差异）**
+
+设计全文见 `docs/design/notify-4.2.md`（16 条现状核实 + N/C/K/U/P/R 六张矩阵 + "明确不做"）；此处只记偏离。
+
+- **`[一键 Squash 变基合并]` 降级为"合并信息"**（用户批准：只给合并信息，不动 git）：done 卡片的第二颗按钮叫「合并信息」，指向看板而不是任何写路由。Hub 隔空对别人机器上的仓库跑 git 需要一条事实 16 里不存在的通道，而 2.1 的 `squashAndMerge` 结果从来没有持久化。`grep -rn "simplegit\|child_process" packages/server/src` 仍无新命中。
+- **卡片按钮只能是链接，不能是回调**：飞书自定义机器人 webhook 与企微群机器人都没有回传通道（自建应用 + AES 事件解密是另一套基建）。因此「批准继续」= 深链到 `GET /t/:token` 签名页面，页面上**只有一个 form**、`POST /t/:token/release`。不开 GET 直批：破坏性勾选在服务端重算（`app.ts` 的 `confirmDestructive` 分支），一条能进群聊记录的 URL 若直接改状态，等于把这道检查送人。K6/P5 钉住"页面上没有 merge 口子""两种 token 互不通用"。
+- **任务深链与工单深链同名不同域**：payload 从 `<id>.<expiry>` 变成 `task.<id>.<expiry>`，分段数不同 → `verifyApprovalToken` 与 `verifyTaskApprovalToken` 双向拒绝，且工单 token 的字节格式一字未动（K4 黄金串）。选"分段数"而不是"加一个 scope 字段"，是因为后者要动既有校验函数。
+- **`[批准并记住规则]` 写的是判例文档，不是 L1 表**：落地时才发现 `GLOBAL_RULES.md`（`rulesStore`，喂给判官 prompt）与 `learned_rules`（L1 放行表）是两份东西。`rememberRule` 走 `distillRule → adoptRuleCandidate`，与候选 accept 路由共用同一个写入函数——所以"记住"影响的是模型的下一次判断，**不会**让 L1 少问一次；R6 专门断言 `listLearnedRules()` 仍为空。给 BLOCKED 任务做"记住"被砍掉：任务没有 `blockerQuestion`/`options`，蒸馏出来的是我们自己写的话。
+- **DONE 不签名**：完工时没有需要批准的状态，签一条深链等于承诺"点开有动作"。done 卡片只给看板 `?tab=inbox`；有工作区路径时才多一条「合并信息」，路径缺失就不出现（U8 钉住"节点上报才有分支"）。
+- **一条本地通知的两种 transport**：`announceTaskSettled(task)` 由 HTTP `POST /tasks/:id/complete` 与 WS 路由器（`DeviceRouterOptions.onTaskSettled`，可选回调，其余调用方零改动）共同调用，U4/U5 断言两条路推送逐字段相同。**不新建第三条上报路**。`LOCAL_WRAP` 且未被托管的任务不推（U4b）：人就坐在自己终端前，Hub 不该把自己念一遍。
+- **企微是第 9 个渠道，不是第 2 个飞书**：`msgtype:'markdown'` + `WECOM_TEXT_BUDGET=1200` 截断，别名 `wechatwork`。既有 8 个渠道的 builder 只读 `title/text/approvalUrl`，`NotificationMessage.ticket` 改成可选、新增的 `task/actions/kind/refUrl` 全可选，所以 N5 能用"body 逐字节相同"把"扩展是加法"钉死——`'ticket' in message === false`（键缺席）而不是 `undefined`，是本仓契约的一贯口径。
+- **两处矩阵按实现改写**：① N4 原写"除飞书外 body 逐字节相同"，但通用 webhook **本就该**长出 `task/actions/type`，把它算进"逐字节"就是自找矛盾——拆成 N4（按时刻定 type）+ N5（五个纯文本渠道逐字节）。② R5 原写"warn 记录"，但仓里没有任何日志捕获设施（`grep pino` 在 test 下零命中），改为断言可观测后果：批准仍 200、`HUMAN_RESOLVED` 不回滚、候选停在 `PENDING`、那个挡路的普通文件没被动过。R1 的"则例文件含蒸馏文本"也不能整串比对——`appendRuleBlock` 会去掉句末标点，矩阵写清是"规范后的整行"。
+- **既有断言零修改**：`notifications.test.ts` 原 5 个 `it`、`config.test.ts` 原 13 个、`approval-link.test.ts` 原 7 个全部原样通过，只做追加；`bridge-claims.test.ts` 的既有帧测试未动（U5 新开一条真 socket 用例）。`agentTaskSchema`、`syncStateSchema`、`/a/:token` 路由行为与工单 token 格式一字未改。
+- 范围外：Hub 侧执行 git（同上，用户口径）；卡片回调（要自建应用 + 事件解密）；`rule_candidates → learned_rules` 的自动学习（`rememberRule` 仍只写文档，L1 表唯一的写入方还是 `POST /api/learned-rules`）；重试退避与通知去重（同一任务被反复 BLOCKED 会反复推送，靠状态机而不是频率控制）；WS 路线上 `FAILED` 不自愈仍然欠着（3.3 记录的同一条债，本步只补通知，不悄悄改语义）。
+- 测试：新增 `packages/server/test/api-task-notify.test.ts`（9 项 U1–U8，含 U4b；真 `/ws/bridge` 帧、真熔断三轮）、`api-task-approval.test.ts`（8 项 P1–P8；每个用例自占一环，防 `claimNextTask` oldest-first 串台）、`api-remember-rule.test.ts`（7 项 R1–R6，含 R4b；R5 用"则例文件路径落在一个普通文件下面"制造 ENOTDIR，不新增测试专用注入点）；追加 `notifications.test.ts` +8（N1–N8）、`approval-link.test.ts` +5（K1/K2/K4/K5/K6）、`config.test.ts` +1（C1–C3 合并为一条渠道解析用例）。全仓 117 files / 1130 tests（本步 +3 files / +38 tests）与 `pnpm -r typecheck` 全绿。

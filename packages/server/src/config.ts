@@ -33,6 +33,7 @@ export type NotificationChannelConfig =
   | { type: 'webhook'; url: string; secret?: string }
   | { type: 'bark'; url: string }
   | { type: 'feishu'; url: string }
+  | { type: 'wecom'; url: string }
   | { type: 'slack'; url: string }
   | { type: 'discord'; url: string }
   | { type: 'ntfy'; url: string; token?: string }
@@ -253,6 +254,12 @@ export function parseNotificationChannels(
         channels.push({ type: 'feishu', url });
         break;
       }
+      case 'wecom':
+      case 'wechatwork': {
+        const url = requireValue(env, ['WECOM_WEBHOOK_URL'], name)[0]!;
+        channels.push({ type: 'wecom', url });
+        break;
+      }
       case 'slack': {
         const url = requireValue(env, ['SLACK_WEBHOOK_URL'], name)[0]!;
         channels.push({ type: 'slack', url });
@@ -288,7 +295,7 @@ export function parseNotificationChannels(
         break;
       default:
         throw new Error(
-          `unknown notification channel "${name}"; expected webhook|bark|feishu|slack|discord|ntfy|telegram|console`,
+          `unknown notification channel "${name}"; expected webhook|bark|feishu|wecom|slack|discord|ntfy|telegram|console`,
         );
     }
   }

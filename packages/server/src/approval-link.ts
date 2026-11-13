@@ -1,6 +1,10 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-import { formatTicketId, type DecisionTicket } from '@zhunzou/shared';
+import {
+  formatTicketId,
+  type AgentTask,
+  type DecisionTicket,
+} from '@zhunzou/shared';
 
 export interface ApprovalTokenPayload {
   ticketId: string;
@@ -46,6 +50,54 @@ export function verifyApprovalToken(
 
 export function buildApprovalUrl(baseUrl: string, token: string): string {
   return `${baseUrl.replace(/\/+$/, '')}/a/${token}`;
+}
+
+export interface TaskApprovalTokenPayload {
+  taskId: string;
+  expiresAt: number;
+}
+
+const TASK_SCOPE = 'task';
+
+/**
+ * Task links sign `task.<id>.<expiry>`, one part longer than a ticket link.
+ * The two verifiers count dot-separated parts, so neither kind can be
+ * replayed against the other route even with a valid signature.
+ */
+export function buildTaskApprovalToken(
+  taskId: string,
+  expiresAt: number,
+  secret: string,
+): string {
+  const payload = `${TASK_SCOPE}.${taskId}.${expiresAt}`;
+  return `${payload}.${signature(payload, secret)}`;
+}
+
+export function verifyTaskApprovalToken(
+  token: string,
+  secret: string,
+  now = Date.now(),
+): TaskApprovalTokenPayload | null {
+  const parts = token.split('.');
+  if (parts.length !== 4 || parts[0] !== TASK_SCOPE) return null;
+
+  const [, taskId, expiresRaw, provided] = parts;
+  if (!taskId || !expiresRaw || !provided) return null;
+  if (!/^[1-9]\d*$/.test(taskId) || !/^\d+$/.test(expiresRaw)) return null;
+
+  const expiresAt = Number(expiresRaw);
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) return null;
+
+  const expected = signature(`${TASK_SCOPE}.${taskId}.${expiresAt}`, secret);
+  const left = Buffer.from(provided);
+  const right = Buffer.from(expected);
+  if (left.length !== right.length || !timingSafeEqual(left, right)) return null;
+
+  return { taskId, expiresAt };
+}
+
+export function buildTaskApprovalUrl(baseUrl: string, token: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}/t/${token}`;
 }
 
 function escapeHtml(value: string): string {
@@ -102,6 +154,9 @@ function layout(title: string, body: string): string {
   .confirm { display:flex; gap:8px; align-items:flex-start; margin-top:12px; color:#a3231b; font-size:12px; }
   .confirm input { margin-top:3px; accent-color:#a3231b; }
   button { width:100%; margin-top:14px; padding:13px 16px; border:0; border-radius:10px; background:var(--red); color:#fff; font:700 15px/1 inherit; }
+  .actions { display:flex; gap:10px; }
+  .actions button { flex:1 1 0; min-width:0; }
+  button.ghost { background:var(--card); color:var(--red); border:1px solid var(--red); }
   .hint { color:var(--muted); font-size:11px; text-align:center; }
   a { color:var(--red); }
   .result { text-align:center; padding:28px 8px; }
@@ -169,9 +224,12 @@ export function renderApprovalPage(
         ? '<label class="confirm"><input type="checkbox" name="confirmDestructive" value="true"> 我确认这是高风险 / 不可逆操作</label>'
         : ''
     }
-    <button type="submit">准 奏</button>
+    <div class="actions">
+      <button type="submit">准 奏</button>
+      <button type="submit" name="rememberRule" value="true" class="ghost">准奏并记住规则</button>
+    </div>
   </form>
-  <p class="hint">点击后 Agent 会立即恢复执行；高风险选项必须勾选确认。</p>
+  <p class="hint">点击后 Agent 会立即恢复执行；高风险选项必须勾选确认。「记住规则」把这次批复追加进总管预审读的则例。</p>
   ${baseUrl ? `<p class="hint"><a href="${escapeHtml(baseUrl)}">打开完整看板</a></p>` : ''}
 </div>`;
 
@@ -191,4 +249,77 @@ export function renderApprovalResultPage(
   ${baseUrl ? `<p><a href="${escapeHtml(baseUrl)}">打开完整看板</a></p>` : ''}
 </div>`;
   return layout(title, body);
+}
+
+/** What the hub knows about a stopped task, in the human's words. */
+export interface TaskApprovalFacts {
+  diagnosis?: string;
+  errorSignature?: string;
+  /** Set only when the task ran in an isolated worktree. */
+  branch?: string;
+  workspacePath?: string;
+  /** The engine's own conclusion, kept verbatim. */
+  result?: string;
+}
+
+export function renderTaskApprovalPage(
+  task: AgentTask,
+  facts: TaskApprovalFacts,
+  token: string,
+  baseUrl = '',
+  notice = '',
+): string {
+  const action = baseUrl
+    ? `${baseUrl.replace(/\/+$/, '')}/t/${token}/release`
+    : `/t/${token}/release`;
+
+  const merge =
+    facts.branch || facts.workspacePath
+      ? `<div><span>合并信息（Hub 不代为执行）</span><p>${
+          facts.branch ? `<code>${escapeHtml(facts.branch)}</code>` : ''
+        }${
+          facts.workspacePath
+            ? `<br><code>${escapeHtml(facts.workspacePath)}</code>`
+            : ''
+        }</p></div>`
+      : '';
+
+  const body = `<div class="eyebrow">准奏 · 待放行</div>
+<h1><span class="id">${escapeHtml(formatTicketId(task.id))}</span> · ${escapeHtml(task.title)}</h1>
+<p class="meta">${escapeHtml(task.env)} · ${escapeHtml(new Date(task.updatedAt).toLocaleString('zh-CN'))}</p>
+<div class="card">
+  ${notice ? `<p class="notice">${escapeHtml(notice)}</p>` : ''}
+  <section class="brief">
+    ${
+      facts.diagnosis
+        ? `<div class="question"><span>管家诊断</span><p>${escapeHtml(facts.diagnosis)}</p></div>`
+        : ''
+    }
+    ${
+      facts.errorSignature
+        ? `<div><span>错误特征</span><p>${escapeHtml(facts.errorSignature)}</p></div>`
+        : ''
+    }
+    ${
+      facts.result
+        ? `<div><span>引擎原话</span><p>${escapeHtml(facts.result)}</p></div>`
+        : ''
+    }
+    ${merge}
+  </section>
+  <form method="post" action="${escapeHtml(action)}">
+    <label class="field">补充指令 / 放行理由（选填）
+      <textarea name="customInstruction" rows="2" maxlength="500" placeholder="例如：依赖已装好，直接重跑"></textarea>
+    </label>
+    <button type="submit">批 准 继 续</button>
+  </form>
+  <p class="hint">放行会重开自愈次数归零的重试；合并动作仍在节点上做。</p>
+  ${
+    baseUrl
+      ? `<p class="hint"><a href="${escapeHtml(baseUrl)}?tab=inbox">打开完整看板</a></p>`
+      : ''
+  }
+</div>`;
+
+  return layout(`准奏 · ${formatTicketId(task.id)}`, body);
 }

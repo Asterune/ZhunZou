@@ -172,7 +172,8 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 - **超时默认裁决**：开启 `AUTO_RESOLVE_TIMEOUT_MS` 后，待批卡片显示倒计时，到期按推荐方案自动准奏；可「暂缓 10 分钟」。推荐方案标记为 `destructive` 时永不自动执行。
 - **批量准奏**：积压多封时一键按各自推荐方案批复，提交前有 3 秒撤销窗口；高风险方案默认跳过，需勾选后才会一并批准。
 - **高风险保护**：选项支持 `risk: safe | caution | destructive`；破坏性选项必须人类二次确认，Meta-Agent 与超时策略都不能自动通过。
-- **通知内一键批复**：设置 `PUBLIC_BASE_URL` 后，Bark / 飞书 / Slack / Discord / ntfy / Telegram / Webhook 的通知都会带签名审批链接；手机点开即可选方案提交，无需登录看板。链接绑定单张工单、默认 30 分钟过期，重复提交会被状态机拒绝。
+- **通知内一键批复**：设置 `PUBLIC_BASE_URL` 后，Bark / 飞书 / 企业微信 / Slack / Discord / ntfy / Telegram / Webhook 的通知都会带签名审批链接；手机点开即可选方案提交，无需登录看板。链接绑定单张工单、默认 30 分钟过期，重复提交会被状态机拒绝。
+- **托管任务也会找上门**：任务卡住（`BLOCKED`）时推送「批准继续」深链，打开签名页面放行重跑；完工（`DONE`）时推送分支与工作区路径，给出合并信息——Hub 只转达，不代为执行 git 动作。
 - **下发任务**：人 → Agent 的反向调度，现在是「会话」页里的「单次执行」模式——同一套环境/项目选择，派一次活、跑完收工、不保留上下文。端侧 Agent 通过 `agent_hub_next_task` 领取并执行，完成后回报结果。
 - **工作区项目绑定**：每个环境（工作区）可绑定多个项目，已移到「接入端」页；绑定后会话与单次执行的项目下拉框只列出这些项目。Agent 心跳会自动上报 OpenCode / Cursor 当前打开的工作区（git 根目录名），服务端据此自动绑定；也可在看板用下拉框绑定其他已上报项目 / 解除（当前活跃项目不可解除，心跳会自动恢复）。
 - **历史决策**：自动放行与人工审批的完整记录，含决定、理由与补充指令。
@@ -408,7 +409,7 @@ OpenAI 兼容模式的流程：
 2. 将「规则 + 工单三点简报 + 选项」发送给模型；
 3. 强制返回严格 JSON：`{ "canResolve": boolean, "selectedOption": "A", "reason": "..." }`；
 4. 模型给出的选项必须真实存在于工单中，否则自动降级为人工审批；
-5. `canResolve === false` 时按 `NOTIFY_CHANNELS` 并行通知（Bark / 飞书 / Slack / Discord / ntfy / Telegram / Webhook）。
+5. `canResolve === false` 时按 `NOTIFY_CHANNELS` 并行通知（Bark / 飞书 / 企业微信 / Slack / Discord / ntfy / Telegram / Webhook）。
 
 预审前会从同一项目召回最近的历史已决工单（字符 bigram 相似度，零外部依赖），作为
 「历史判例」注入 prompt，帮助 Meta-Agent 对同类问题保持一致判断。历史判例只是参考，
@@ -497,10 +498,10 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 | `META_AGENT_ENDPOINT` | 空 | `provider=http` 时的决策服务地址 |
 | `META_AGENT_HEADERS` | 空 | 额外请求头（JSON） |
 | `META_AGENT_TIMEOUT_MS` | `15000` | LLM 请求超时 |
-| `NOTIFY_CHANNELS` | 空 | `webhook,bark,feishu,slack,discord,ntfy,telegram,console` |
+| `NOTIFY_CHANNELS` | 空 | `webhook,bark,feishu,wecom,slack,discord,ntfy,telegram,console` |
 | `WEBHOOK_URL` / `WEBHOOK_SECRET` | 空 | 通用通知 Webhook（兼容旧配置） |
 | `BARK_KEY` / `BARK_URL` | 空 | Bark（iOS）；只给 KEY 时自动拼 `https://api.day.app/<key>` |
-| `FEISHU_WEBHOOK_URL` · `SLACK_WEBHOOK_URL` · `DISCORD_WEBHOOK_URL` | 空 | 各 IM 的 incoming webhook |
+| `FEISHU_WEBHOOK_URL` · `WECOM_WEBHOOK_URL` · `SLACK_WEBHOOK_URL` · `DISCORD_WEBHOOK_URL` | 空 | 各 IM 的 incoming webhook；飞书与企微会把任务渲染成带链接按钮的卡片 |
 | `NTFY_URL` / `NTFY_TOKEN` | 空 | ntfy 主题与访问 Token |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 空 | Telegram Bot 发送 |
 | `HUB_PLUGINS` | 空 | 逗号分隔的插件模块路径 |

@@ -724,10 +724,10 @@ Notifications and plugins:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `NOTIFY_CHANNELS` | `webhook` if `WEBHOOK_URL` set, else none | Comma-separated fan-out: `webhook,bark,feishu,slack,discord,ntfy,telegram,console` |
-| `WEBHOOK_URL` / `WEBHOOK_SECRET` | empty | Generic webhook receiving `{ type, text, ticket }` |
+| `NOTIFY_CHANNELS` | `webhook` if `WEBHOOK_URL` set, else none | Comma-separated fan-out: `webhook,bark,feishu,wecom,slack,discord,ntfy,telegram,console` |
+| `WEBHOOK_URL` / `WEBHOOK_SECRET` | empty | Generic webhook receiving `{ type, text, ticket \| task, actions }` |
 | `BARK_KEY` / `BARK_URL` | empty | Bark (iOS); the URL derives from the key when omitted |
-| `FEISHU_WEBHOOK_URL` · `SLACK_WEBHOOK_URL` · `DISCORD_WEBHOOK_URL` | empty | Incoming webhooks |
+| `FEISHU_WEBHOOK_URL` · `WECOM_WEBHOOK_URL` · `SLACK_WEBHOOK_URL` · `DISCORD_WEBHOOK_URL` | empty | Incoming webhooks; Feishu and WeCom render task cards with link buttons |
 | `NTFY_URL` / `NTFY_TOKEN` | empty | ntfy topic |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | empty | Telegram bot |
 | `HUB_PLUGINS` | empty | Comma-separated plugin modules loaded at boot — [docs/PLUGINS.md](./docs/PLUGINS.md) |

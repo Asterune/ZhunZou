@@ -138,6 +138,12 @@ export const resolveTicketSchema = z.object({
   customInstruction: z.string().trim().max(2000).optional(),
   /** Required when the selected option is marked `destructive`. */
   confirmDestructive: z.boolean().optional(),
+  /**
+   * Adopt the rule distilled from this approval straight away instead of
+   * leaving it in the candidate list. Only ever appends to the rules document
+   * the judge reads; it does not create an L1 pattern.
+   */
+  rememberRule: z.boolean().optional(),
 });
 
 /** Payload accepted by POST /api/tickets/:id/extend. */

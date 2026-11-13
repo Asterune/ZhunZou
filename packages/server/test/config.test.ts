@@ -104,6 +104,27 @@ describe('loadConfig', () => {
     );
   });
 
+  it('parses a wecom robot alongside the other cards', () => {
+    expect(
+      loadConfig({
+        NOTIFY_CHANNELS: 'wecom',
+        WECOM_WEBHOOK_URL: 'https://qyapi.weixin.qq.com/hook',
+      }).notifications,
+    ).toEqual([{ type: 'wecom', url: 'https://qyapi.weixin.qq.com/hook' }]);
+    // 企业内一般叫「企业微信」，两种写法都收。
+    expect(
+      loadConfig({
+        NOTIFY_CHANNELS: 'wechatwork',
+        WECOM_WEBHOOK_URL: 'https://qyapi.weixin.qq.com/hook',
+      }).notifications,
+    ).toEqual([{ type: 'wecom', url: 'https://qyapi.weixin.qq.com/hook' }]);
+    expect(() => loadConfig({ NOTIFY_CHANNELS: 'wecom' })).toThrow(
+      /WECOM_WEBHOOK_URL/,
+    );
+    // C3: the hint must still list the channel a reader is looking for.
+    expect(() => loadConfig({ NOTIFY_CHANNELS: 'pager' })).toThrow(/wecom/);
+  });
+
   it('parses timeout, sweeper and stale-task policies', () => {
     expect(loadConfig({})).toMatchObject({
       autoResolveTimeoutMs: 0,

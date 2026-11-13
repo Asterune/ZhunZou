@@ -1,4 +1,5 @@
 import type {
+  AgentTask,
   ChatMessage,
   ChatSession,
   DecisionTicket,
@@ -25,6 +26,8 @@ export interface DeviceRouterOptions {
   sessionBus: SessionEventBus;
   /** Called after a mutation so the dashboard revision advances promptly. */
   onChanged?: () => void;
+  /** Called when a task reaches a terminal state, so the hub can announce it. */
+  onTaskSettled?: (task: AgentTask) => void;
 }
 
 export interface DeviceRouter {
@@ -52,6 +55,7 @@ export function attachDeviceRouter(
 ): DeviceRouter {
   const { config, repo, gateway, ticketBus, taskBus, sessionBus } = options;
   const onChanged = options.onChanged;
+  const onTaskSettled = options.onTaskSettled;
 
   const send = (env: string, frame: RealtimeServerFrame): boolean =>
     gateway.sendToBridge(env, frame);
@@ -236,6 +240,7 @@ export function attachDeviceRouter(
       ...(frame.requestId ? { requestId: frame.requestId } : {}),
       task: completed,
     });
+    onTaskSettled?.(completed);
     onChanged?.();
   };
 

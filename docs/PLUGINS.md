@@ -7,7 +7,7 @@
 | 扩展点 | 接入方式 | 适合场景 |
 | --- | --- | --- |
 | 预审模型 | `META_AGENT_PROVIDER=openai\|http\|none` | DeepSeek / OpenAI / Ollama / 自建决策服务 |
-| 通知渠道 | `NOTIFY_CHANNELS=...` | Bark、飞书、Slack、Discord、ntfy、Telegram、自定义 Webhook |
+| 通知渠道 | `NOTIFY_CHANNELS=...` | Bark、飞书、企业微信、Slack、Discord、ntfy、Telegram、自定义 Webhook |
 | 自定义逻辑 | `HUB_PLUGINS=./plugin.mjs` | 审计日志、IM 机器人、工单同步、指标上报 |
 | 端侧 Agent | MCP Server / CLI / 直接 HTTP | Cursor、OpenCode、Claude Code、自研 Agent |
 | 存储 | SQLite（默认） | 单机零依赖；核心仓储与 HTTP 层解耦，便于后续替换 |
@@ -96,7 +96,8 @@ NOTIFY_CHANNELS=bark,feishu,console
 | --- | --- | --- |
 | `webhook` | `WEBHOOK_URL` | 通用 JSON POST，可带 `WEBHOOK_SECRET`（`x-webhook-secret`） |
 | `bark` | `BARK_KEY` 或 `BARK_URL` | iOS Bark 推送 |
-| `feishu` / `lark` | `FEISHU_WEBHOOK_URL` | 飞书群机器人 |
+| `feishu` / `lark` | `FEISHU_WEBHOOK_URL` | 飞书群机器人；有链接时发交互卡片 |
+| `wecom` / `wechatwork` | `WECOM_WEBHOOK_URL` | 企业微信群机器人（markdown，正文上限 1200 字） |
 | `slack` | `SLACK_WEBHOOK_URL` | Slack Incoming Webhook |
 | `discord` | `DISCORD_WEBHOOK_URL` | Discord Webhook |
 | `ntfy` | `NTFY_URL` | ntfy 主题，可带 `NTFY_TOKEN` |
@@ -114,8 +115,22 @@ NOTIFY_CHANNELS=bark,feishu,console
 }
 ```
 
-`approvalUrl` 只在设置 `PUBLIC_BASE_URL` 时出现，是带 HMAC 签名和有效期的移动端审批页。
-Webhook 接收方可以直接把它渲染成按钮；其他内置渠道会自动把链接放进消息正文。
+托管任务收尾时 `type` 换成 `task.blocked` 或 `task.done`，`ticket` 换成 `task`（完整 AgentTask）：
+
+```json
+{
+  "type": "task.blocked",
+  "text": "【准奏 · 卡住了，等人放行 #77】...",
+  "task": { "...": "完整 AgentTask" },
+  "approvalUrl": "https://hub.example.com/t/task.77.1700000000000.xxx",
+  "actions": [{ "label": "批准继续", "url": "https://hub.example.com/t/..." }]
+}
+```
+
+`approvalUrl` 只在设置 `PUBLIC_BASE_URL` 时出现，是带 HMAC 签名和有效期的移动端页面。
+任务深链签的是 `task.<id>.<expiry>`，与工单的 `<id>.<expiry>` 分段数不同，两种 token 互不通用。
+`actions` 只有跳转链接：群机器人（飞书自建应用回调、企微加密事件）没有回传通道，Hub 也不开 GET 改状态的口子——
+破坏性选项仍要在页面上重新勾选。按钮只负责把人送到签名页，批准必须在页面上提交。
 
 每个渠道单次超时 5 秒；失败只记 `warn` 日志，不影响工单创建与长轮询。
 
