@@ -15,7 +15,9 @@ import type {
   FleetWorkspaceStatus,
   RuleCandidateStatus,
   TaskLogStream,
+  TaskOrigin,
   TaskStatus,
+  TaskEngine,
   TerminalAuditKind,
   TerminalSessionStatus,
   TicketOption,
@@ -216,6 +218,19 @@ export const agentTasks = sqliteTable(  'agent_tasks',
     instruction: text('instruction').notNull(),
     status: text('status').$type<TaskStatus>().notNull(),
     attempts: integer('attempts').notNull().default(0),
+    /** Repository the scheduler routed this task on. */
+    repoName: text('repo_name'),
+    /** Which local CLI runs it. */
+    engine: text('engine').$type<TaskEngine>(),
+    origin: text('origin').$type<TaskOrigin>().notNull().default('HUB_DISPATCH'),
+    /** Engine-native session id, so a resumed task continues in place. */
+    sessionId: text('session_id'),
+    /** Whether the hub supervisor may answer this task's requests unattended. */
+    managedBySupervisor: integer('managed_by_supervisor')
+      .notNull()
+      .default(0),
+    /** L2 self-healing retries so far; the circuit breaker compares it to its ceiling. */
+    retryCount: integer('retry_count').notNull().default(0),
 
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
@@ -228,6 +243,7 @@ export const agentTasks = sqliteTable(  'agent_tasks',
   (table) => [
     index('idx_agent_tasks_status').on(table.status),
     index('idx_agent_tasks_env').on(table.env),
+    index('idx_agent_tasks_repo').on(table.repoName),
     index('idx_agent_tasks_created').on(table.createdAt),
     index('idx_agent_tasks_updated').on(table.updatedAt),
   ],

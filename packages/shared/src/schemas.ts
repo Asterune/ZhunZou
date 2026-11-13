@@ -16,6 +16,7 @@ import {
   DECISION_KINDS,
   DECISION_VERDICTS,
   TASK_LOG_STREAMS,
+  TASK_ORIGINS,
   TASK_STATUSES,
   TICKET_STATUSES,
 } from './constants.js';
@@ -24,6 +25,7 @@ import {
   deviceCapabilitiesSchema,
   deviceStatsSchema,
 } from './device.js';
+import { taskEngineSchema } from './node.js';
 
 /* ------------------------------------------------------------------ */
 /* Branded-ish scalars                                                 */
@@ -416,6 +418,18 @@ export const agentTaskSchema = z.object({
   /** How many times a bridge has claimed this task. */
   attempts: z.number().int().nonnegative(),
 
+  /** Repository the task belongs to; the scheduler routes on it. */
+  repoName: z.string().trim().min(1).max(128).optional(),
+  /** Which local CLI runs it. */
+  engine: taskEngineSchema.optional(),
+  origin: z.enum(TASK_ORIGINS).default('HUB_DISPATCH'),
+  /** Engine-native session id, kept so a blocked task resumes in place. */
+  sessionId: z.string().trim().min(1).max(128).optional(),
+  /** Whether the hub supervisor may answer this task's requests unattended. */
+  managedBySupervisor: z.boolean().default(false),
+  /** L2 self-healing retries so far; the circuit breaker compares it to its ceiling. */
+  retryCount: z.number().int().nonnegative().default(0),
+
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   claimedAt: z.number().int().nonnegative().optional(),
@@ -431,7 +445,34 @@ export const createTaskSchema = z.object({
   projectName: projectNameSchema.optional(),
   title: z.string().trim().min(1).max(200),
   instruction: longTextSchema,
+  repoName: z.string().trim().min(1).max(128).optional(),
+  engine: taskEngineSchema.optional(),
+  /** A locally wrapped terminal registers itself with LOCAL_WRAP. */
+  origin: z.enum(TASK_ORIGINS).optional(),
+  managedBySupervisor: z.boolean().optional(),
 });
+
+/**
+ * Payload accepted by POST /api/tasks/dispatch: the hub picks the node, so the
+ * caller names a repository instead of an env and may narrow with node tags.
+ */
+export const dispatchTaskSchema = z
+  .object({
+    repoName: z.string().trim().min(1).max(128).optional(),
+    env: envSchema.optional(),
+    title: z.string().trim().min(1).max(200),
+    instruction: longTextSchema,
+    engine: taskEngineSchema.optional(),
+    /** Only nodes carrying every one of these tags are considered. */
+    tags: z.array(z.string().trim().min(1).max(40)).max(10).default([]),
+    managedBySupervisor: z.boolean().optional(),
+  })
+  .refine((value) => Boolean(value.repoName ?? value.env), {
+    message: 'a dispatch needs a repo or an env to route on',
+    path: ['repoName'],
+  });
+
+export type DispatchTaskInput = z.infer<typeof dispatchTaskSchema>;
 
 /** Query accepted by GET /api/tasks. */
 export const listTasksQuerySchema = z.object({

@@ -55,6 +55,10 @@ export type OptionRisk = (typeof OPTION_RISKS)[number];
 export const TASK_STATUSES = [
   'PENDING',
   'CLAIMED',
+  /** Waiting for a decision the supervisor may not make on its own. */
+  'BLOCKED',
+  /** The supervisor ordered a retry; the engine resumes the same session. */
+  'HEALING',
   'DONE',
   'FAILED',
   'CANCELLED',
@@ -62,9 +66,29 @@ export const TASK_STATUSES = [
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
+/**
+ * The blueprint names the same machine QUEUED / RUNNING; the persisted
+ * vocabulary predates it, so this map is the single place the two meet.
+ */
+export const TASK_STATUS_ALIASES = {
+  QUEUED: 'PENDING',
+  RUNNING: 'CLAIMED',
+  BLOCKED: 'BLOCKED',
+  HEALING: 'HEALING',
+  DONE: 'DONE',
+  FAILED: 'FAILED',
+} as const satisfies Partial<Record<string, TaskStatus>>;
+
 /** Output streams a claimed task can report while it runs. */
 export const TASK_LOG_STREAMS = ['stdout', 'stderr', 'system'] as const;
 export type TaskLogStream = (typeof TASK_LOG_STREAMS)[number];
+
+/** Which local CLI actually runs the task; declared with `AGENT_KINDS` below. */
+export type TaskEngine = AgentKind;
+
+/** How a task entered the hub: dispatched from the console or wrapped from a local terminal. */
+export const TASK_ORIGINS = ['HUB_DISPATCH', 'LOCAL_WRAP'] as const;
+export type TaskOrigin = (typeof TASK_ORIGINS)[number];
 
 /* ------------------------------------------------------------------ */
 /* Interactive sessions                                                */
@@ -133,12 +157,24 @@ export const ACTIVE_TASK_STATUSES = [
   'CLAIMED',
 ] as const satisfies readonly TaskStatus[];
 
+/** Statuses the decision inbox has to surface: waiting to run, or waiting on someone. */
+export const ATTENTION_TASK_STATUSES = [
+  'PENDING',
+  'CLAIMED',
+  'BLOCKED',
+  'HEALING',
+] as const satisfies readonly TaskStatus[];
+
 export function isTerminalTaskStatus(status: TaskStatus): boolean {
   return (TERMINAL_TASK_STATUSES as readonly TaskStatus[]).includes(status);
 }
 
 export function isActiveTaskStatus(status: TaskStatus): boolean {
   return (ACTIVE_TASK_STATUSES as readonly TaskStatus[]).includes(status);
+}
+
+export function isAttentionTaskStatus(status: TaskStatus): boolean {
+  return (ATTENTION_TASK_STATUSES as readonly TaskStatus[]).includes(status);
 }
 
 export function isTerminalStatus(status: TicketStatus): boolean {
@@ -181,6 +217,9 @@ export const AGENT_KINDS = [
 
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
+/** Re-exported for task records: an engine is the agent kind that runs it. */
+export const TASK_ENGINES = AGENT_KINDS;
+
 /** Disabled agents keep their history but their tokens stop working. */
 export const AGENT_STATUSES = ['active', 'disabled'] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
@@ -192,3 +231,72 @@ export const AGENT_TOKEN_PREFIX = 'zz_';
 export function formatTicketId(id: string | number): string {
   return `#${id}`;
 }
+
+/* ------------------------------------------------------------------ */
+/* Node placement                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What a machine is allowed to do. `portal` only observes and approves, so the
+ * scheduler must never land work on it; `worker` takes dispatched tasks;
+ * `hybrid` does both.
+ */
+export const NODE_ROLES = ['portal', 'worker', 'hybrid'] as const;
+export type NodeRole = (typeof NODE_ROLES)[number];
+
+/** A node reports its profile and free memory this often. */
+export const NODE_HEARTBEAT_REPORT_MS = 15_000;
+
+/** The hub drops a node from the routable set after this silence. */
+export const NODE_HEARTBEAT_TIMEOUT_MS = 30_000;
+
+/** Below this many free MB a node is not worth loading another task onto. */
+export const ROUTE_MIN_FREE_MEMORY_MB = 2048;
+
+/* ------------------------------------------------------------------ */
+/* Supervisor                                                          */
+/* ------------------------------------------------------------------ */
+
+/** The kinds of effect an agent asks permission for. */
+export const PERMISSION_ACTION_KINDS = [
+  'command',
+  'file_change',
+  'delete',
+  'git_operation',
+  'network',
+] as const;
+export type PermissionActionKind = (typeof PERMISSION_ACTION_KINDS)[number];
+
+/** What the supervisor finally rules. */
+export const SUPERVISOR_DECISIONS = [
+  'APPROVE',
+  'DENY',
+  'RETRY_WITH_FIX',
+  'ESCALATE_TO_HUMAN',
+] as const;
+export type SupervisorDecisionKind = (typeof SUPERVISOR_DECISIONS)[number];
+
+/** Which layer answered: 0ms rules, the LLM diagnosis, or a human. */
+export const SUPERVISOR_LAYERS = ['L1', 'L2', 'HUMAN'] as const;
+export type SupervisorLayer = (typeof SUPERVISOR_LAYERS)[number];
+
+/** How a learned allowance came to exist. */
+export const LEARNED_RULE_SOURCES = [
+  'HUMAN_APPROVAL',
+  'RULE_DISTILLER',
+  'SEED',
+] as const;
+export type LearnedRuleSource = (typeof LEARNED_RULE_SOURCES)[number];
+
+export const LEARNED_RULE_PATTERN_TYPES = ['exact', 'glob', 'regex'] as const;
+export type LearnedRulePatternType = (typeof LEARNED_RULE_PATTERN_TYPES)[number];
+
+export const LEARNED_RULE_ACTIONS = ['ALLOW', 'DENY'] as const;
+export type LearnedRuleAction = (typeof LEARNED_RULE_ACTIONS)[number];
+
+/** How long a node may park a permission request before the hub escalates it. */
+export const SUPERVISOR_PERMISSION_TIMEOUT_MS = 55_000;
+
+/** The L2 diagnosis is a one-liner for the inbox card, in characters. */
+export const DIAGNOSIS_SUMMARY_MAX_CHARS = 50;
+

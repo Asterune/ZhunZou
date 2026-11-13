@@ -36,6 +36,10 @@ export const TASK_STATUS_CLASSES: Record<TaskStatus, string> = {
     'bg-tertiary-fixed text-on-tertiary-fixed ring-1 ring-inset ring-tertiary/15',
   CLAIMED:
     'bg-secondary-container text-on-secondary-container ring-1 ring-inset ring-secondary/15',
+  BLOCKED:
+    'bg-tertiary-fixed text-on-tertiary-fixed ring-1 ring-inset ring-tertiary/15',
+  HEALING:
+    'bg-secondary-container text-on-secondary-container ring-1 ring-inset ring-secondary/25',
   DONE: 'bg-secondary-container text-on-secondary-container ring-1 ring-inset ring-secondary/15',
   FAILED:
     'bg-error-container text-on-error-container ring-1 ring-inset ring-error/15',
@@ -44,7 +48,11 @@ export const TASK_STATUS_CLASSES: Record<TaskStatus, string> = {
 };
 
 export function isActiveTask(task: AgentTask): boolean {
-  return task.status === 'PENDING' || task.status === 'CLAIMED';
+  return (
+    task.status === 'PENDING' ||
+    task.status === 'CLAIMED' ||
+    task.status === 'HEALING'
+  );
 }
 
 export function envStatusLabel(status: EnvStatus): string {

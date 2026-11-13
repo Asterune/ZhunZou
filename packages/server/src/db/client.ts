@@ -123,6 +123,12 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
   instruction TEXT NOT NULL,
   status TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
+  repo_name TEXT,
+  engine TEXT,
+  origin TEXT NOT NULL DEFAULT 'HUB_DISPATCH',
+  session_id TEXT,
+  managed_by_supervisor INTEGER NOT NULL DEFAULT 0,
+  retry_count INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   claimed_at INTEGER,
@@ -339,6 +345,17 @@ export function createDatabase(dbPath: string): {
   sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tickets_task ON tickets(task_id);');
   ensureColumn(sqlite, 'agent_tasks', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(sqlite, 'agent_tasks', 'lease_at', 'INTEGER');
+  // Supervisor fields: a pre-Phase-1 hub has no routing, origin or retry
+  // history, so every existing row is a console dispatch that never healed.
+  ensureColumn(sqlite, 'agent_tasks', 'repo_name', 'TEXT');
+  ensureColumn(sqlite, 'agent_tasks', 'engine', 'TEXT');
+  ensureColumn(sqlite, 'agent_tasks', 'origin', "TEXT NOT NULL DEFAULT 'HUB_DISPATCH'");
+  ensureColumn(sqlite, 'agent_tasks', 'session_id', 'TEXT');
+  ensureColumn(sqlite, 'agent_tasks', 'managed_by_supervisor', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(sqlite, 'agent_tasks', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
+  // Indexed only after the column exists: an upgrade from a table that predates
+  // it would otherwise abort on the missing column.
+  sqlite.exec('CREATE INDEX IF NOT EXISTS idx_agent_tasks_repo ON agent_tasks(repo_name);');
   ensureColumn(sqlite, 'agents', 'protocol_version', 'INTEGER');
   ensureColumn(sqlite, 'agents', 'capabilities', 'TEXT');
   ensureColumn(sqlite, 'agents', 'device_stats', 'TEXT');

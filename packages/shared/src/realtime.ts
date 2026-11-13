@@ -18,6 +18,8 @@ import {
   TERMINAL_SIGNALS,
   terminalSessionSchema,
 } from './terminal.js';
+import { nodeProfileSchema } from './node.js';
+import { permissionActionSchema, supervisorDecisionSchema } from './supervisor.js';
 
 /**
  * Realtime frames.
@@ -34,11 +36,15 @@ export const realtimeClientFrameSchema = z.discriminatedUnion('type', [
     projectName: z.string().trim().min(1).max(128).optional(),
     capabilities: deviceCapabilitiesSchema,
     stats: deviceStatsSchema.optional(),
+    /** Placement profile (role, tags, repos, free memory); see NODE_REGISTER. */
+    profile: nodeProfileSchema.optional(),
   }),
   z.object({
     type: z.literal('heartbeat'),
     at: z.number().int().nonnegative(),
     stats: deviceStatsSchema.optional(),
+    /** Re-sent when the inventory changed, e.g. a new checkout appeared. */
+    profile: nodeProfileSchema.optional(),
   }),
   z.object({
     type: z.literal('ping'),
@@ -76,6 +82,15 @@ export const realtimeClientFrameSchema = z.discriminatedUnion('type', [
     type: z.literal('ticket.wait'),
     requestId: z.string().trim().min(1).max(64),
     ticketId: ticketIdSchema,
+    timeoutMs: z.number().int().min(0).max(55_000).optional(),
+  }),
+  z.object({
+    /** PERMISSION_REQUEST: the node parks an agent action until the hub rules. */
+    type: z.literal('permission.request'),
+    requestId: z.string().trim().min(1).max(64),
+    taskId: ticketIdSchema.optional(),
+    ticketId: ticketIdSchema.optional(),
+    action: permissionActionSchema,
     timeoutMs: z.number().int().min(0).max(55_000).optional(),
   }),
   z.object({
@@ -176,6 +191,14 @@ export const realtimeServerFrameSchema = z.discriminatedUnion('type', [
     requestId: z.string().trim().min(1).max(64),
     ticket: decisionTicketSchema,
     timedOut: z.boolean(),
+  }),
+  z.object({
+    /** SUPERVISOR_DECISION: the answer to a parked permission.request. */
+    type: z.literal('supervisor.decision'),
+    requestId: z.string().trim().min(1).max(64).optional(),
+    taskId: ticketIdSchema.optional(),
+    ticketId: ticketIdSchema.optional(),
+    decision: supervisorDecisionSchema,
   }),
   z.object({
     type: z.literal('chat.assigned'),
@@ -284,3 +307,34 @@ export type RealtimeServerFrame = z.infer<typeof realtimeServerFrameSchema>;
 export const REALTIME_HEARTBEAT_MS = 30_000;
 export const REALTIME_HEARTBEAT_TIMEOUT_MS = 90_000;
 export const REALTIME_MAX_FRAME_BYTES = 64 * 1024;
+
+/**
+ * The blueprint event names mapped onto the frames this transport actually
+ * speaks, so both vocabularies resolve to one protocol instead of two.
+ */
+export const WS_EVENTS = {
+  NODE_REGISTER: 'hello',
+  NODE_HEARTBEAT: 'heartbeat',
+  TASK_DISPATCH: 'task.assigned',
+  TASK_LOG_STREAM: 'task.log',
+  PERMISSION_REQUEST: 'permission.request',
+  SUPERVISOR_DECISION: 'supervisor.decision',
+} as const;
+
+export type WsEventName = keyof typeof WS_EVENTS;
+
+/** Parse a node → hub frame, or `null` when a peer sent something unusable. */
+export function parseRealtimeClientFrame(
+  value: unknown,
+): RealtimeClientFrame | null {
+  const parsed = realtimeClientFrameSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Parse a hub → node frame, or `null` when a peer sent something unusable. */
+export function parseRealtimeServerFrame(
+  value: unknown,
+): RealtimeServerFrame | null {
+  const parsed = realtimeServerFrameSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
