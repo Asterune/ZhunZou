@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   and,
   asc,
@@ -30,6 +32,7 @@ import type {
   CompleteTaskInput,
   CreateAgentInput,
   CreateChatSessionInput,
+  CreateLearnedRuleInput,
   CreateTaskInput,
   CreateTerminalInput,
   CreateEnrollmentInput,
@@ -48,10 +51,12 @@ import type {
   FleetWorkspace,
   FleetWorkspaceStatus,
   HeartbeatInput,
+  LearnedRule,
   ListAgentsQuery,
   ListChatEventsQuery,
   ListChatSessionsQuery,
   ListExchangesQuery,
+  ListLearnedRulesQuery,
   ListRuleCandidatesQuery,
   ListTerminalAuditQuery,
   ListTaskLogsQuery,
@@ -59,6 +64,7 @@ import type {
   ListTerminalsQuery,
   ListTicketsQuery,
   ListWorkspaceProjectsQuery,
+  NodeProfile,
   Project,
   ReportExchangeInput,
   ResolveTicketInput,
@@ -75,7 +81,11 @@ import type {
   UpdateAgentInput,
   WorkspaceProject,
 } from '@zhunzou/shared';
-import { HEARTBEAT_ONLINE_WINDOW_MS } from '@zhunzou/shared';
+import {
+  HEARTBEAT_ONLINE_WINDOW_MS,
+  createLearnedRuleSchema,
+  nodeFreeMemoryMB,
+} from '@zhunzou/shared';
 
 import { normalizeHost, sameMachine } from './env-allocator.js';
 import type { MachineFacts } from './env-allocator.js';
@@ -94,6 +104,7 @@ import {
   exchanges,
   fleetCandidates,
   fleetWorkspaces,
+  learnedRules,
   ruleCandidates,
   taskLogs,
   terminalAudit,
@@ -105,6 +116,7 @@ import {
   type ChatEventRow,
   type FleetCandidateRow,
   type FleetWorkspaceRow,
+  type LearnedRuleRow,
   type ChatMessageRow,
   type ChatSessionRow,
   type DeviceRow,
@@ -242,12 +254,23 @@ function toHeartbeat(row: HeartbeatRow, now: number): EnvHeartbeat {
 }
 
 function toDevice(row: DeviceRow, envs: string[], now: number): Device {
+  const hostname = row.host ?? row.capabilities?.hostname ?? row.id;
   return {
     id: row.id,
     ...(row.host ? { host: row.host } : {}),
     ...(row.os ? { os: row.os } : {}),
     ...(row.capabilities ? { capabilities: row.capabilities } : {}),
     ...(row.deviceStats ? { deviceStats: row.deviceStats } : {}),
+    profile: {
+      // The hub minted this id; whatever the client called itself is dropped.
+      nodeId: row.id,
+      hostname,
+      role: row.role ?? 'worker',
+      tags: row.tags ?? [],
+      maxConcurrency: row.maxConcurrency ?? 1,
+      repos: row.repos ?? [],
+      ...(row.freeMemoryMB !== null ? { freeMemoryMB: row.freeMemoryMB } : {}),
+    },
     ...(row.transport ? { transport: row.transport } : {}),
     online:
       row.lastSeenAt !== null &&
@@ -332,6 +355,9 @@ function toTaskLog(row: TaskLogRow): TaskLog {
     taskId: String(row.taskId),
     stream: row.stream,
     chunk: row.chunk,
+    ...(row.errorSignature ? { errorSignature: row.errorSignature } : {}),
+    ...(row.diagnosis ? { diagnosis: row.diagnosis } : {}),
+    ...(row.diffHash ? { diffHash: row.diffHash } : {}),
     createdAt: row.createdAt,
   };
 }
@@ -421,6 +447,22 @@ function toRuleCandidate(row: RuleCandidateRow): RuleCandidate {
     ticketId: String(row.ticketId),
     content: row.content,
     status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toLearnedRule(row: LearnedRuleRow): LearnedRule {
+  return {
+    id: row.id,
+    pattern: row.pattern,
+    patternType: row.patternType,
+    action: row.action,
+    ...(row.kind ? { kind: row.kind } : {}),
+    source: row.source,
+    enabled: row.enabled !== 0,
+    hits: row.hits ?? 0,
+    ...(row.note ? { note: row.note } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -882,6 +924,24 @@ export interface TicketStore {
     status: 'ACCEPTED' | 'DISMISSED',
     now?: number,
   ): RuleCandidate | null;
+
+  /* ------------------------------------------------------------------ */
+  /* Learned rules                                                       */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Grant (or refresh) an allowance. Re-approving the same pattern + action
+   * folds into the existing row, so the guard's lookup table cannot bloat.
+   */
+  addLearnedRule(input: CreateLearnedRuleInput, now?: number): LearnedRule;
+  listLearnedRules(query?: Partial<ListLearnedRulesQuery>): LearnedRule[];
+  /** Count the times a rule answered, which is how a stale one gets noticed. */
+  recordLearnedRuleHit(id: string, now?: number): LearnedRule | null;
+  setEnabledLearnedRule(
+    id: string,
+    enabled: boolean,
+    now?: number,
+  ): LearnedRule | null;
 }
 
 export class TicketRepository implements TicketStore {
@@ -1238,6 +1298,8 @@ export class TicketRepository implements TicketStore {
       capabilities?: DeviceCapabilities | null;
       deviceStats?: DeviceStats | null;
       transport?: DeviceTransport | null;
+      /** Placement profile from the same beat; absent leaves the card as is. */
+      profile?: NodeProfile | null;
     },
     now: number,
   ): string | null {
@@ -1255,6 +1317,20 @@ export class TicketRepository implements TicketStore {
       ...(machine.capabilities ? { capabilities: machine.capabilities } : {}),
       ...(machine.deviceStats ? { deviceStats: machine.deviceStats } : {}),
       ...(machine.transport ? { transport: machine.transport } : {}),
+      // The hub owns the node id, so only the routing facts are stored; a beat
+      // without a profile must not erase what the node said a minute ago.
+      ...(machine.profile
+        ? {
+            role: machine.profile.role,
+            tags: machine.profile.tags,
+            maxConcurrency: machine.profile.maxConcurrency,
+            freeMemoryMB:
+              machine.profile.freeMemoryMB ??
+              nodeFreeMemoryMB(machine.profile, machine.deviceStats ?? undefined) ??
+              null,
+            repos: machine.profile.repos,
+          }
+        : {}),
     };
 
     this.db
@@ -1714,6 +1790,7 @@ export class TicketRepository implements TicketStore {
             capabilities: input.capabilities,
             deviceStats: input.stats,
             transport: input.transport,
+            profile: input.profile,
           },
           now,
         )
@@ -1961,6 +2038,9 @@ export class TicketRepository implements TicketStore {
         taskId,
         stream: input.stream,
         chunk: input.chunk,
+        errorSignature: input.errorSignature ?? null,
+        diagnosis: input.diagnosis ?? null,
+        diffHash: input.diffHash ?? null,
         createdAt: now,
       })
       .returning()
@@ -3658,6 +3738,82 @@ export class TicketRepository implements TicketStore {
       .get();
 
     return row ? toRuleCandidate(row) : null;
+  }
+
+  addLearnedRule(input: CreateLearnedRuleInput, now = Date.now()): LearnedRule {
+    const parsed = createLearnedRuleSchema.parse(input);
+    const row = this.db
+      .insert(learnedRules)
+      .values({
+        id: `lr-${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+        pattern: parsed.pattern,
+        patternType: parsed.patternType,
+        action: parsed.action,
+        kind: parsed.kind ?? null,
+        source: parsed.source,
+        enabled: 1,
+        hits: 0,
+        note: parsed.note ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [learnedRules.pattern, learnedRules.action],
+        set: {
+          patternType: parsed.patternType,
+          kind: parsed.kind ?? null,
+          source: parsed.source,
+          note: parsed.note ?? null,
+          enabled: 1,
+          updatedAt: now,
+        },
+      })
+      .returning()
+      .get();
+
+    return toLearnedRule(row);
+  }
+
+  listLearnedRules(query: Partial<ListLearnedRulesQuery> = {}): LearnedRule[] {
+    const rows = this.db
+      .select()
+      .from(learnedRules)
+      .where(
+        and(
+          ...(query.enabledOnly ? [eq(learnedRules.enabled, 1)] : []),
+          ...(query.action ? [eq(learnedRules.action, query.action)] : []),
+        ),
+      )
+      .orderBy(desc(learnedRules.updatedAt), asc(learnedRules.id))
+      .all();
+
+    return rows.map(toLearnedRule);
+  }
+
+  recordLearnedRuleHit(id: string, now = Date.now()): LearnedRule | null {
+    const row = this.db
+      .update(learnedRules)
+      .set({ hits: sql`${learnedRules.hits} + 1`, updatedAt: now })
+      .where(eq(learnedRules.id, id))
+      .returning()
+      .get();
+
+    return row ? toLearnedRule(row) : null;
+  }
+
+  setEnabledLearnedRule(
+    id: string,
+    enabled: boolean,
+    now = Date.now(),
+  ): LearnedRule | null {
+    const row = this.db
+      .update(learnedRules)
+      .set({ enabled: enabled ? 1 : 0, updatedAt: now })
+      .where(eq(learnedRules.id, id))
+      .returning()
+      .get();
+
+    return row ? toLearnedRule(row) : null;
   }
 
   /**

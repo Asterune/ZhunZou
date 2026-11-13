@@ -134,3 +134,39 @@ export const learnedRuleSchema = z
   });
 
 export type LearnedRule = z.infer<typeof learnedRuleSchema>;
+
+/**
+ * Payload for granting an allowance: the caller only names the pattern; the
+ * hub fills in the defaults (`glob` / `ALLOW` / `HUMAN_APPROVAL`).
+ */
+export const createLearnedRuleSchema = z
+  .object({
+    pattern: z.string().trim().min(1).max(500),
+    patternType: z.enum(LEARNED_RULE_PATTERN_TYPES).default('glob'),
+    action: z.enum(LEARNED_RULE_ACTIONS).default('ALLOW'),
+    kind: z.enum(PERMISSION_ACTION_KINDS).optional(),
+    source: z.enum(LEARNED_RULE_SOURCES).default('HUMAN_APPROVAL'),
+    note: z.string().trim().max(500).optional(),
+  })
+  .superRefine((rule, ctx) => {
+    if (rule.patternType !== 'regex') return;
+    try {
+      new RegExp(rule.pattern);
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'regex pattern does not compile',
+        path: ['pattern'],
+      });
+    }
+  });
+
+export type CreateLearnedRuleInput = z.input<typeof createLearnedRuleSchema>;
+
+/** Query accepted by GET /api/learned-rules. */
+export const listLearnedRulesQuerySchema = z.object({
+  enabledOnly: z.coerce.boolean().default(false),
+  action: z.enum(LEARNED_RULE_ACTIONS).optional(),
+});
+
+export type ListLearnedRulesQuery = z.infer<typeof listLearnedRulesQuerySchema>;

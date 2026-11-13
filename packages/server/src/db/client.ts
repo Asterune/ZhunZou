@@ -84,6 +84,11 @@ CREATE TABLE IF NOT EXISTS devices (
   os TEXT,
   capabilities TEXT,
   device_stats TEXT,
+  role TEXT,
+  tags TEXT,
+  max_concurrency INTEGER,
+  free_memory_mb INTEGER,
+  repos TEXT,
   transport TEXT,
   last_seen_at INTEGER,
   created_at INTEGER NOT NULL,
@@ -93,6 +98,23 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_machine_id ON devices(machine_id);
 CREATE INDEX IF NOT EXISTS idx_devices_host ON devices(host);
 CREATE INDEX IF NOT EXISTS idx_devices_seen ON devices(last_seen_at);
+
+CREATE TABLE IF NOT EXISTS learned_rules (
+  id TEXT PRIMARY KEY,
+  pattern TEXT NOT NULL,
+  pattern_type TEXT NOT NULL,
+  action TEXT NOT NULL,
+  kind TEXT,
+  source TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  hits INTEGER NOT NULL DEFAULT 0,
+  note TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_learned_rules_pattern ON learned_rules(pattern, action);
+CREATE INDEX IF NOT EXISTS idx_learned_rules_enabled ON learned_rules(enabled);
 
 CREATE TABLE IF NOT EXISTS enrollment_codes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +169,9 @@ CREATE TABLE IF NOT EXISTS task_logs (
   task_id INTEGER NOT NULL,
   stream TEXT NOT NULL,
   chunk TEXT NOT NULL,
+  error_signature TEXT,
+  diagnosis TEXT,
+  diff_hash TEXT,
   created_at INTEGER NOT NULL
 );
 
@@ -356,6 +381,17 @@ export function createDatabase(dbPath: string): {
   // Indexed only after the column exists: an upgrade from a table that predates
   // it would otherwise abort on the missing column.
   sqlite.exec('CREATE INDEX IF NOT EXISTS idx_agent_tasks_repo ON agent_tasks(repo_name);');
+  // Node placement profile: an upgraded hub has cards but no routing facts, so
+  // its existing nodes read back as plain workers until they report again.
+  ensureColumn(sqlite, 'devices', 'role', 'TEXT');
+  ensureColumn(sqlite, 'devices', 'tags', 'TEXT');
+  ensureColumn(sqlite, 'devices', 'max_concurrency', 'INTEGER');
+  ensureColumn(sqlite, 'devices', 'free_memory_mb', 'INTEGER');
+  ensureColumn(sqlite, 'devices', 'repos', 'TEXT');
+  // Diagnostic columns turn a log row into evidence the circuit breaker can compare.
+  ensureColumn(sqlite, 'task_logs', 'error_signature', 'TEXT');
+  ensureColumn(sqlite, 'task_logs', 'diagnosis', 'TEXT');
+  ensureColumn(sqlite, 'task_logs', 'diff_hash', 'TEXT');
   ensureColumn(sqlite, 'agents', 'protocol_version', 'INTEGER');
   ensureColumn(sqlite, 'agents', 'capabilities', 'TEXT');
   ensureColumn(sqlite, 'agents', 'device_stats', 'TEXT');

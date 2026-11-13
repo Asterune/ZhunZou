@@ -25,7 +25,7 @@ import {
   deviceCapabilitiesSchema,
   deviceStatsSchema,
 } from './device.js';
-import { taskEngineSchema } from './node.js';
+import { nodeProfileSchema, taskEngineSchema } from './node.js';
 
 /* ------------------------------------------------------------------ */
 /* Branded-ish scalars                                                 */
@@ -258,6 +258,8 @@ export const deviceSchema = z.object({
   capabilities: deviceCapabilitiesSchema.optional(),
   /** Last CPU/memory/load snapshot. */
   deviceStats: deviceStatsSchema.optional(),
+  /** Placement profile the node last reported; absent on older clients. */
+  profile: nodeProfileSchema.optional(),
   transport: z.enum(DEVICE_TRANSPORTS).optional(),
   online: z.boolean(),
   lastSeenAt: z.number().int().nonnegative().optional(),
@@ -521,6 +523,12 @@ export const taskLogSchema = z.object({
   taskId: ticketIdSchema,
   stream: taskLogStreamSchema,
   chunk: z.string().max(16_384),
+  /** Normalised error text, so two retries can be compared for a dead loop. */
+  errorSignature: z.string().trim().min(1).max(500).optional(),
+  /** What the L2 diagnosis made of it, in one line. */
+  diagnosis: z.string().trim().min(1).max(500).optional(),
+  /** Git diff hash the supervisor judged, so unchanged work is detected. */
+  diffHash: z.string().trim().min(1).max(64).optional(),
   createdAt: z.number().int().nonnegative(),
 });
 
@@ -528,6 +536,9 @@ export const taskLogSchema = z.object({
 export const appendTaskLogSchema = z.object({
   stream: taskLogStreamSchema,
   chunk: z.string().min(1).max(16_384),
+  errorSignature: z.string().trim().min(1).max(500).optional(),
+  diagnosis: z.string().trim().min(1).max(500).optional(),
+  diffHash: z.string().trim().min(1).max(64).optional(),
 });
 
 export const listTaskLogsQuerySchema = z.object({

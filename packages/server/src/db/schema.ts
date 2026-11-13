@@ -13,11 +13,17 @@ import type {
   DeviceTransport,
   EnvStatus,
   FleetWorkspaceStatus,
+  LearnedRuleAction,
+  LearnedRulePatternType,
+  LearnedRuleSource,
+  NodeRepo,
+  NodeRole,
+  PermissionActionKind,
   RuleCandidateStatus,
+  TaskEngine,
   TaskLogStream,
   TaskOrigin,
   TaskStatus,
-  TaskEngine,
   TerminalAuditKind,
   TerminalSessionStatus,
   TicketOption,
@@ -162,6 +168,16 @@ export const devices = sqliteTable(
     }).$type<DeviceCapabilities>(),
     /** JSON CPU / memory / load snapshot. */
     deviceStats: text('device_stats', { mode: 'json' }).$type<DeviceStats>(),
+    /**
+     * Placement profile, kept as columns (not one JSON blob) so the scheduler
+     * can rank nodes without loading every card. Null means never reported;
+     * the reader substitutes the worker defaults the protocol promises.
+     */
+    role: text('role').$type<NodeRole>(),
+    tags: text('tags', { mode: 'json' }).$type<string[]>(),
+    maxConcurrency: integer('max_concurrency'),
+    freeMemoryMB: integer('free_memory_mb'),
+    repos: text('repos', { mode: 'json' }).$type<NodeRepo[]>(),
     /** ws while a device daemon is attached, http for legacy heartbeat-only bridges. */
     transport: text('transport').$type<DeviceTransport>(),
     lastSeenAt: integer('last_seen_at'),
@@ -172,6 +188,33 @@ export const devices = sqliteTable(
     uniqueIndex('idx_devices_machine_id').on(table.machineId),
     index('idx_devices_host').on(table.host),
     index('idx_devices_seen').on(table.lastSeenAt),
+  ],
+);
+
+/**
+ * Command patterns a human already approved (or refused). The L1 guard reads
+ * this table instead of the model, so a repeated approval costs no tokens.
+ */
+export const learnedRules = sqliteTable(
+  'learned_rules',
+  {
+    id: text('id').primaryKey(),
+    pattern: text('pattern').notNull(),
+    patternType: text('pattern_type').$type<LearnedRulePatternType>().notNull(),
+    action: text('action').$type<LearnedRuleAction>().notNull(),
+    /** Narrow to one permission kind; null matches any kind. */
+    kind: text('kind').$type<PermissionActionKind>(),
+    source: text('source').$type<LearnedRuleSource>().notNull(),
+    enabled: integer('enabled').notNull().default(1),
+    hits: integer('hits').notNull().default(0),
+    note: text('note'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    // Re-approving the same command updates one row instead of stacking copies.
+    uniqueIndex('idx_learned_rules_pattern').on(table.pattern, table.action),
+    index('idx_learned_rules_enabled').on(table.enabled),
   ],
 );
 
@@ -257,6 +300,12 @@ export const taskLogs = sqliteTable(
     taskId: integer('task_id').notNull(),
     stream: text('stream').$type<TaskLogStream>().notNull(),
     chunk: text('chunk').notNull(),
+    /** Normalised error text, so two retries can be compared for a dead loop. */
+    errorSignature: text('error_signature'),
+    /** The L2 diagnosis in one line, kept beside the line it explains. */
+    diagnosis: text('diagnosis'),
+    /** Git diff hash that produced this line, so unchanged work shows up. */
+    diffHash: text('diff_hash'),
     createdAt: integer('created_at').notNull(),
   },
   (table) => [index('idx_task_logs_task').on(table.taskId, table.id)],
@@ -467,6 +516,8 @@ export const ruleCandidates = sqliteTable(
 
 export type TicketRow = typeof tickets.$inferSelect;
 export type RuleCandidateRow = typeof ruleCandidates.$inferSelect;
+export type LearnedRuleRow = typeof learnedRules.$inferSelect;
+export type LearnedRuleInsert = typeof learnedRules.$inferInsert;
 export type RuleCandidateInsert = typeof ruleCandidates.$inferInsert;
 export type TicketInsert = typeof tickets.$inferInsert;
 export type HeartbeatRow = typeof envHeartbeats.$inferSelect;

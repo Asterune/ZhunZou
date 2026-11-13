@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import type { NodeProfile } from './node.js';
+
 /**
  * Version of the device ↔ hub realtime protocol. Bump only on breaking frame
  * changes; clients send it in `hello` so the hub can reject incompatible peers.
@@ -87,4 +89,9 @@ export interface DeviceConnectionInput {
   capabilities: DeviceCapabilities;
   stats?: DeviceStats;
   transport: DeviceTransport;
+  /**
+   * Placement profile (role, tags, repos, memory). Absent on a client too old
+   * to report one; the hub then keeps whatever profile the card already has.
+   */
+  profile?: NodeProfile;
 }

@@ -56,7 +56,7 @@ packages/
 
 ### Phase 1 — 契约层、零依赖 Hub 与资源感知节点注册
 - [x] **Step 1.1 (`shared`)** Zod 契约：`NodeProfile{nodeId,hostname,role:'portal'|'worker'|'hybrid',tags,freeMemoryMB,maxConcurrency,repos}`；`TaskRecord{id,title,repoName,engine:'cursor'|'opencode',origin:'HUB_DISPATCH'|'LOCAL_WRAP',sessionId,managedBySupervisor,status:'QUEUED'|'RUNNING'|'BLOCKED'|'HEALING'|'DONE'|'FAILED',retryCount}`；`WsMessage` 覆盖 `NODE_REGISTER/NODE_HEARTBEAT/TASK_DISPATCH/TASK_LOG_STREAM/PERMISSION_REQUEST/SUPERVISOR_DECISION`。
-- [ ] **Step 1.2 (`server/src/db`)** better-sqlite3(WAL) 建表与自动升级：`nodes`（在线状态/画像/最后心跳，扩展现有 `devices`）、`tasks`（元数据/状态机/关联节点/sessionId，扩展现有 `agent_tasks`）、`task_logs`（已有）、`learned_rules`（用户手动授权的命令匹配白名单）。
+- [x] **Step 1.2 (`server/src/db`)** better-sqlite3(WAL) 建表与自动升级：`nodes`（在线状态/画像/最后心跳，扩展现有 `devices`）、`tasks`（元数据/状态机/关联节点/sessionId，扩展现有 `agent_tasks`）、`task_logs`（已有）、`learned_rules`（用户手动授权的命令匹配白名单）。
 - [ ] **Step 1.3 (`server`)** REST `/api/nodes`、`/api/tasks`、`/api/tasks/dispatch`；WS Token 校验 + 30s 心跳超时置 offline；智能调度器按 `repoName` 匹配度 + `role!=='portal'` + `freeMemoryMB>2048` 分配算力节点。
 - [ ] **Step 1.4 (`bridge`)** `zz hub --port 8765 --token <secret>` 一键拉起控制面；`zz join <hub-url> --token --role --tags --scan-dir`：递归扫描 Git 仓库、每 15s 上报 `os.freemem()` 与心跳。
 
@@ -94,7 +94,8 @@ packages/
 | 0.1 存量盘点 | 完成 | `docs(plan)` | 见上表与第 2 节 |
 | 0.2 Monorepo 基建 | 完成 | `test(repo)` | 全仓 555 tests / 66 files 双链路（`pnpm test`、`npx vitest run`）通过 |
 | 1.1 契约层 | 完成 | `feat(shared)` | `shared/src/{node,supervisor}.ts` 新增；`constants/realtime/schemas` 扩写；tasks 新字段落库并带旧库升级迁移 |
-| 1.2–1.4 | 未开始 | — | — |
+| 1.2 数据层 | 完成 | `feat(server)` | `devices` 加画像列、`task_logs` 加诊断列、新增 `learned_rules` 表；全仓 74 files / 617 tests 通过 |
+| 1.3–1.4 | 未开始 | — | — |
 | 2.1–2.3 | 未开始 | — | — |
 | 3.1–3.3 | 未开始 | — | — |
 
@@ -104,4 +105,13 @@ packages/
 - `WS_EVENTS` 常量把蓝图六个事件名映射到实际帧名（`NODE_REGISTER→hello`、`TASK_DISPATCH→task.assigned`、`TASK_LOG_STREAM→task.log`），避免两套协议。
 - 状态机沿用 `PENDING/CLAIMED` 并新增 `BLOCKED/HEALING`；`TASK_STATUS_ALIASES` 记录与蓝图 `QUEUED/RUNNING` 的对应关系。
 - 引擎字段取 `AGENT_KINDS` 超集（含 cursor/opencode/claude-code/qoder 等），因为边缘已适配四种 CLI。
+
+**Step 1.2 落地说明（与蓝图的差异）**
+
+- 不新建 `nodes` 表：节点卡片就是 `devices`，画像以独立列落库（`role`/`tags`/`max_concurrency`/`free_memory_mb`/`repos`）而不是 JSON 大字段，调度器排序无需解析整张卡。列为 NULL 表示"从未上报"，读回时按协议默认值（worker / `[]` / 并发 1）合成 `profile`，`nodeId` 由 Hub 拥有（等于 device id，客户端自称的名字一律丢弃）。
+- 没有画像的 hello/heartbeat 不会擦掉上一次上报的画像，只覆盖本轮带来的字段；`free_memory_mb` 优先取节点自报，否则由 `deviceStats.freeMemBytes` 折算 MiB。
+- `tasks` 沿用 `agent_tasks`（Step 1.1 已扩列）；本步只补 `task_logs` 的三列诊断（`error_signature`/`diagnosis`/`diff_hash`），因为熔断比较的是日志行而不是任务行。
+- `learned_rules` 是新表，与已有的 `rule_candidates`（规则蒸馏候选）并存：候选是人审阅的草稿，`learned_rules` 是已生效的放行/拒绝决定，L1 引擎只读后者。`(pattern, action)` 唯一索引让重复批准更新同一行，避免白名单越长越大。
+- 迁移沿用本仓库既有约定：`DDL` 里只建表，所有依赖新列的索引都在 `ensureColumn()` 之后单独创建，否则从旧库升级会在缺失列上中断整次升级。
+- 测试：`test/db-nodes.test.ts`（画像持久化/单卡修订/无画像不擦除/旧 `devices`+`agents` 升级）、`test/db-learned-rules.test.ts`（增删改查/去重/计数/正则拒绝/旧库建表）、`test/db-task-diagnostics.test.ts`（诊断回读/普通行不留痕/旧 `task_logs` 升级保数据）。
 
