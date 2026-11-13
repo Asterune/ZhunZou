@@ -1,4 +1,16 @@
-import { hostname } from 'node:os';
+import { homedir, hostname } from 'node:os';
+
+import type { NodeRole } from '@zhunzou/shared';
+import { NODE_HEARTBEAT_REPORT_MS, NODE_ROLES } from '@zhunzou/shared';
+
+/** What this machine tells the hub so the scheduler can place work on it. */
+export interface DeviceNodeOptions {
+  role: NodeRole;
+  tags: string[];
+  maxConcurrency: number;
+  /** Roots scanned for git checkouts; empty means "route me by env only". */
+  scanDirs: string[];
+}
 
 export interface DeviceConfig {
   /** Hub base URL, http(s) or ws(s), without a trailing slash. */
@@ -12,10 +24,12 @@ export interface DeviceConfig {
   heartbeatMs: number;
   reconnectMinMs: number;
   reconnectMaxMs: number;
+  node?: DeviceNodeOptions;
 }
 
 const DEFAULT_HUB_URL = 'http://127.0.0.1:8787';
-const DEFAULT_HEARTBEAT_MS = 30_000;
+// Two beats must fit inside the hub's node routing window, or a node flaps.
+const DEFAULT_HEARTBEAT_MS = NODE_HEARTBEAT_REPORT_MS;
 const DEFAULT_RECONNECT_MIN_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 
@@ -27,6 +41,35 @@ function readInt(raw: string | undefined, fallback: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function readList(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/** `~/code` means the same thing here as in the operator's shell. */
+function expandHome(path: string): string {
+  if (path === '~') return homedir();
+  return path.startsWith('~/') ? `${homedir()}${path.slice(1)}` : path;
+}
+
+function readRole(raw: string | undefined): NodeRole {
+  const value = (raw ?? '').trim().toLowerCase();
+  return (NODE_ROLES as readonly string[]).includes(value)
+    ? (value as NodeRole)
+    : 'worker';
+}
+
+function readNodeOptions(env: NodeJS.ProcessEnv): DeviceNodeOptions {
+  return {
+    role: readRole(env.ZHUNZOU_NODE_ROLE),
+    tags: readList(env.ZHUNZOU_NODE_TAGS).slice(0, 10),
+    maxConcurrency: clamp(readInt(env.ZHUNZOU_MAX_CONCURRENCY, 1), 1, 16),
+    scanDirs: readList(env.ZHUNZOU_SCAN_DIRS).map(expandHome),
+  };
 }
 
 function normalizeHubUrl(raw: string): string {
@@ -83,6 +126,7 @@ export function loadDeviceConfig(
       1_000,
       5 * 60_000,
     ),
+    node: readNodeOptions(env),
   };
 }
 

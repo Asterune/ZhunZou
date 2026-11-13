@@ -3,6 +3,7 @@ import { WebSocket } from 'ws';
 import type {
   DeviceCapabilities,
   DeviceStats,
+  NodeProfile,
   RealtimeClientFrame,
   RealtimeServerFrame,
 } from '@zhunzou/shared';
@@ -11,6 +12,7 @@ import { DEVICE_PROTOCOL_VERSION } from '@zhunzou/shared';
 import type { DeviceConfig } from './config.js';
 import { deviceSocketUrl } from './config.js';
 import { detectCapabilities, detectStats } from './capabilities.js';
+import { buildNodeProfile, withFreeMemory } from './profile.js';
 import { DevicePtyManager } from './pty/manager.js';
 import type { PtyBackend } from './pty/runner.js';
 
@@ -61,6 +63,42 @@ function defaultStats(): DeviceStats {
 }
 
 /**
+ * The routing profile, rebuilt on every connect.
+ *
+ * A machine without `node` config stays a plain device: it reports presence
+ * and capabilities but claims no repos, so the scheduler cannot route work to
+ * a path nobody has given it. The checkout inventory is the expensive part (a
+ * bounded filesystem walk), so it refreshes per connection while the memory
+ * figure is read live on every beat.
+ */
+function createProfileSource(
+  config: DeviceConfig,
+  capabilities: DeviceCapabilities,
+  readStats: () => DeviceStats,
+): { rebuild(): void; current(): NodeProfile | undefined } {
+  const options = config.node;
+  let inventory: NodeProfile | null = null;
+
+  return {
+    rebuild() {
+      if (!options) return;
+      inventory = buildNodeProfile({
+        hostname: capabilities.hostname,
+        ...(capabilities.machineId ? { nodeId: capabilities.machineId } : {}),
+        ...options,
+      });
+    },
+    current() {
+      if (!inventory) return undefined;
+      const { freeMemBytes } = readStats();
+      return typeof freeMemBytes === 'number'
+        ? withFreeMemory(inventory, freeMemBytes)
+        : inventory;
+    },
+  };
+}
+
+/**
  * Reverse connection from a device to the hub.
  *
  * The socket is intentionally long-lived: the hub can push terminal/control
@@ -77,6 +115,7 @@ export function createDeviceConnection(
   const autoReconnect = options.autoReconnect ?? true;
   const capabilities = options.capabilities ?? detectCapabilities();
   const readStats = options.stats ?? defaultStats;
+  const nodeProfile = createProfileSource(config, capabilities, readStats);
 
   let socket: WebSocket | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -135,10 +174,12 @@ export function createDeviceConnection(
   };
 
   const beat = (): void => {
+    const profile = nodeProfile.current();
     send(socket, {
       type: 'heartbeat',
       at: Date.now(),
       stats: readStats(),
+      ...(profile ? { profile } : {}),
     });
   };
 
@@ -168,6 +209,7 @@ export function createDeviceConnection(
 
   function connect(): void {
     if (stopped) return;
+    nodeProfile.rebuild();
 
     const url = deviceSocketUrl(config);
     const ws = new WebSocket(url, {
@@ -181,6 +223,7 @@ export function createDeviceConnection(
       attempts = 0;
       clearPtyDisposeTimer();
       log(`[zhunzou-device] connected ${config.env} → ${config.hubUrl}`);
+      const profile = nodeProfile.current();
       send(ws, {
         type: 'hello',
         protocol: DEVICE_PROTOCOL_VERSION,
@@ -188,6 +231,7 @@ export function createDeviceConnection(
         ...(config.projectName ? { projectName: config.projectName } : {}),
         capabilities,
         stats: readStats(),
+        ...(profile ? { profile } : {}),
       });
       startHeartbeat(config.heartbeatMs);
     });

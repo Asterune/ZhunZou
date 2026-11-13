@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 
 import { REPO_ROOT, loadConfig } from './config.js';
 import { buildApp } from './app.js';
+import { HUB_HELP, parseHubArgs, warningsFor } from './hub-cli.js';
 import { SERVER_VERSION } from './version.js';
 
 // Node >= 20.12 ships process.loadEnvFile; a missing .env is not an error.
@@ -11,7 +12,19 @@ try {
   // no .env file: rely on the real environment
 }
 
-const config = loadConfig();
+let args;
+try {
+  args = parseHubArgs(process.argv.slice(2));
+} catch (error) {
+  process.stderr.write(`[zhunzou-server] ${(error as Error).message}\n`);
+  process.exit(2);
+}
+if (args.help) {
+  process.stdout.write(HUB_HELP);
+  process.exit(0);
+}
+
+const config = loadConfig({ ...process.env, ...args.env });
 const app = await buildApp({ config });
 
 /** Bounds how long a restart keeps the port closed before answering polls. */
@@ -22,6 +35,8 @@ if (!config.isProduction && config.token === 'dev-token') {
     'HUB_SECRET_TOKEN is not set; using the development token "dev-token"',
   );
 }
+
+for (const warning of warningsFor(args)) app.log.warn(warning);
 
 const shutdown = async (signal: string): Promise<void> => {
   app.log.info({ signal }, 'shutting down');

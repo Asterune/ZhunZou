@@ -8,7 +8,14 @@ export {
   deviceSocketUrl,
   loadDeviceConfig,
   type DeviceConfig,
+  type DeviceNodeOptions,
 } from './config.js';
+export {
+  buildNodeProfile,
+  scanRepos,
+  withFreeMemory,
+  type NodeProfileInput,
+} from './profile.js';
 export {
   createDeviceConnection,
   type DeviceConnection,

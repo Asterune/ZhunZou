@@ -58,7 +58,7 @@ packages/
 - [x] **Step 1.1 (`shared`)** Zod 契约：`NodeProfile{nodeId,hostname,role:'portal'|'worker'|'hybrid',tags,freeMemoryMB,maxConcurrency,repos}`；`TaskRecord{id,title,repoName,engine:'cursor'|'opencode',origin:'HUB_DISPATCH'|'LOCAL_WRAP',sessionId,managedBySupervisor,status:'QUEUED'|'RUNNING'|'BLOCKED'|'HEALING'|'DONE'|'FAILED',retryCount}`；`WsMessage` 覆盖 `NODE_REGISTER/NODE_HEARTBEAT/TASK_DISPATCH/TASK_LOG_STREAM/PERMISSION_REQUEST/SUPERVISOR_DECISION`。
 - [x] **Step 1.2 (`server/src/db`)** better-sqlite3(WAL) 建表与自动升级：`nodes`（在线状态/画像/最后心跳，扩展现有 `devices`）、`tasks`（元数据/状态机/关联节点/sessionId，扩展现有 `agent_tasks`）、`task_logs`（已有）、`learned_rules`（用户手动授权的命令匹配白名单）。
 - [x] **Step 1.3 (`server`)** REST `/api/nodes`、`/api/tasks`、`/api/tasks/dispatch`；WS Token 校验 + 30s 心跳超时置 offline；智能调度器按 `repoName` 匹配度 + `role!=='portal'` + `freeMemoryMB>2048` 分配算力节点。
-- [ ] **Step 1.4 (`bridge`)** `zz hub --port 8765 --token <secret>` 一键拉起控制面；`zz join <hub-url> --token --role --tags --scan-dir`：递归扫描 Git 仓库、每 15s 上报 `os.freemem()` 与心跳。
+- [x] **Step 1.4 (`bridge`)** `zz hub --port 8765 --token <secret>` 一键拉起控制面；`zz join <hub-url> --token --role --tags --scan-dir`：递归扫描 Git 仓库、每 15s 上报 `os.freemem()` 与心跳。
 
 ### Phase 2 — 双向适配器、Session 断点续跑、Worktree 隔离
 - [ ] **Step 2.1 (`bridge/src/git`)** `WorktreeManager`：`createWorktree(taskId,repoPath,targetBranch)` → `.zhunzou/wt/<taskId>` + `wip/zz-<taskId>`；`createCheckpoint(taskId,label)` → `git stash create` 轻量快照 hash；`squashAndRebase(taskId,mainBranch,commitMessage)`。
@@ -96,7 +96,7 @@ packages/
 | 1.1 契约层 | 完成 | `feat(shared)` | `shared/src/{node,supervisor}.ts` 新增；`constants/realtime/schemas` 扩写；tasks 新字段落库并带旧库升级迁移 |
 | 1.2 数据层 | 完成 | `feat(server)` | `devices` 加画像列、`task_logs` 加诊断列、新增 `learned_rules` 表；全仓 74 files / 617 tests 通过 |
 | 1.3 调度器与 API | 完成 | `feat(server)` | `server/src/scheduler.ts` 新增；`/api/nodes`、`/api/tasks/dispatch` 上线；全仓 76 files / 642 tests 通过 |
-| 1.4 | 未开始 | — | — |
+| 1.4 节点接入 CLI | 完成 | `feat(cli)` | `zhunzou-device join` + `main.js hub --port --token`；画像随 hello/heartbeat 上报，心跳默认 15s；全仓 81 files / 676 tests 通过 |
 | 2.1–2.3 | 未开始 | — | — |
 | 3.1–3.3 | 未开始 | — | — |
 
@@ -128,4 +128,15 @@ packages/
 - `maxConcurrency` 只在 dispatch 决策时生效（占位计数为 `PENDING/CLAIMED/HEALING`；`BLOCKED` 等人期间不占额度）；claim 侧不做容量检查，容量由节点自己决定。
 - 本步**不落 `repoPath`/`workspacePath`**：worktree 还不存在（Step 2.1），且 `repos[].path` 是节点本机绝对路径，Hub 无法推导，写进去只会被误当本地路径。落地方式已在设计文档 §6 写给 Step 2.1 遵循。
 - 测试：`test/scheduler.test.ts`（17 项：过滤原因、边界值 2048/2049 与 30s、内存缺失仍候选、空闲优先、同分按 env 字典序、原因汇总、`toRouteCandidates` 默认值与心跳折算）、`test/nodes-api.test.ts`（8 项：节点视图鉴权与画像、按仓库选节点并能被该节点 claim、无候选 409 说明原因、显式 env 直派且不调度、派给未注册 env 被拒、缺 repo/env 校验 400、满载节点不再接单）。
+
+**Step 1.4 落地说明（与蓝图的差异）**
+
+- 蓝图里的 `zz` 可执行文件在本仓库不存在，也没有必要新造：`zz hub` 落在 `@zhunzou/server` 的既有入口（`node dist/main.js hub --port 8765 --token <secret> [--host --db]`），`zz join` 落在已经持有 `/ws/device` 反连守护进程的 `@zhunzou/device`（`zhunzou-device join <hub-url> --token --env --role --tags --scan-dir --max-concurrency`）。blueprint 把这两件事写在 `bridge` 包里，但 `zhunzou-bridge` 是已发布的 npm 包，用 esbuild 打独立 bundle（`dist-standalone/cli.mjs`），不能依赖带原生 better-sqlite3 的 server，也不拥有设备身份，故按依赖事实重新归位；`run`/`capabilities` 等既有命令与参数一字未改。
+- `hub` 的 flag 不引入第二套配置：`packages/server/src/hub-cli.ts` 只做 `--port/--host/--token/--db → PORT/HOST/HUB_SECRET_TOKEN/DATABASE_PATH` 的翻译，默认值仍然只住在 `loadConfig()` 一处；非法端口直接报错退出（2），不静默回落到 8787。命令行 token 会进 `ps`，启动时用 `app.log.warn` 提示优先用环境变量。
+- `join` 与 `run` 的区别只有一件：join 必须以位置参数给出 hub URL，并把 `--role/--tags/--scan-dir/--max-concurrency` 折成 `ZHUNZOU_NODE_*` 环境变量后交给同一个 `loadDeviceConfig()`。`~/code` 按 shell 语义展开。
+- 仓库盘点住在 `packages/device/src/profile.ts`：`scanRepos()` 是**有界**遍历（默认 3 层、最多 50 个、跳过 `node_modules` 与点目录、按名去重取第一次命中、读 `.git/HEAD` 得 `defaultBranch`，`.git` 是文件即 linked worktree 也算），目录读不到就跳过而不是中断整次扫描。默认不扫描任何目录——只有 `--scan-dir`/`ZHUNZOU_SCAN_DIRS` 显式给出才落盘遍历，且 50 个上限同时是 `nodeProfileSchema.repos.max(50)` 和单帧 64 KiB 预算的保证。
+- 画像随 hello 上报，并在**每个** heartbeat 重发：仓库清单是昂贵部分，按连接（含重连）重建一次；`freeMemoryMB` 每次由 `stats.freeMemBytes` 折算，因此调度器看到的内存总是新鲜的。没有 `node` 配置的机器（如既有 `run` 部署、测试）保持原样：只报 capabilities/stats，帧里不出现 `profile`。
+- 心跳默认从 30s 改为 15s（`NODE_HEARTBEAT_REPORT_MS`），server 的 `REALTIME_HEARTBEAT_MS` 同步跟上。这不是口味问题：调度器的节点新鲜度窗口是 30s，30s 一跳等于让健康节点一半时间被判离线。两个值仍可分别用 `ZHUNZOU_HEARTBEAT_INTERVAL_MS` / `REALTIME_HEARTBEAT_MS` 覆盖，Hub 的 `ready.heartbeatMs` 依旧优先。
+- 端到端实测（临时 hub + 真 clone）：`join` 后 `/api/nodes` 报出 `role/tags/repos/maxConcurrency/freeMemoryMB/online`，`POST /api/tasks/dispatch {"repoName":"demo-repo"}` 选中内存达标的节点（`score 1555`）并把内存不足的机器以 `MEMORY` 原因排除，派单后该节点 `activeCount` 立即 +1。
+- 测试：`packages/device/test/profile.test.ts`（12 项：层级/深度边界、linked worktree、跳过 vendored 目录、同名去重、50 上限、坏目录容忍、默认画像与 nodeId、内存折算）、`test/config.test.ts`（7 项：15s 默认、worker 默认画像、env 解析、非法 role 回落、边界钳制、遗留 `AGENT_ENV`、缺 token 报错）、`test/node-profile.test.ts`（3 项：hello 带画像与清单、heartbeat 刷新内存、无 node 配置不报画像）、`test/join.test.ts`（4 项：位置参数 hub、flag → 环境、帮助文本、`run` 不变）、`packages/server/test/hub-cli.test.ts`（8 项：命令词与裸 flag、env 直通 `loadConfig`、无 flag 不改环境、端口校验、缺值拒绝、token 泄露告警、帮助）。
 

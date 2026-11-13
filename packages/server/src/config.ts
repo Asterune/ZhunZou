@@ -1,6 +1,8 @@
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { NODE_HEARTBEAT_REPORT_MS } from '@zhunzou/shared';
+
 /** Repository root, regardless of whether we run from src/ or dist/. */
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -363,7 +365,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     ),
     realtimeHeartbeatMs: readInt(
       env.REALTIME_HEARTBEAT_MS,
-      30_000,
+      // Two beats must fit inside the node routing window used by the
+      // scheduler, otherwise a healthy node looks offline half the time.
+      NODE_HEARTBEAT_REPORT_MS,
       { min: 5_000, max: 300_000 },
     ),
     realtimeHeartbeatTimeoutMs: readInt(
