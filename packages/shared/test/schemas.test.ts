@@ -182,6 +182,29 @@ describe('task schemas', () => {
     expect(completeTaskSchema.safeParse({ status: 'CANCELLED' }).success).toBe(false);
   });
 
+  it('accepts only an absolute workspace path with the completion', () => {
+    expect(
+      completeTaskSchema.safeParse({
+        status: 'DONE',
+        workspacePath: '/srv/code/pte-dojo/.zhunzou/wt/12',
+      }).success,
+    ).toBe(true);
+    expect(
+      completeTaskSchema.safeParse({
+        status: 'DONE',
+        workspacePath: 'C:\\code\\pte-dojo\\.zhunzou\\wt\\12',
+      }).success,
+    ).toBe(true);
+    expect(
+      completeTaskSchema.safeParse({ status: 'DONE', workspacePath: '.zhunzou/wt/12' })
+        .success,
+    ).toBe(false);
+    expect(
+      completeTaskSchema.safeParse({ status: 'DONE', workspacePath: '../elsewhere' })
+        .success,
+    ).toBe(false);
+  });
+
   it('classifies task statuses', () => {
     expect(isActiveTaskStatus('PENDING')).toBe(true);
     expect(isActiveTaskStatus('CLAIMED')).toBe(true);

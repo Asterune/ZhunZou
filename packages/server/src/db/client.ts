@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
   session_id TEXT,
   managed_by_supervisor INTEGER NOT NULL DEFAULT 0,
   retry_count INTEGER NOT NULL DEFAULT 0,
+  workspace_path TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   claimed_at INTEGER,
@@ -378,6 +379,7 @@ export function createDatabase(dbPath: string): {
   ensureColumn(sqlite, 'agent_tasks', 'session_id', 'TEXT');
   ensureColumn(sqlite, 'agent_tasks', 'managed_by_supervisor', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(sqlite, 'agent_tasks', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(sqlite, 'agent_tasks', 'workspace_path', 'TEXT');
   // Indexed only after the column exists: an upgrade from a table that predates
   // it would otherwise abort on the missing column.
   sqlite.exec('CREATE INDEX IF NOT EXISTS idx_agent_tasks_repo ON agent_tasks(repo_name);');

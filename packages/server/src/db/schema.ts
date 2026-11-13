@@ -274,6 +274,8 @@ export const agentTasks = sqliteTable(  'agent_tasks',
       .default(0),
     /** L2 self-healing retries so far; the circuit breaker compares it to its ceiling. */
     retryCount: integer('retry_count').notNull().default(0),
+    /** Absolute path on the node that ran it; the hub only stores the string. */
+    workspacePath: text('workspace_path'),
 
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),

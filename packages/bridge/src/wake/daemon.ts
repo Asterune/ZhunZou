@@ -1,6 +1,7 @@
 import type { AgentTask, HeartbeatInput } from '@zhunzou/shared';
 
 import type { BridgeConfig } from '../config.js';
+import { WorktreeManager } from '../git/worktree.js';
 import type { HubApi } from '../hub-client.js';
 import type { PresenceReporter } from '../presence.js';
 import type { WakeContext } from './adapters.js';
@@ -12,6 +13,7 @@ import {
 } from './adapters.js';
 import type { WakeConfig } from './config.js';
 import { createLogSink } from './log-sink.js';
+import { resolveWorkspace, type WorkspaceIsolation } from './isolation.js';
 
 export interface WakeDaemonOptions {
   client: HubApi;
@@ -19,6 +21,8 @@ export interface WakeDaemonOptions {
   wake: WakeConfig;
   /** Injected adapter (tests / advanced callers). Defaults to auto-detection. */
   adapter?: WakeAdapter;
+  /** Injected worktree isolation; defaults to on/off from `wake.worktrees`. */
+  isolation?: WorkspaceIsolation;
   /** Run a single poll cycle and exit (used by smoke tests). */
   once?: boolean;
   /** Shared presence so task/chat loops do not overwrite each other. */
@@ -74,19 +78,27 @@ export async function runWakeDaemon(options: WakeDaemonOptions): Promise<number>
   };
 
   const adapter = options.adapter ?? (await resolveWakeAdapter(wake));
+  // The switch decides whether tasks are isolated at all; an injected manager
+  // only says how, so a disabled config can never isolate by accident.
+  const isolation = wake.worktrees
+    ? (options.isolation ?? new WorktreeManager({ repoPath: wake.cwd }))
+    : undefined;
   // Report the client we actually resolved, not the `auto` placeholder, so an
   // OpenCode wake loop does not label its agent "other" on the dashboard.
   hub.agentKind = agentKindForAdapter(adapter.name);
   log(
-    `wake adapter=${adapter.name} mode=${adapter.delivery} env=${hub.agentEnv} cwd=${wake.cwd}`,
+    `wake adapter=${adapter.name} mode=${adapter.delivery} env=${hub.agentEnv} cwd=${wake.cwd}` +
+      (isolation ? ' worktrees=on' : ''),
   );
 
   if (adapter.delivery === 'notify') {
+    // A notify adapter never claims a task, so there is nothing to isolate.
     return runNotifyLoop(adapter, { ...options, context, log, logError, sleep });
   }
 
   return runClaimLoop(adapter, {
     ...options,
+    isolation,
     context,
     log,
     logError,
@@ -118,7 +130,7 @@ async function runClaimLoop(
   adapter: WakeAdapter,
   internals: LoopInternals,
 ): Promise<number> {
-  const { client, hub, wake, context, log, logError, sleep } = internals;
+  const { client, hub, wake, isolation, context, log, logError, sleep } = internals;
   const idlePatch = {
     status: 'Idle' as const,
     currentTask: '等待下发任务',
@@ -154,7 +166,19 @@ async function runClaimLoop(
 
     const sink = createTaskLogSink(client, task.id, logError);
     sink.push('system', `[zhunzou] 任务 #${task.id} 开始执行\n`);
-    const taskContext: WakeContext = { ...context, reportLog: sink.push };
+
+    const workspace = await resolveWorkspace({
+      ...(isolation ? { isolation } : {}),
+      cwd: wake.cwd,
+      taskId: task.id,
+      ...(task.repoName ? { repoName: task.repoName } : {}),
+      log,
+    });
+    const taskContext: WakeContext = {
+      ...context,
+      config: { ...wake, cwd: workspace.cwd },
+      reportLog: sink.push,
+    };
 
     try {
       const outcome = await adapter.wake(task, taskContext);
@@ -165,7 +189,12 @@ async function runClaimLoop(
           `\n[zhunzou] 任务 #${task.id} → ${outcome.completion.status}\n`,
         );
         await sink.close();
-        await client.completeTask(task.id, outcome.completion);
+        await client.completeTask(task.id, {
+          ...outcome.completion,
+          ...(workspace.workspacePath
+            ? { workspacePath: workspace.workspacePath }
+            : {}),
+        });
         log(`任务 #${task.id} → ${outcome.completion.status}`);
         await beat(client, idlePatch, internals.presence);
       } else {

@@ -340,6 +340,7 @@ function toTask(row: AgentTaskRow): AgentTask {
     ...(row.sessionId ? { sessionId: row.sessionId } : {}),
     managedBySupervisor: row.managedBySupervisor !== 0,
     retryCount: row.retryCount ?? 0,
+    ...(row.workspacePath ? { workspacePath: row.workspacePath } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ...(row.claimedAt !== null ? { claimedAt: row.claimedAt } : {}),
@@ -3280,6 +3281,7 @@ export class TicketRepository implements TicketStore {
       .set({
         status: input.status,
         result: input.result ?? null,
+        workspacePath: input.workspacePath ?? null,
         completedAt: now,
         updatedAt: now,
       })

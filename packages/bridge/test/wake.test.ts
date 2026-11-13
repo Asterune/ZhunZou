@@ -51,6 +51,7 @@ const wakeConfig: WakeConfig = {
   command: 'true',
   extraArgs: [],
   cwd: process.cwd(),
+  worktrees: false,
   runTimeoutMs: 5_000,
   pollTimeoutMs: 1_000,
   notifyIntervalMs: 2_000,

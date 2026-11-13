@@ -33,6 +33,8 @@ export interface WakeConfig {
   chatModel?: string;
   /** Working directory handed to run adapters. */
   cwd: string;
+  /** Run each claimed task in its own git worktree instead of the shared checkout. */
+  worktrees: boolean;
   /** How long a `run` adapter may execute before it is killed. */
   runTimeoutMs: number;
   /** Long-poll window per task claim. */
@@ -63,6 +65,10 @@ function readAdapter(raw: string | undefined): WakeAdapterName {
     : 'auto';
 }
 
+function readFlag(raw: string | undefined): boolean {
+  return ['1', 'true', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
+}
+
 /**
  * Parse wake-daemon settings from the environment.
  *
@@ -86,6 +92,7 @@ export function loadWakeConfig(
     ...(chatModel ? { chatModel } : {}),
     extraArgs,
     cwd: resolve((env.ZHUNZOU_WAKE_CWD ?? '').trim() || cwd),
+    worktrees: readFlag(env.ZHUNZOU_WORKTREES),
     runTimeoutMs: clamp(
       readInt(env.ZHUNZOU_WAKE_RUN_TIMEOUT_MS, DEFAULT_RUN_TIMEOUT_MS),
       5_000,

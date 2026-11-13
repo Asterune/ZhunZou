@@ -40,6 +40,13 @@ const envSchema = z.string().trim().min(1).max(64);
 const projectNameSchema = z.string().trim().min(1).max(128);
 const shortTextSchema = z.string().trim().min(1).max(500);
 const longTextSchema = z.string().trim().min(1).max(2000);
+/** An absolute path on the machine that reported it; the hub never resolves it. */
+const workspacePathSchema = z
+  .string()
+  .trim()
+  .min(2)
+  .max(1024)
+  .regex(/^([/\\]|[A-Za-z]:[\\/])/, 'workspacePath must be an absolute path');
 
 /* ------------------------------------------------------------------ */
 /* Ticket                                                              */
@@ -431,6 +438,12 @@ export const agentTaskSchema = z.object({
   managedBySupervisor: z.boolean().default(false),
   /** L2 self-healing retries so far; the circuit breaker compares it to its ceiling. */
   retryCount: z.number().int().nonnegative().default(0),
+  /**
+   * Absolute path of the workspace the edge ran this task in, as reported by
+   * that machine. The hub stores the string and never resolves it — a worktree
+   * path only means something on the node that created it.
+   */
+  workspacePath: workspacePathSchema.optional(),
 
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
@@ -498,6 +511,8 @@ export const nextTaskQuerySchema = z.object({
 export const completeTaskSchema = z.object({
   status: z.enum(['DONE', 'FAILED']),
   result: z.string().trim().max(4000).optional(),
+  /** Where the edge actually ran it, so the dashboard can link back to it. */
+  workspacePath: workspacePathSchema.optional(),
 });
 
 /**

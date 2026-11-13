@@ -61,7 +61,7 @@ packages/
 - [x] **Step 1.4 (`bridge`)** `zz hub --port 8765 --token <secret>` 一键拉起控制面；`zz join <hub-url> --token --role --tags --scan-dir`：递归扫描 Git 仓库、每 15s 上报 `os.freemem()` 与心跳。
 
 ### Phase 2 — 双向适配器、Session 断点续跑、Worktree 隔离
-- [ ] **Step 2.1 (`bridge/src/git`)** `WorktreeManager`：`createWorktree(taskId,repoPath,targetBranch)` → `.zhunzou/wt/<taskId>` + `wip/zz-<taskId>`；`createCheckpoint(taskId,label)` → `git stash create` 轻量快照 hash；`squashAndRebase(taskId,mainBranch,commitMessage)`。
+- [x] **Step 2.1 (`bridge/src/git`)** `WorktreeManager`：`createWorktree(taskId,repoPath,targetBranch)` → `.zhunzou/wt/<taskId>` + `wip/zz-<taskId>`；`createCheckpoint(taskId,label)` 保存现场（落地改为 wip 分支上的 checkpoint 提交，见 §5 说明，`git stash create` 收不到未跟踪文件）；`squashAndRebase(taskId,mainBranch,commitMessage)`。
 - [ ] **Step 2.2 (`bridge/src/adapters`)** `CursorAdapter`（`--output-format stream-json` 提取 `tool_call`/`permission_required`/`sessionId`）与 `OpenCodeAdapter`（ACP 归一化）；挂起时记录 `sessionId` 并释放子进程，恢复决策后用 `--resume <sessionId>` 原地续跑。
 - [ ] **Step 2.3 (`bridge/src/wrappers`)** `zz run <cursor|opencode> [args...]`：本地交互 + 注册 `origin:'LOCAL_WRAP'` 任务；监听 stdin 活动，连续 5 分钟无操作且卡在确认/报错时置 `managedBySupervisor=true` 触发 Hub 接管。
 
@@ -97,7 +97,8 @@ packages/
 | 1.2 数据层 | 完成 | `feat(server)` | `devices` 加画像列、`task_logs` 加诊断列、新增 `learned_rules` 表；全仓 74 files / 617 tests 通过 |
 | 1.3 调度器与 API | 完成 | `feat(server)` | `server/src/scheduler.ts` 新增；`/api/nodes`、`/api/tasks/dispatch` 上线；全仓 76 files / 642 tests 通过 |
 | 1.4 节点接入 CLI | 完成 | `feat(cli)` | `zhunzou-device join` + `main.js hub --port --token`；画像随 hello/heartbeat 上报，心跳默认 15s；全仓 81 files / 676 tests 通过 |
-| 2.1–2.3 | 未开始 | — | — |
+| 2.1 Worktree 隔离 | 完成 | `feat(bridge)` | `bridge/src/git/worktree.ts` + wake 循环 `ZHUNZOU_WORKTREES=1`（默认关）；`agent_tasks.workspace_path` 落库；全仓 85 files / 714 tests 通过 |
+| 2.2–2.3 | 未开始 | — | — |
 | 3.1–3.3 | 未开始 | — | — |
 
 **Step 1.1 落地说明（与蓝图的差异）**
@@ -139,4 +140,17 @@ packages/
 - 心跳默认从 30s 改为 15s（`NODE_HEARTBEAT_REPORT_MS`），server 的 `REALTIME_HEARTBEAT_MS` 同步跟上。这不是口味问题：调度器的节点新鲜度窗口是 30s，30s 一跳等于让健康节点一半时间被判离线。两个值仍可分别用 `ZHUNZOU_HEARTBEAT_INTERVAL_MS` / `REALTIME_HEARTBEAT_MS` 覆盖，Hub 的 `ready.heartbeatMs` 依旧优先。
 - 端到端实测（临时 hub + 真 clone）：`join` 后 `/api/nodes` 报出 `role/tags/repos/maxConcurrency/freeMemoryMB/online`，`POST /api/tasks/dispatch {"repoName":"demo-repo"}` 选中内存达标的节点（`score 1555`）并把内存不足的机器以 `MEMORY` 原因排除，派单后该节点 `activeCount` 立即 +1。
 - 测试：`packages/device/test/profile.test.ts`（12 项：层级/深度边界、linked worktree、跳过 vendored 目录、同名去重、50 上限、坏目录容忍、默认画像与 nodeId、内存折算）、`test/config.test.ts`（7 项：15s 默认、worker 默认画像、env 解析、非法 role 回落、边界钳制、遗留 `AGENT_ENV`、缺 token 报错）、`test/node-profile.test.ts`（3 项：hello 带画像与清单、heartbeat 刷新内存、无 node 配置不报画像）、`test/join.test.ts`（4 项：位置参数 hub、flag → 环境、帮助文本、`run` 不变）、`packages/server/test/hub-cli.test.ts`（8 项：命令词与裸 flag、env 直通 `loadConfig`、无 flag 不改环境、端口校验、缺值拒绝、token 泄露告警、帮助）。
+
+**Step 2.1 落地说明（与蓝图的差异）**
+
+设计先行，见 `docs/design/worktree-2.1.md`（含现状核实、路径与命名规则、三个方法的语义边界与测试矩阵）。
+
+- 蓝图把这块画在 `packages/cli-node/src/git`，本仓库没有 cli-node；真正执行任务的是 bridge 的 wake 循环，所以模块落在 `packages/bridge/src/git/worktree.ts`，目录名保留蓝图的 `git/`。
+- **`createCheckpoint` 没有按蓝图用 `git stash create`**：真实 git 测试直接证伪——`stash create` 看不见未跟踪文件（Apple Git 2.37 上 `-u/--include-untracked` 被静默忽略，只有新文件的工作树返回空 hash 且不报错），而 agent 的产出大多是新文件，蓝图原写法会"快照成功但什么都没存"。落地改为在一次性的 `wip/zz-<taskId>` 分支上 `git add -A --` + `git commit -m "zhunzou:<id> checkpoint: <label>"`：对象因被分支 ref 引用天然可达（不需要 `stash store`），不破坏现场，回滚是 `git checkout <hash> -- .`。
+- `squashAndRebase` **不动 `mainBranch`**：合并进主干是"发布"，蓝图自己把它留给 Phase 4 的一键审批按钮；库默认改共享分支等于把不可逆操作藏进一次调用。返回 `{base, commit, mainBranch, workspacePath, branch}`，调用方要发布只需对返回的 commit 做一次 `merge --ff-only`。脏树直接抛 `WORKTREE_DIRTY` 而不是替用户提交未知文件；写步失败按 `rebase --abort` + `reset --hard <原 HEAD>` 还原后再报错。
+- 所有 git 调用都是 `spawn('git', [...])` 数组 argv，永不 `shell:true`；`taskId` 必须匹配 `^[A-Za-z0-9._-]{1,64}$`、分支名不得以 `-` 开头或含 `..`，提交信息用融合 `-m<text>` 传递，避免把任意文本变成 git 选项。
+- worktree 建在仓库内部会让主检出 `git status` 多出 `?? .zhunzou/`（git 自己不会忽略它，实测确认），首次创建前把 `/.zhunzou/` 追加进 `.git/info/exclude`——本机生效、不会被提交，否则主检出里的 `git add -A` 会把别人的任务工作区一起暂存。写失败不影响隔离，静默跳过。
+- 调用方是 wake 循环里的 `resolveWorkspace()`（`bridge/src/wake/isolation.ts`）：`ZHUNZOU_WORKTREES=1` 才开，默认关闭且此时**任何注入都不隔离**（回归保护）；任务带 `repoName` 时先比对 cwd 所在仓库目录名，对不上就照原目录执行并记日志；建 worktree 失败也只记日志、按原目录执行——丢任务比不隔离更糟。隔离成功时 `adapter.wake` 的 cwd 换成 worktree 路径，完成回报带上绝对 `workspacePath`。
+- Hub 侧只多一列 `agent_tasks.workspace_path`（`ensureColumn` 升级，索引留待有查询需求）；`completeTaskSchema.workspacePath` 用正则强制绝对路径（POSIX 或 `C:\`），Hub 存字符串不做任何推导——这与 Step 1.3 §6 的约定一致。UI 未加字段（数据层先留位）。
+- 测试：`packages/bridge/test/git-worktree.test.ts`（18 项，fake runner 断 argv 序列与状态机：幂等复用、`-b` 取舍、非法 id/ref 在任何 git 调用之前拒绝、checkpoint 只 add+commit、脏树零写操作、rebase 失败还原、只写一次 exclude）、`test/git-worktree-repo.test.ts`（8 项，真实 git，缺 git 时整文件 skip：分支与目录、主检出不受污染、未跟踪文件进快照且可取回、squash 后主干不变而 WIP 成一条、脏树拒绝）、`test/wake-worktrees.test.ts`（7 项：`ZHUNZOU_WORKTREES` 解析与开关默认关、关闭时原 cwd 回归、开启时 cwd 与回报路径、repoName 不匹配、匹配、失败回落、用 daemon 自建的真实 manager 建出 worktree）、`packages/shared/test/schemas.test.ts` 补绝对/相对路径判定、`packages/server/test/task-workspace.test.ts`（4 项：落库回读、不传保持 NULL、相对路径 400、旧库升级后可写）。
 
