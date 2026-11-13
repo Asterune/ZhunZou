@@ -32,6 +32,7 @@ import {
   createEnrollmentSchema,
   createFleetBrowseSchema,
   createFleetWorkspaceSchema,
+  createLearnedRuleSchema,
   createLocalTaskSchema,
   createTaskSchema,
   createTerminalSchema,
@@ -51,6 +52,7 @@ import {
   listChatSessionsQuerySchema,
   listExchangesQuerySchema,
   listFleetQuerySchema,
+  listLearnedRulesQuerySchema,
   listRuleCandidatesQuerySchema,
   listTaskEventsQuerySchema,
   listTaskLogsQuerySchema,
@@ -80,6 +82,7 @@ import {
   terminalCloseSchema,
   ticketIdSchema,
   updateAgentSchema,
+  updateLearnedRuleSchema,
   updateRulesSchema,
   waitQuerySchema,
 } from '@zhunzou/shared';
@@ -106,6 +109,11 @@ import {
   evaluateDecision,
   syntheticTicket,
 } from './decision-policy.js';
+import {
+  approveOptionFor,
+  evaluateL1,
+  selectPermissionAction,
+} from './supervisor/guard.js';
 import { allocateEnv } from './env-allocator.js';
 import {
   ApiError,
@@ -162,6 +170,8 @@ declare module 'fastify' {
 }
 
 const paramsSchema = z.object({ id: ticketIdSchema });
+/** Learned rule ids are opaque (`lr-…`), not ticket numbers. */
+const learnedRuleParamsSchema = z.object({ id: z.string().trim().min(1).max(64) });
 const chatMessageParamsSchema = z.object({
   id: ticketIdSchema,
   messageId: ticketIdSchema,
@@ -526,10 +536,80 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   // -----------------------------------------------------------------
   // Meta-Agent pipeline (runs after the create response has been sent)
   // -----------------------------------------------------------------
+
+  /**
+   * L1: answer a parked permission request from rules, not from a model.
+   *
+   * Returns true when the ticket left the pipeline here. Anything the
+   * deterministic layer cannot name — no linked task, no recent request, a
+   * ticket shape it does not recognise — is reported as "not mine" and the
+   * meta review below runs exactly as it always has.
+   */
+  const rulePermission = (ticket: DecisionTicket): boolean => {
+    if (!ticket.taskId) return false;
+    const taskId = parseTicketId(ticket.taskId);
+    const task = repo.getTask(taskId);
+    if (!task) return false;
+
+    const events = repo.listTaskEvents(taskId, { after: 0, limit: 500 }).events;
+    const action = selectPermissionAction(events, {
+      ticketCreatedAt: ticket.createdAt,
+      now: Date.now(),
+    });
+    if (!action) return false;
+
+    const ruling = evaluateL1(action, {
+      rules: repo.listLearnedRules({ enabledOnly: true }),
+      ...(task.workspacePath ? { taskWorkspaceRoot: task.workspacePath } : {}),
+      warn: (message) =>
+        app.log.warn({ ticket: formatTicketId(ticket.id) }, message),
+    });
+    if (!ruling) return false;
+
+    const reason = `[L1] ${ruling.reason}`;
+    if (ruling.decision !== 'APPROVE') {
+      const parked = repo.markPendingHuman(Number(ticket.id), reason);
+      if (parked) {
+        app.log.info(
+          { ticket: formatTicketId(parked.id), reason: ruling.reason },
+          'supervisor L1 parked a request for a human',
+        );
+        notifyTicketPendingHuman(notifiers, parked, app.log, approvalUrlFor(parked));
+        emitPluginEvent(plugins, 'onTicketPendingHuman', parked, app.log);
+      }
+      return true;
+    }
+
+    const option = approveOptionFor(ticket);
+    if (!option) {
+      // Approved, but nobody has offered us a button to press. Guessing which
+      // option means "yes" would be the one way this layer could do harm.
+      app.log.info(
+        { ticket: formatTicketId(ticket.id), action: ruling.reason },
+        'supervisor L1 approved a ticket with options it does not recognise',
+      );
+      return false;
+    }
+    if (ruling.ruleId) repo.recordLearnedRuleHit(ruling.ruleId);
+
+    const resolved = repo.markAutoResolved(Number(ticket.id), option, reason);
+    if (resolved) {
+      bus.publish(resolved);
+      emitPluginEvent(plugins, 'onTicketResolved', resolved, app.log);
+      app.log.info(
+        { ticket: formatTicketId(resolved.id), option, reason: ruling.reason },
+        'supervisor L1 auto-resolved a permission ticket',
+      );
+    }
+    return true;
+  };
+
   const runMetaReview = async (ticketId: number): Promise<void> => {
     if (closing) return;
     const ticket = repo.get(ticketId);
     if (!ticket || ticket.status !== 'PENDING_META') return;
+
+    if (rulePermission(ticket)) return;
 
     try {
       const { content: rules } = rulesStore.read();
@@ -2982,6 +3062,44 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         }
 
         return { candidate: updated };
+      });
+
+      // -----------------------------------------------------------------
+      // Allowances the L1 layer spends on behalf of a human.
+      //
+      // Distinct from /rules above: those are prose the meta-agent reads,
+      // these are patterns the deterministic layer matches against a live
+      // permission request. Because one match now means a run resumes
+      // unattended, the table has to be readable and switchable at will.
+      // -----------------------------------------------------------------
+      api.get('/learned-rules', async (request) => {
+        requireAdmin(request);
+        const query = listLearnedRulesQuerySchema.parse(request.query ?? {});
+        return { rules: repo.listLearnedRules(query) };
+      });
+
+      api.post('/learned-rules', async (request, reply) => {
+        requireAdmin(request);
+        const input = createLearnedRuleSchema.parse(request.body);
+        const rule = repo.addLearnedRule(input);
+        app.log.info(
+          { rule: rule.id, pattern: rule.pattern, action: rule.action },
+          'learned rule granted',
+        );
+        return reply.code(201).send(rule);
+      });
+
+      api.patch('/learned-rules/:id', async (request) => {
+        requireAdmin(request);
+        const { id } = learnedRuleParamsSchema.parse(request.params);
+        const input = updateLearnedRuleSchema.parse(request.body);
+        const updated = repo.setEnabledLearnedRule(id, input.enabled);
+        if (!updated) throw new NotFoundError(`learned rule ${id} not found`);
+        app.log.info(
+          { rule: id, enabled: updated.enabled },
+          'learned rule switched',
+        );
+        return updated;
       });
     },
     { prefix: '/api' },

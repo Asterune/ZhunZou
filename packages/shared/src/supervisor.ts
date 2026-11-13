@@ -166,9 +166,26 @@ export const createLearnedRuleSchema = z
 
 export type CreateLearnedRuleInput = z.input<typeof createLearnedRuleSchema>;
 
+/**
+ * Payload accepted by PATCH /api/learned-rules/:id.
+ *
+ * Only the switch is movable: an allowance that turns out to be wrong has to
+ * be revocable in one call, and the history of what it decided stays put.
+ */
+export const updateLearnedRuleSchema = z.object({
+  enabled: z.boolean(),
+});
+
+export type UpdateLearnedRuleInput = z.infer<typeof updateLearnedRuleSchema>;
+
 /** Query accepted by GET /api/learned-rules. */
 export const listLearnedRulesQuerySchema = z.object({
-  enabledOnly: z.coerce.boolean().default(false),
+  // `z.coerce.boolean()` reads the string "false" as true, which is the one
+  // answer a caller must never get by accident.
+  enabledOnly: z
+    .enum(['true', 'false', '1', '0'])
+    .default('false')
+    .transform((value) => value === 'true' || value === '1'),
   action: z.enum(LEARNED_RULE_ACTIONS).optional(),
 });
 

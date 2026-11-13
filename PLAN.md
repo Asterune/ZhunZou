@@ -67,7 +67,7 @@ packages/
 
 ### Phase 3 — Supervisor Agent（降噪、分级风控、自愈、自学习）
 - [x] **Step 3.1 (`bridge/src/sanitizer`)** `LogSanitizer`：剥离 ANSI；折叠重复进度条/构建输出；提炼 `Error:`、TS 错误码、单测断言与堆栈，输出 ≤2000 字符高密度诊断。
-- [ ] **Step 3.2 (`server/src/supervisor/guard.ts`)** L1 确定性风控：只读命令/单测编译/工作区内源码变更 0ms 放行；`rm -rf`、跨工作区、`.env*` 与 `~/.ssh/*`、`git push -f`、`git reset --hard` 0ms 拦截挂起；查 `learned_rules` 正则/通配命中自动放行。
+- [x] **Step 3.2 (`server/src/supervisor/guard.ts`)** L1 确定性风控：只读命令/单测编译/工作区内源码变更 0ms 放行；`rm -rf`、跨工作区、`.env*` 与 `~/.ssh/*`、`git push -f`、`git reset --hard` 0ms 拦截挂起；查 `learned_rules` 正则/通配命中自动放行。
 - [ ] **Step 3.3 (`server/src/supervisor/healer.ts`)** L2 轻量 LLM 结构化诊断（`decision:'APPROVE'|'RETRY_WITH_FIX'|'ESCALATE_TO_HUMAN'` + `diagnosisSummary`≤50 字 + `fixPrompt`）；熔断：`retryCount>=3`、连续两次报错相似度 >85% 或 Git diff hash 无变动 → `BLOCKED`。
 
 ### Phase 4 — 上帝视角控制台与移动端闭环（本次范围外，待后续）
@@ -99,8 +99,10 @@ packages/
 | 1.4 节点接入 CLI | 完成 | `feat(cli)` | `zhunzou-device join` + `main.js hub --port --token`；画像随 hello/heartbeat 上报，心跳默认 15s；全仓 81 files / 676 tests 通过 |
 | 2.1 Worktree 隔离 | 完成 | `feat(bridge)` | `bridge/src/git/worktree.ts` + wake 循环 `ZHUNZOU_WORKTREES=1`（默认关）；`agent_tasks.workspace_path` 落库；全仓 85 files / 714 tests 通过 |
 | 2.2 引擎事件与续跑 | 完成 | `feat(bridge)` | `wake/events.ts` + `wake/event-sink.ts` + `task_events` 表与两条路由；park 走 ticket + 重排；`shared` 越界判定改为只能收紧；全仓 91 files / 782 tests 通过 |
-| 2.3 | 未开始 | — | — |
-| 3.1–3.3 | 未开始 | — | — |
+| 2.3 伴随与托管 | 完成 | `feat(bridge)` | `zz run` 包裹本地 CLI + 空闲自动托管；`POST /tasks/local`、`takeover` 留痕；全仓 95 files / 839 tests 通过 |
+| 3.1 日志降噪 | 完成 | `feat(bridge)` | `bridge/src/sanitizer/*` 四段（ANSI/进度折叠/错误提炼/状态机）；`errorSignature` 第一个写入方；全仓 99 files / 901 tests 通过 |
+| 3.2 L1 确定性风控 | 完成 | `feat(server)` | `server/src/supervisor/guard.ts` 新增；`runMetaReview` 前插确定性前置；`/api/learned-rules` 三条路由上线；全仓 103 files / 970 tests 通过 |
+| 3.3 L2 诊断与熔断 | 未开始 | — | — |
 
 **Step 1.1 落地说明（与蓝图的差异）**
 
@@ -204,3 +206,19 @@ packages/
 - 范围外：L1 确定性风控（Step 3.2）、L2 诊断与熔断（Step 3.3，含 `diagnosis`/`diffHash` 的写入方）、密钥脱敏（降噪器只做**删除与折叠**，不猜敏感值）、看板展示（延续"数据层留字段、UI 不先动"）。
 - 测试：新增 `packages/bridge/test/sanitizer-ansi.test.ts`（8 项，含跨 chunk 半截 OSC/CSI 与 `pending` 续喂）、`sanitizer-progress.test.ts`（9 项，形状键与 `collapseRuns` 纯函数）、`sanitizer-errors.test.ts`（15 项：四类错误的签名形状、重试可比、业务栈帧选取、预算与省略标注）、`sanitizer-log.test.ts`（19 项状态机：一行延迟、`\r` 末帧、跨 feed 折叠、护栏、逐流隔离、`describe`/`summarize`）；`log-sink.test.ts` 追加 5 项接线用例，`wrappers-runner.test.ts` 追加 3 项（中继原样 / 签名为真 / 结论有界），`wake.test.ts` 追加 3 项（派单循环降噪 / FAILED 走诊断 / 无输出回落）。全仓 99 files / 901 tests（本步 +4 files / +62 tests）与 `pnpm typecheck` 全绿。
 
+
+**Step 3.2 落地说明（与蓝图的差异）**
+
+设计先行，见 `docs/design/supervisor-guard-3.2.md`（含 17 条带证据的现状核实、落点与"明确不做"、判定顺序语义、与既有判官/状态机共存口径、安全边界与 D/R/A/G/C/P/O/S/L 测试矩阵）。
+
+- **L1 是既有判官内部的一层，不是第三个判官**：蓝图 3.2 读起来像"新装一个风控模块"，但 `decision-policy.ts` 文件头自称"系统里只有一个 policy"，而工单路线唯一的评审入口是 `app.ts runMetaReview`。所以 L1 以 `rulePermission(ticket)` 的形式插在 `metaAgent.review(...)` **之前**并只追加：返回 `undefined` 时后面的代码逐字节等价于本步之前。`decision-policy.ts` 一行未改——它的输入是散文 `proposal`（`decisionRequestSchema` 里根本没有结构化 action），给人话写命令分类器只会生产假阳性放行。代价写进矩阵 S9：散文路线仍完全依赖 LLM + 既有 `risk==='destructive'` 硬规则。
+- **不需要新协议字段，也不需要新列**：设计初稿假设要把"被请求的动作"送进工单或 WS 帧，实测 `task_events.action` 里已经存着 parse 过的 `PermissionAction`，票在建票瞬间就挂了 `taskId`；顺序也天然成立——`wake/daemon.ts:283 await eventSink.close()` 在 `:291 parkTask(...)` 之前，`wrappers/runner.ts:224` 的 eventSink 在 `:328` 建票之前。所以本步只做**读**：`selectPermissionAction` 从事件尾部挑出"这张票因它而开"的那条。`permission.request` WS 帧（`realtime.ts:89`）仍无生产方、`device-router.ts` 仍不接它——没有生产方的输入接进来只会喂给真风控，缺口在文档 §2 记录、不在此填。
+- **containment 判据被实现推翻过一次**：初稿想用 `action.outsideWorkspace` 直接判越界，但 shared 的 transform 把**相对路径**也算作越界（那是给 UI 打红旗的正确语义，作为判决会产生假拒绝——`paths:['src/a.ts']` 是最普通的编辑）。落地改为 `guard.ts` 自己按绝对路径重算：能证明出根才 DENY，纯相对路径落灰区（既不放行也不拒绝，A11/A12）。`outsideWorkspace:false` 的谎报仍翻不过来，因为 `evaluateL1` 压根不读那个旗标（D7）。Hub 记录的 `task.workspace_path` 优先于节点自报的 `workspaceRoot`，冲突即 DENY（D8/S7）——谎报换不来放行，只能换来更严。
+- **DENY 的价值是剥夺 LLM 的自动批准权，不是改变终态**：两种判决都落在人能看到的地方，但灰区经 LLM 有可能被自动批掉，`[L1] DENY` 直接 `markPendingHuman`，模型再也没有机会碰它。同时灰区**永不自动拒绝**——错拒会把自治跑成人工排队，蓝图 §1.3 的成本模型就不成立。硬拒（敏感目标/毁灭形态/越界）排在 learned ALLOW 之前，顺序本身就是安全属性：人工写一条 `rm *` 的 ALLOW 也放不过 `rm -rf /`（D10）。
+- **approve 词表是闭集**：`approve`/`y`/`A`（大小写不敏感）对应park、本地托管、决策票三套已知形状，且该选项 `risk!=='destructive'`。代理经 MCP 自造选项的工单不进 L1（O6/S8）：判据命中但没有可按的按钮时，只记日志、交回 LLM，绝不猜"哪个是同意"。想扩大覆盖面应当去规定工单形状，而不是去猜按钮语义。
+- **shared 侧只加不减，且其中一处是修 bug**：新增 `updateLearnedRuleSchema`（PATCH 只能动 `enabled`）；`listLearnedRulesQuerySchema.enabledOnly` 从 `z.coerce.boolean()` 改为显式枚举 + transform——`"false"` 被读成 `true` 在查询串里是"显示全部"变成"只显示启用的"，本步之前没有路由所以没人踩得到，现在它决定放行与否必须修。矩阵 L4 专门锁 `?enabledOnly=false` 与全量等长。
+- **兑现契约里承诺却不存在的路由**：`supervisor.ts:169` 注释写着"Query accepted by GET /api/learned-rules"，而 `app.ts` 路由全表里没有它。三条 `requireAdmin` 路由（GET/POST/PATCH）上线后，`listLearnedRules`、`addLearnedRule`、`recordLearnedRuleHit`、`setEnabledLearnedRule` 四个仓储方法第一次有了生产调用方；`PATCH` 是安全阀——L1 一旦据 ALLOW 规则自动放行，人必须能在 0 延迟内关掉它（S4），只做开关不做 DELETE 是为了让规则表可回滚、历史 hits 保留。规则 id 是不透明串不是工单号，所以另配 `learnedRuleParamsSchema`，不复用 `paramsSchema`。
+- **两处判据在实现中被证伪后修正**（矩阵按实现改写，不是断言放松）：① `isReadOnlyGit` 原来拒绝任何 `-` 开头的 token，于是 `git status --porcelain` 被当成灰区；改为只拒绝出现在**子命令之前**的全局旗标（`-C`/`--git-dir`/`--work-tree` 会把仓库搬到别处）。② SENSITIVE 原来按路径分隔符划边界，命令串里的 `cat .env` 抓不到；改为"非词字符"边界，并把 `.env.example` 这类模板用全局正则整段摘掉再扫（D4/D5）。另修一处自造的测试缺陷：`settle()` 曾把异步探针传给 `test/helpers.ts` 里只支持同步探针的 `waitFor`，拿到恒真的 Promise 从而秒返回 `undefined`——改为显式轮询循环。
+- **不落表**：`supervisor_decisions` 在 3.2 没有第二个读者（结构化结论的读者就是工单本身），`[L1] ` 前缀写进既有 `resolutionReason` + `app.log` 足够审计；等 3.3 熔断要比较连续两次 `errorSignature` 时再决定要不要落表。`diagnosis`/`diffHash` 继续留空等 3.3 的写入方，`HEALING`/`BLOCKED` 本步不写。
+- 范围外：L2 诊断与熔断（Step 3.3）、`rule_candidates → learned_rules` 自动学习（Phase 4 的"批准并记住规则"，本步 `learned_rules` 的写入方只有 `POST /api/learned-rules`）、ReDoS 的统一时间箱（regex 由 admin 写入且写时校验可编译、评审在 `setImmediate` 里跑不阻塞建票响应；真正的超时留给 3.3 给 L1/L2 一起加）、仪表盘展示（延续"数据层留字段、UI 不先动"）。
+- 测试：新增 `packages/server/test/supervisor-guard.test.ts`（41 项纯函数：D1–D10 毁灭与越界、R1–R9 规则匹配、A1–A12 内在安全放行、G1–G6 灰区、C1–C4 契约与不变量）、`supervisor-link.test.ts`（13 项：P1–P6 票与动作的配对与新鲜度、O1–O7 批准键词表）、`api-supervisor.test.ts`（9 项集成，全部用 spy metaAgent 断言 `calls===0` 让"0 Token"成为可验证事实）、`api-learned-rules.test.ts`（6 项路由与权限）。全仓 103 files / 970 tests（本步 +4 files / +69 tests）与 `pnpm -r typecheck` 全绿；`grep -rn evaluateL1 packages/server/src` 只有 `app.ts` 一个生产调用方，既有 `meta-agent`/`tickets`/`decisions`/`task-events` 用例**一条断言未改**。
