@@ -4,7 +4,7 @@ import type { BridgeConfig } from '../config.js';
 import { WorktreeManager } from '../git/worktree.js';
 import type { HubApi } from '../hub-client.js';
 import type { PresenceReporter } from '../presence.js';
-import type { WakeContext } from './adapters.js';
+import type { WakeContext, WakeParked } from './adapters.js';
 import {
   agentKindForAdapter,
   notifyTask,
@@ -12,6 +12,7 @@ import {
   type WakeAdapter,
 } from './adapters.js';
 import type { WakeConfig } from './config.js';
+import { createEventSink } from './event-sink.js';
 import { createLogSink } from './log-sink.js';
 import { resolveWorkspace, type WorkspaceIsolation } from './isolation.js';
 
@@ -126,6 +127,80 @@ function createTaskLogSink(
   );
 }
 
+function createTaskEventSink(
+  client: HubApi,
+  taskId: string,
+  onError: (message: string) => void,
+) {
+  return createEventSink(
+    (events) => client.reportTaskEvents(taskId, events),
+    (message) => onError(`任务 #${taskId} ${message}`),
+  );
+}
+
+/**
+ * Hand a parked run to a human.
+ *
+ * The session id is already on the task (the hub wrote it from the event
+ * stream), so the task goes back to the queue instead of sitting on this
+ * node: approval is human time, and a CLAIMED task spends a concurrency slot.
+ */
+async function parkTask(
+  client: HubApi,
+  hub: BridgeConfig,
+  task: AgentTask,
+  parked: WakeParked,
+  log: (message: string) => void,
+  logError: (message: string) => void,
+): Promise<void> {
+  const projectName = task.projectName ?? hub.projectName ?? task.env;
+  const action = parked.action
+    ? [parked.action.command, ...(parked.action.paths ?? [])]
+        .filter(Boolean)
+        .join(' ')
+    : '';
+
+  try {
+    const ticket = await client.createTicket({
+      projectName,
+      doneSummary: `任务 #${task.id}「${task.title}」执行到需要批准的一步停下`,
+      blockerQuestion: `${parked.reason}${action ? `\n具体内容：${action}` : ''}`,
+      nextStepPlan:
+        `批准后从引擎会话 ${task.sessionId ?? '（未记录）'} 原地续跑，拒绝则任务留在队列等待新的指令。` +
+        `端侧进程已释放，未占用节点槽位。`,
+      options: [
+        {
+          key: 'approve',
+          label: '批准续跑',
+          prosCons: '从中断处继续，已做的工作不丢',
+          risk: 'caution',
+        },
+        {
+          key: 'reject',
+          label: '拒绝',
+          prosCons: '保持挂起，等人工改写任务指令',
+          risk: 'safe',
+        },
+      ],
+      recommendedOption: 'reject',
+    });
+    log(`任务 #${task.id} 已挂起，等待审批（工单 #${ticket.id}）`);
+  } catch (error) {
+    // A ticket we cannot raise must not turn into a failed task: the events
+    // already carry the request, and the task is back in the queue anyway.
+    logError(
+      `任务 #${task.id} 建审批工单失败：${(error as Error).message}；仍将重新排队`,
+    );
+  }
+
+  try {
+    await client.releaseTask(task.id, { requeue: true, reason: parked.reason });
+    log(`任务 #${task.id} 已重新排队，等待批准后续跑`);
+  } catch (error) {
+    logError(`任务 #${task.id} 重新排队失败：${(error as Error).message}`);
+  }
+}
+
 async function runClaimLoop(
   adapter: WakeAdapter,
   internals: LoopInternals,
@@ -165,6 +240,7 @@ async function runClaimLoop(
     }, internals.presence);
 
     const sink = createTaskLogSink(client, task.id, logError);
+    const eventSink = createTaskEventSink(client, task.id, logError);
     sink.push('system', `[zhunzou] 任务 #${task.id} 开始执行\n`);
 
     const workspace = await resolveWorkspace({
@@ -178,12 +254,25 @@ async function runClaimLoop(
       ...context,
       config: { ...wake, cwd: workspace.cwd },
       reportLog: sink.push,
+      reportEvent: eventSink.push,
     };
 
     try {
       const outcome = await adapter.wake(task, taskContext);
+      // Ship the events before anything changes the task's status: the hub only
+      // accepts them while the task is CLAIMED, and the resume credential has
+      // to be in the row before the next claimant picks it up.
+      await eventSink.close();
 
-      if (outcome.completion) {
+      if (outcome.parked) {
+        sink.push(
+          'system',
+          `\n[zhunzou] 任务 #${task.id} 等待人工批准：${outcome.parked.reason}\n`,
+        );
+        await sink.close();
+        await parkTask(client, hub, task, outcome.parked, log, logError);
+        await beat(client, idlePatch, internals.presence);
+      } else if (outcome.completion) {
         sink.push(
           'system',
           `\n[zhunzou] 任务 #${task.id} → ${outcome.completion.status}\n`,
@@ -212,6 +301,7 @@ async function runClaimLoop(
         500,
       );
       sink.push('system', `\n[zhunzou] 执行失败：${reason}\n`);
+      await eventSink.close();
       await sink.close();
       logError(`任务 #${task.id} 唤醒失败：${reason}`);
 

@@ -62,7 +62,7 @@ packages/
 
 ### Phase 2 — 双向适配器、Session 断点续跑、Worktree 隔离
 - [x] **Step 2.1 (`bridge/src/git`)** `WorktreeManager`：`createWorktree(taskId,repoPath,targetBranch)` → `.zhunzou/wt/<taskId>` + `wip/zz-<taskId>`；`createCheckpoint(taskId,label)` 保存现场（落地改为 wip 分支上的 checkpoint 提交，见 §5 说明，`git stash create` 收不到未跟踪文件）；`squashAndRebase(taskId,mainBranch,commitMessage)`。
-- [ ] **Step 2.2 (`bridge/src/adapters`)** `CursorAdapter`（`--output-format stream-json` 提取 `tool_call`/`permission_required`/`sessionId`）与 `OpenCodeAdapter`（ACP 归一化）；挂起时记录 `sessionId` 并释放子进程，恢复决策后用 `--resume <sessionId>` 原地续跑。
+- [x] **Step 2.2 (`bridge/src/adapters`)** 引擎事件归一化与 Session 断点续跑：从 `--output-format stream-json` 提取 `tool_call`/`permission_required`/`sessionId`（落地为"一个解析器 + 每引擎 profile"，不新建 `CursorAdapter`/`OpenCodeAdapter` 两个类，见 §5 说明）；挂起时记录 `sessionId` 并释放子进程（ticket + `releaseTask(requeue)`），下次 claim 用 `--resume <sessionId>` 原地续跑。
 - [ ] **Step 2.3 (`bridge/src/wrappers`)** `zz run <cursor|opencode> [args...]`：本地交互 + 注册 `origin:'LOCAL_WRAP'` 任务；监听 stdin 活动，连续 5 分钟无操作且卡在确认/报错时置 `managedBySupervisor=true` 触发 Hub 接管。
 
 ### Phase 3 — Supervisor Agent（降噪、分级风控、自愈、自学习）
@@ -98,7 +98,8 @@ packages/
 | 1.3 调度器与 API | 完成 | `feat(server)` | `server/src/scheduler.ts` 新增；`/api/nodes`、`/api/tasks/dispatch` 上线；全仓 76 files / 642 tests 通过 |
 | 1.4 节点接入 CLI | 完成 | `feat(cli)` | `zhunzou-device join` + `main.js hub --port --token`；画像随 hello/heartbeat 上报，心跳默认 15s；全仓 81 files / 676 tests 通过 |
 | 2.1 Worktree 隔离 | 完成 | `feat(bridge)` | `bridge/src/git/worktree.ts` + wake 循环 `ZHUNZOU_WORKTREES=1`（默认关）；`agent_tasks.workspace_path` 落库；全仓 85 files / 714 tests 通过 |
-| 2.2–2.3 | 未开始 | — | — |
+| 2.2 引擎事件与续跑 | 完成 | `feat(bridge)` | `wake/events.ts` + `wake/event-sink.ts` + `task_events` 表与两条路由；park 走 ticket + 重排；`shared` 越界判定改为只能收紧；全仓 91 files / 782 tests 通过 |
+| 2.3 | 未开始 | — | — |
 | 3.1–3.3 | 未开始 | — | — |
 
 **Step 1.1 落地说明（与蓝图的差异）**
@@ -153,4 +154,19 @@ packages/
 - 调用方是 wake 循环里的 `resolveWorkspace()`（`bridge/src/wake/isolation.ts`）：`ZHUNZOU_WORKTREES=1` 才开，默认关闭且此时**任何注入都不隔离**（回归保护）；任务带 `repoName` 时先比对 cwd 所在仓库目录名，对不上就照原目录执行并记日志；建 worktree 失败也只记日志、按原目录执行——丢任务比不隔离更糟。隔离成功时 `adapter.wake` 的 cwd 换成 worktree 路径，完成回报带上绝对 `workspacePath`。
 - Hub 侧只多一列 `agent_tasks.workspace_path`（`ensureColumn` 升级，索引留待有查询需求）；`completeTaskSchema.workspacePath` 用正则强制绝对路径（POSIX 或 `C:\`），Hub 存字符串不做任何推导——这与 Step 1.3 §6 的约定一致。UI 未加字段（数据层先留位）。
 - 测试：`packages/bridge/test/git-worktree.test.ts`（18 项，fake runner 断 argv 序列与状态机：幂等复用、`-b` 取舍、非法 id/ref 在任何 git 调用之前拒绝、checkpoint 只 add+commit、脏树零写操作、rebase 失败还原、只写一次 exclude）、`test/git-worktree-repo.test.ts`（8 项，真实 git，缺 git 时整文件 skip：分支与目录、主检出不受污染、未跟踪文件进快照且可取回、squash 后主干不变而 WIP 成一条、脏树拒绝）、`test/wake-worktrees.test.ts`（7 项：`ZHUNZOU_WORKTREES` 解析与开关默认关、关闭时原 cwd 回归、开启时 cwd 与回报路径、repoName 不匹配、匹配、失败回落、用 daemon 自建的真实 manager 建出 worktree）、`packages/shared/test/schemas.test.ts` 补绝对/相对路径判定、`packages/server/test/task-workspace.test.ts`（4 项：落库回读、不传保持 NULL、相对路径 400、旧库升级后可写）。
+
+**Step 2.2 落地说明（与蓝图的差异）**
+
+设计先行，见 `docs/design/adapters-2.2.md`（含现状核实事实表、事件契约、解析器四条不可让步规则、profile 表与"本机没装这些 CLI"的诚实标注、续跑写侧/读侧/argv、park 语义、`task_events` DDL 与测试矩阵）。
+
+- **没有新增 `CursorAdapter`/`OpenCodeAdapter` 两个类**：本仓适配器早就是 `PRESETS` 表 + `createPresetAdapter`/`createCommandAdapter` 工厂，再造两个类等于把超时、截断、回退逻辑抄第二遍。落地改为**一个纯函数解析器 + 每引擎一份 profile**（`bridge/src/wake/events.ts`），适配器工厂只多接一根管道。profile 三档：`stream-json`（claude/qoder/cursor-agent/opencode-run/command）、`opencode`、`none`（aider/goose/amp/codex/gemini/notify）——`none` 是决定不是缺口：形状没在本仓验证过的引擎就是不做归一化，与这一步之前行为一致。
+- **顺手修了一个越界判定的漏洞**：`permissionActionSchema` 原实现里 `outsideWorkspace` 是端侧报什么 Hub 就信什么（`.transform` 只在字段缺失时才重导），被攻破的节点只要报 `false` 就能把自己写在工作区外的操作说成内的。改为**只能收紧**：`action.outsideWorkspace || escapes(...)`，端侧的声明最多让判定更严，永远不会更松。既有"更严格声明仍生效"的断言不变。
+- 事件契约里**删掉了蓝图式的 `at`**：Hub 落库时盖 `created_at`，端侧再报一个时间戳等于两个时钟要对齐。同理引擎自己结束时输出的 `result`/`error` 不进事件契约——完成回报走 `completeTask`，输出走 `task_logs`，抄第三份就有三个真值。
+- **类型分两个名字不是冗余**：`EngineEvent = z.infer`（Hub 存/读，`outsideWorkspace` 必已判定）与 `EngineEventInput = z.input`（端侧上报，该字段可选，同仓先例 `CreateLearnedRuleInput`）。端侧解析器因此**根本不产这个字段**，判定只在 Hub 重导一次。
+- `agent_tasks.session_id` 的唯一写入方是 `POST /api/tasks/:id/events` 里 `kind:'session'` 那条（同一"事务"里插事件行 + 更新该列，无 `sessionId` 的事件不动这一列）。**没有为此加 `PATCH /api/tasks/:id`**：列在 Step 1.1 就已进契约、Step 1.2 就已建，缺的从来是写入方；而挂起的那次运行往往没有 complete 回报，只有事件路径能在释放子进程前把凭证存下来。读侧靠 claim 天然带回，park 走 `releaseTask(requeue:true)` 只改状态不动该列 → 下一次任何 bridge 领到它都拿得到同一个 `sessionId`，续跑不需要"谁挂起谁恢复"的隐性绑定。
+- argv 安全是**三道闸共用一个字符集**（`^[A-Za-z0-9._-]{1,128}$` 且不以 `-` 开头）：解析器先筛掉不合格 id（不产 session 事件，因此一个坏 id 不会把整批上报 400），契约层 `engineSessionIdSchema` 兜住库与响应，适配器拼 argv 前本地再校验一次（任务行可能是旧数据），不合格就跳过续跑并记日志。`resumeArgs` 只给本仓已验证过形状的 preset：claude/qoder/cursor-agent → `--resume <id>`、opencode-run → `--session <id>`，其余 preset 不设——有 id 也只是忽略，不猜各家语法。位置在 prompt 之前、`extraArgs` 之后，与 `session.ts:buildChatRun` 一致。
+- 事件是**旁路不是替换**：子进程字节仍逐字节进 `log-sink`（测试用 fake CLI 断原文与脚本 `FAKE_STDOUT` 完全相等），解析只从 stdout 分流结构，stderr 语义不变；未识别的行代价是"少一条事件"，永不包括"丢输出"。上报失败与 dashboard 同性质：瞬时错误留队列、永久错误（含任务已离开 CLAIMED 的 409）丢弃、只告警一次，任务照样跑完。
+- **park 没有引入 `BLOCKED` 写入方，也没有就地 `wait`**：状态机维持 PENDING→CLAIMED→DONE/FAILED/CANCELLED，挂起走现网已有的 CLAIMED→PENDING 重排。就地等待答案会让任务挂在 CLAIMED 上占住该 env 的一个 `maxConcurrency` 槽（Step 1.3 把 PENDING/CLAIMED/HEALING 记为占用），而审批是人的事、可能几分钟也可能明天。ticket 的两个选项是 批准续跑/拒绝、`recommendedOption` 指向拒绝，`blockerQuestion` 带工具名与命令原文、`nextStepPlan` 带 resume 凭证；**建 ticket 失败也照常 release**（降级为日志），事件流水里人还看得到。顺序上先 `eventSink.close()` 再 release/complete，否则 409 会把 session 凭证永久丢掉。
+- Hub 侧新表 `task_events`（DDL + 索引，老库 `CREATE TABLE IF NOT EXISTS` 即升级路径，已用只建过 `agent_tasks` 的旧库实测）；每任务保留最近 **500 条**（按条数而非字节，事件是定长小行）。`GET /api/tasks/:id/events` 与 logs 同形（`nextAfter`/`truncated`），本步 web 不渲染（延续"数据层留字段、UI 不先动"）。
+- 测试：`packages/shared/test/engine-events.test.ts`（15 项：kind 决定必填、engine 与 `AGENT_KINDS` 同源、`reportTaskEventsSchema` 0/51 拒绝、字符集正反例含路径形状 id）、`packages/bridge/test/wake-events.test.ts`（25 项，纯 fixture：跨 chunk 半行、`end()` 冲尾行、超长行丢弃后仍能续读、一行两 `tool_use`、`control_request/can_use_tool`、顶层直白形状、opencode camel 别名、`none` 恒空）、`test/wake-event-sink.test.ts`（8 项：攒批/定时/瞬时重试/永久丢弃/溢出只告警一次/close 冲净）、`test/wake-adapters-events.test.ts`（7 项，脚本化 fake CLI：原文逐字节、`--resume` 落在 prompt 之前、坏 id 不上命令行、`{sessionId}` 占位不展开成空、`ZHUNZOU_SESSION_ID`、批准请求即终止子进程（脚本故意挂 5s，断言 3s 内返回且无 completion）、超时/FAILED 分支回归）、`test/wake-park.test.ts`（4 项：ticket+release 且不调 complete、ticket 失败仍 release、非 parked 不建 ticket、心跳不受影响）、`packages/server/test/task-events.test.ts`（8 项：落库回读与分页、**§6 端到端闭环**（session 事件→release→再次 claim 带回 `sessionId`）、无 session 事件不清空、409/404/403、坏批 400、Hub 重导 `outsideWorkspace`、600 条只剩 500、旧库升级）、`packages/shared/test/supervisor.test.ts` 补 1 项（端侧报 `outsideWorkspace:false` 不能把越界路径说成内的）。全仓 91 files / 782 tests（本步 +6 files / +68 tests）与 `pnpm typecheck` 全绿。
 

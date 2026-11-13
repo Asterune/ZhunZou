@@ -2,12 +2,19 @@ import { spawn } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, join } from 'node:path';
 
-import type { AgentKind, AgentTask } from '@zhunzou/shared';
+import type {
+  AgentKind,
+  AgentTask,
+  EngineEventInput,
+  PermissionActionInput,
+} from '@zhunzou/shared';
+import { isArgvSafeSessionId } from '@zhunzou/shared';
 
 import type { WakeAdapterName, WakeConfig } from './config.js';
 import { NOTIFY_ADAPTERS } from './config.js';
 import type { LogStream } from './log-sink.js';
 import { buildInjectPrompt, buildRunPrompt } from './prompt.js';
+import { createEventPipeline, profileForAdapter } from './events.js';
 
 export type WakeDelivery = 'inject' | 'run' | 'notify';
 
@@ -16,10 +23,19 @@ export interface WakeCompletion {
   result?: string;
 }
 
+/** Why a run stopped early: the engine wants a human to approve something. */
+export interface WakeParked {
+  reason: string;
+  tool?: string;
+  action?: PermissionActionInput;
+}
+
 export interface WakeOutcome {
   delivery: WakeDelivery;
   /** Present when the daemon should record the result itself. */
   completion?: WakeCompletion;
+  /** Present when the daemon should raise a ticket and hand the task back. */
+  parked?: WakeParked;
 }
 
 export interface WakeContext {
@@ -31,6 +47,8 @@ export interface WakeContext {
     stream: 'stdout' | 'stderr' | 'system',
     chunk: string,
   ) => void;
+  /** Report one normalised engine event (best effort; never throws). */
+  reportEvent?: (event: EngineEventInput) => void;
 }
 
 export interface WakeAdapter {
@@ -62,6 +80,8 @@ export interface RunProcessOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
   shell?: boolean;
+  /** Stops the child early, e.g. when the engine asks for an approval. */
+  signal?: AbortSignal;
   onOutput?: (
     stream: LogStream,
     chunk: string,
@@ -90,15 +110,29 @@ export function runProcess(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
       resolvePromise({ code, stdout, stderr, timedOut });
     };
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const stop = (): void => {
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 2_000).unref?.();
+    };
+
+    function onAbort(): void {
+      stop();
+    }
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
     }, options.timeoutMs);
     timer.unref?.();
+
+    if (options.signal) {
+      if (options.signal.aborted) onAbort();
+      else options.signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout = appendCapture(stdout, chunk);
@@ -172,12 +206,97 @@ export function renderCommandTemplate(
     env: task.env,
     cwd,
   };
+  // An unusable id keeps the literal placeholder rather than expanding to an
+  // empty string, which a CLI would read as "session " instead of "no session".
+  if (isArgvSafeSessionId(task.sessionId)) values.sessionId = task.sessionId;
 
   return template.replace(/\{(\w+)\}/g, (match, key: string) => {
     const value = values[key];
     return value === undefined ? match : shellQuote(value);
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* Output watching                                                     */
+/* ------------------------------------------------------------------ */
+
+export interface RunWatch {
+  push: (stream: LogStream, chunk: string) => void;
+  /** Flush whatever the last chunk left half-parsed. */
+  finish: () => void;
+  /** Passed to `runProcess`; fires as soon as the engine asks for approval. */
+  signal: AbortSignal;
+  parked: () => WakeParked | undefined;
+}
+
+/**
+ * Watch one child process. Raw bytes go on to the log sink untouched, the
+ * structured reading of them goes to the hub, and a request for approval stops
+ * the run so that a human — not this daemon — can answer it.
+ */
+export function createRunWatch(
+  adapter: WakeAdapterName,
+  context: WakeContext,
+  cwd: string,
+): RunWatch {
+  const controller = new AbortController();
+  let parked: WakeParked | undefined;
+
+  const pipeline = createEventPipeline({
+    profile: profileForAdapter(adapter),
+    engine: agentKindForAdapter(adapter),
+    workspaceRoot: cwd,
+    forward: (stream, chunk) => context.reportLog?.(stream, chunk),
+    onEvent: (event) => context.reportEvent?.(event),
+    onPermission: (event) => {
+      if (parked) return;
+      parked = describePermission(event);
+      context.log(`${parked.reason}，已释放子进程`);
+      controller.abort();
+    },
+  });
+
+  return {
+    push: (stream, chunk) => pipeline.push(stream, chunk),
+    finish: () => pipeline.end(),
+    signal: controller.signal,
+    parked: () => parked,
+  };
+}
+
+/** Turn an approval request into the line a human reads in a ticket. */
+function describePermission(event: EngineEventInput): WakeParked {
+  const command = event.action?.command;
+  const path = (event.action?.paths ?? [])[0];
+  const detail = [event.tool, command ?? path].filter(Boolean).join(' ');
+  return {
+    reason: `端侧引擎请求批准${detail ? `：${truncateText(detail, 200)}` : ''}`,
+    ...(event.tool ? { tool: event.tool } : {}),
+    ...(event.action ? { action: event.action } : {}),
+  };
+}
+
+function truncateText(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit - 1)}…` : value;
+}
+
+/**
+ * Arguments that resume this task where it stopped. The id comes from the
+ * engine's own output, so it is re-checked before it can reach argv.
+ */
+function resumeArgsFor(
+  preset: Preset,
+  task: AgentTask,
+  context: WakeContext,
+): string[] {
+  if (!preset.resumeArgs || !task.sessionId) return [];
+  if (!isArgvSafeSessionId(task.sessionId)) {
+    context.log(`sessionId 不合 argv 规范，跳过续跑：${truncateText(task.sessionId, 80)}`);
+    return [];
+  }
+  return preset.resumeArgs(task.sessionId);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* CLI presets                                                         */
@@ -189,18 +308,25 @@ interface Preset {
   /** Alternative executable names on PATH (installers disagree on the name). */
   aliases?: string[];
   args: (prompt: string, extra: string[]) => string[];
+  /** How this CLI picks up a previous session, if we know its syntax. */
+  resumeArgs?: (sessionId: string) => string[];
 }
+
+const RESUME_ARGS = (sessionId: string): string[] => ['--resume', sessionId];
 
 const PRESETS: Record<string, Preset> = {
   'opencode-run': {
     name: 'opencode-run',
     binary: 'opencode',
     args: (prompt, extra) => ['run', '--auto', ...extra, prompt],
+    // Same shape `session.ts` uses for chat, where it is already in production.
+    resumeArgs: (sessionId) => ['--session', sessionId],
   },
   claude: {
     name: 'claude',
     binary: 'claude',
     args: (prompt, extra) => ['-p', ...extra, prompt],
+    resumeArgs: RESUME_ARGS,
   },
   codex: {
     name: 'codex',
@@ -219,6 +345,7 @@ const PRESETS: Record<string, Preset> = {
     // alias the CLI as `qcode`.
     aliases: ['qodercli', 'qcode'],
     args: (prompt, extra) => ['-p', ...extra, prompt],
+    resumeArgs: RESUME_ARGS,
   },
   'cursor-agent': {
     name: 'cursor-agent',
@@ -226,6 +353,7 @@ const PRESETS: Record<string, Preset> = {
     // Print mode only proposes edits unless --force is set; a dispatched task
     // is expected to actually apply its changes.
     args: (prompt, extra) => ['-p', '--force', ...extra, prompt],
+    resumeArgs: RESUME_ARGS,
   },
   aider: {
     name: 'aider',
@@ -281,16 +409,30 @@ function createPresetAdapter(preset: Preset): WakeAdapter {
       }
 
       const prompt = buildRunPrompt(task);
-      context.log(`spawn ${preset.binary} (run mode, cwd=${context.config.cwd})`);
+      const resume = resumeArgsFor(preset, task, context);
+      context.log(
+        `spawn ${preset.binary} (run mode, cwd=${context.config.cwd})` +
+          (resume.length ? ` resume=${task.sessionId}` : ''),
+      );
+      const watch = createRunWatch(preset.name, context, context.config.cwd);
       const result = await runProcess(
         binary,
-        preset.args(prompt, context.config.extraArgs),
+        preset.args(prompt, [...context.config.extraArgs, ...resume]),
         {
           cwd: context.config.cwd,
           timeoutMs: context.config.runTimeoutMs,
-          ...(context.reportLog ? { onOutput: context.reportLog } : {}),
+          signal: watch.signal,
+          onOutput: watch.push,
         },
       );
+      watch.finish();
+
+      const parked = watch.parked();
+      if (parked) {
+        // No completion: the task goes back to the queue with the session id
+        // already stored, so whoever claims it next can resume in place.
+        return { delivery: 'run', parked };
+      }
 
       if (result.timedOut) {
         return {
@@ -334,6 +476,7 @@ function createCommandAdapter(config: WakeConfig): WakeAdapter {
 
       const template = renderCommandTemplate(config.command, task, config.cwd);
       context.log(`spawn command: ${template.slice(0, 160)}`);
+      const watch = createRunWatch('command', context, config.cwd);
       const result = await runProcess(
         process.platform === 'win32' ? 'cmd' : 'sh',
         process.platform === 'win32' ? ['/c', template] : ['-c', template],
@@ -348,11 +491,21 @@ function createCommandAdapter(config: WakeConfig): WakeAdapter {
             ZHUNZOU_TASK_PROJECT: task.projectName ?? '',
             ZHUNZOU_PROMPT: buildRunPrompt(task),
             ZHUNZOU_WORKDIR: config.cwd,
+            ...(isArgvSafeSessionId(task.sessionId)
+              ? { ZHUNZOU_SESSION_ID: task.sessionId }
+              : {}),
           },
           timeoutMs: config.runTimeoutMs,
-          ...(context.reportLog ? { onOutput: context.reportLog } : {}),
+          signal: watch.signal,
+          onOutput: watch.push,
         },
       );
+      watch.finish();
+
+      const parked = watch.parked();
+      if (parked) {
+        return { delivery: 'run', parked };
+      }
 
       if (result.timedOut) {
         return {

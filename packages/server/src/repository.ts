@@ -43,6 +43,7 @@ import type {
   DeviceConnectionInput,
   DeviceStats,
   DeviceTransport,
+  EngineEvent,
   Enrollment,
   EnvHeartbeat,
   Exchange,
@@ -59,6 +60,7 @@ import type {
   ListLearnedRulesQuery,
   ListRuleCandidatesQuery,
   ListTerminalAuditQuery,
+  ListTaskEventsQuery,
   ListTaskLogsQuery,
   ListTasksQuery,
   ListTerminalsQuery,
@@ -70,6 +72,8 @@ import type {
   ResolveTicketInput,
   RuleCandidate,
   SendChatMessageInput,
+  TaskEvent,
+  TaskEventListResponse,
   TaskLog,
   TaskLogListResponse,
   TerminalAuditEntry,
@@ -107,6 +111,7 @@ import {
   learnedRules,
   ruleCandidates,
   taskLogs,
+  taskEvents,
   terminalAudit,
   terminalSessions,
   tickets,
@@ -125,6 +130,7 @@ import {
   type HeartbeatRow,
   type RuleCandidateRow,
   type TaskLogRow,
+  type TaskEventRow,
   type TerminalAuditRow,
   type TerminalSessionRow,
   type TicketRow,
@@ -144,6 +150,8 @@ const CHAT_PENDING_STATUSES: ChatMessageStatus[] = [
 /** Keep each task's live log bounded; older chunks are trimmed on append. */
 const MAX_TASK_LOG_BYTES = 256 * 1024;
 const MAX_CHAT_EVENT_BYTES = 256 * 1024;
+/** Events are small fixed rows, so their cap counts rows instead of bytes. */
+const MAX_TASK_EVENTS = 500;
 
 /**
  * Marks a turn the hub gave up on because the client vanished mid-flight.
@@ -359,6 +367,19 @@ function toTaskLog(row: TaskLogRow): TaskLog {
     ...(row.errorSignature ? { errorSignature: row.errorSignature } : {}),
     ...(row.diagnosis ? { diagnosis: row.diagnosis } : {}),
     ...(row.diffHash ? { diffHash: row.diffHash } : {}),
+    createdAt: row.createdAt,
+  };
+}
+
+function toTaskEvent(row: TaskEventRow): TaskEvent {
+  return {
+    id: row.id,
+    taskId: String(row.taskId),
+    kind: row.kind,
+    ...(row.engine ? { engine: row.engine } : {}),
+    ...(row.tool ? { tool: row.tool } : {}),
+    ...(row.sessionId ? { sessionId: row.sessionId } : {}),
+    ...(row.action ? { action: row.action } : {}),
     createdAt: row.createdAt,
   };
 }
@@ -715,6 +736,12 @@ export interface TicketStore {
     now?: number,
   ): TaskLog;
   listTaskLogs(taskId: number, query: ListTaskLogsQuery): TaskLogListResponse;
+  /**
+   * Stores what the engine actually did, and mirrors the newest session id
+   * onto the task so the next claim can resume instead of starting over.
+   */
+  reportTaskEvents(taskId: number, events: EngineEvent[], now?: number): number;
+  listTaskEvents(taskId: number, query: ListTaskEventsQuery): TaskEventListResponse;
 
   /* Interactive sessions */
   createChatSession(input: CreateChatSessionInput, now?: number): ChatSession;
@@ -2104,6 +2131,72 @@ export class TicketRepository implements TicketStore {
       nextAfter: logs.length > 0 ? logs[logs.length - 1]!.id : query.after,
       truncated: rows.length === query.limit,
     };
+  }
+
+  reportTaskEvents(taskId: number, events: EngineEvent[], now = Date.now()): number {
+    if (events.length === 0) return 0;
+
+    this.db
+      .insert(taskEvents)
+      .values(
+        events.map((event) => ({
+          taskId,
+          kind: event.kind,
+          engine: event.engine ?? null,
+          tool: event.tool ?? null,
+          sessionId: event.sessionId ?? null,
+          action: event.action ?? null,
+          createdAt: now,
+        })),
+      )
+      .run();
+
+    // The newest session wins: a re-run gets a fresh id, a resume keeps it.
+    const sessionId = events
+      .filter((event) => event.kind === 'session')
+      .at(-1)?.sessionId;
+    if (sessionId) {
+      this.db
+        .update(agentTasks)
+        .set({ sessionId, updatedAt: now })
+        .where(eq(agentTasks.id, taskId))
+        .run();
+    }
+
+    this.trimTaskEvents(taskId);
+    return events.length;
+  }
+
+  listTaskEvents(taskId: number, query: ListTaskEventsQuery): TaskEventListResponse {
+    const rows = this.db
+      .select()
+      .from(taskEvents)
+      .where(and(eq(taskEvents.taskId, taskId), gt(taskEvents.id, query.after)))
+      .orderBy(asc(taskEvents.id))
+      .limit(query.limit)
+      .all();
+
+    const events = rows.map(toTaskEvent);
+    return {
+      events,
+      nextAfter: events.length > 0 ? events[events.length - 1]!.id : query.after,
+      truncated: rows.length === query.limit,
+    };
+  }
+
+  private trimTaskEvents(taskId: number): void {
+    const ids = this.db
+      .select({ id: taskEvents.id })
+      .from(taskEvents)
+      .where(eq(taskEvents.taskId, taskId))
+      .orderBy(desc(taskEvents.id))
+      .all();
+    if (ids.length <= MAX_TASK_EVENTS) return;
+
+    this.db
+      .delete(taskEvents)
+      .where(and(eq(taskEvents.taskId, taskId), lte(taskEvents.id, ids[MAX_TASK_EVENTS]!.id)))
+      .run();
   }
 
   private trimTaskLogs(taskId: number): void {

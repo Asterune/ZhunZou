@@ -42,6 +42,16 @@ describe('permissionActionSchema', () => {
     expect(parsed.outsideWorkspace).toBe(true);
   });
 
+  it('will not let a node talk itself out of an escaping path', () => {
+    const parsed = permissionActionSchema.parse({
+      kind: 'file_change',
+      paths: ['/Users/qiliu/.ssh/id_rsa'],
+      workspaceRoot: '/Users/qiliu/code/pte-dojo',
+      outsideWorkspace: false,
+    });
+    expect(parsed.outsideWorkspace).toBe(true);
+  });
+
   it('rejects an action with nothing to guard', () => {
     expect(permissionActionSchema.safeParse({ kind: 'command' }).success).toBe(false);
   });

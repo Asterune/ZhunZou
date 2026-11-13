@@ -12,6 +12,7 @@ import type {
   DecisionRequest,
   DecisionResponse,
   DecisionTicket,
+  EngineEventInput,
   EnvHeartbeat,
   Exchange,
   FleetBrowseResultInput,
@@ -45,6 +46,7 @@ import {
   releaseTaskSchema,
   reportExchangeSchema,
   reportFleetCandidatesSchema,
+  reportTaskEventsSchema,
   ticketIdSchema,
 } from '@zhunzou/shared';
 
@@ -103,6 +105,11 @@ export interface HubApi {
   listTasks(query?: Omit<ListTasksQuery, 'env'>): Promise<TaskListResponse>;
   completeTask(taskId: string, input: CompleteTaskInput): Promise<AgentTask>;
   appendTaskLog(taskId: string, input: AppendTaskLogInput): Promise<TaskLog>;
+  /**
+   * Ships normalised engine events. The hub mirrors the newest session id onto
+   * the task, so the next claim can resume instead of starting over.
+   */
+  reportTaskEvents(taskId: string, events: EngineEventInput[]): Promise<number>;
   releaseTask(taskId: string, input: ReleaseTaskInput): Promise<AgentTask>;
   reportExchange(
     input: Omit<ReportExchangeInput, 'env'>,
@@ -394,6 +401,20 @@ export class HubClient implements HubApi {
       REQUEST_GRACE_MS,
     );
     return body.log;
+  }
+
+  async reportTaskEvents(
+    taskId: string,
+    events: EngineEventInput[],
+  ): Promise<number> {
+    const id = ticketIdSchema.parse(String(taskId));
+    const payload = reportTaskEventsSchema.parse({ events });
+    const body = await this.request<{ stored: number }>(
+      `/api/tasks/${id}/events`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
+    return body.stored;
   }
 
   async releaseTask(taskId: string, input: ReleaseTaskInput): Promise<AgentTask> {

@@ -178,6 +178,19 @@ CREATE TABLE IF NOT EXISTS task_logs (
 
 CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id, id);
 
+CREATE TABLE IF NOT EXISTS task_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  engine TEXT,
+  tool TEXT,
+  session_id TEXT,
+  action TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);
+
 CREATE TABLE IF NOT EXISTS chat_sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   env TEXT NOT NULL,

@@ -46,14 +46,17 @@ export const permissionActionSchema = z
     }
   })
   .transform((action) => {
-    const outside =
-      action.outsideWorkspace ??
-      (Boolean(action.workspaceRoot) &&
-        (action.paths ?? []).some((path) => escapesWorkspace(path, action.workspaceRoot!)));
-    return { ...action, outsideWorkspace: outside };
+    const escapes =
+      Boolean(action.workspaceRoot) &&
+      (action.paths ?? []).some((path) => escapesWorkspace(path, action.workspaceRoot!));
+    // The reported flag can only ever tighten the verdict: paths that leave the
+    // checkout are outside it even when the node insists otherwise.
+    return { ...action, outsideWorkspace: action.outsideWorkspace || escapes };
   });
 
 export type PermissionAction = z.infer<typeof permissionActionSchema>;
+/** What a node may report: the verdict field is the hub's to fill in. */
+export type PermissionActionInput = z.input<typeof permissionActionSchema>;
 
 /** The strict JSON the L2 diagnosis prompt demands back. */
 export const supervisorDiagnosisSchema = z

@@ -11,6 +11,7 @@ import type {
   DeviceCapabilities,
   DeviceStats,
   DeviceTransport,
+  EngineEventKind,
   EnvStatus,
   FleetWorkspaceStatus,
   LearnedRuleAction,
@@ -18,6 +19,7 @@ import type {
   LearnedRuleSource,
   NodeRepo,
   NodeRole,
+  PermissionAction,
   PermissionActionKind,
   RuleCandidateStatus,
   TaskEngine,
@@ -313,6 +315,29 @@ export const taskLogs = sqliteTable(
   (table) => [index('idx_task_logs_task').on(table.taskId, table.id)],
 );
 
+/**
+ * Normalised engine events for a claimed task (bounded by the server).
+ *
+ * `task_logs` keeps what the human reads; this keeps the three facts the hub
+ * acts on, so a parked run can be resumed and an audited later.
+ */
+export const taskEvents = sqliteTable(
+  'task_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    taskId: integer('task_id').notNull(),
+    kind: text('kind').$type<EngineEventKind>().notNull(),
+    engine: text('engine').$type<TaskEngine>(),
+    tool: text('tool'),
+    /** The engine-native id, mirrored onto the task so the next claim carries it. */
+    sessionId: text('session_id'),
+    /** JSON `permissionActionSchema`: what the engine wanted approved. */
+    action: text('action', { mode: 'json' }).$type<PermissionAction>(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [index('idx_task_events_task').on(table.taskId, table.id)],
+);
+
 export const chatSessions = sqliteTable(
   'chat_sessions',
   {
@@ -532,6 +557,7 @@ export type EnrollmentInsert = typeof enrollmentCodes.$inferInsert;
 export type AgentTaskRow = typeof agentTasks.$inferSelect;
 export type AgentTaskInsert = typeof agentTasks.$inferInsert;
 export type TaskLogRow = typeof taskLogs.$inferSelect;
+export type TaskEventRow = typeof taskEvents.$inferSelect;
 export type TaskLogInsert = typeof taskLogs.$inferInsert;
 export type ChatSessionRow = typeof chatSessions.$inferSelect;
 export type ChatMessageRow = typeof chatMessages.$inferSelect;

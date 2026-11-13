@@ -51,6 +51,7 @@ import {
   listExchangesQuerySchema,
   listFleetQuerySchema,
   listRuleCandidatesQuerySchema,
+  listTaskEventsQuerySchema,
   listTaskLogsQuerySchema,
   listTasksQuerySchema,
   listTerminalAuditQuerySchema,
@@ -67,6 +68,7 @@ import {
   redeemEnrollmentSchema,
   releaseTaskSchema,
   reportExchangeSchema,
+  reportTaskEventsSchema,
   reportFleetCandidatesSchema,
   resolveTicketSchema,
   resumeQuerySchema,
@@ -1629,6 +1631,38 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         requireEnvAccess(request, task.env);
         const query = listTaskLogsQuerySchema.parse(request.query);
         return repo.listTaskLogs(taskId, query);
+      });
+
+      // Normalised engine events: which tool ran, whether the engine is
+      // waiting for approval, and the session id a later claim resumes from.
+      // The bridge batches these; refusing an unclaimed task keeps a late
+      // flush from rewriting a run that already ended.
+      api.post('/tasks/:id/events', async (request, reply) => {
+        const { id } = paramsSchema.parse(request.params);
+        const taskId = parseTicketId(id);
+        const task = repo.getTask(taskId);
+        if (!task) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, task.env);
+        if (task.status !== 'CLAIMED') {
+          throw new ConflictError(
+            `task ${formatTicketId(id)} is ${task.status}, expected CLAIMED`,
+            'INVALID_TASK_STATUS',
+          );
+        }
+
+        const input = reportTaskEventsSchema.parse(request.body);
+        const stored = repo.reportTaskEvents(taskId, input.events);
+        return reply.code(201).send({ stored });
+      });
+
+      api.get('/tasks/:id/events', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const taskId = parseTicketId(id);
+        const task = repo.getTask(taskId);
+        if (!task) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, task.env);
+        const query = listTaskEventsQuerySchema.parse(request.query);
+        return repo.listTaskEvents(taskId, query);
       });
 
       // -----------------------------------------------------------------

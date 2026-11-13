@@ -74,6 +74,9 @@ function makeClient(
     async createTicket() {
       throw new Error('unused');
     },
+    async reportTaskEvents() {
+      throw new Error('unused');
+    },
     async wait() {
       throw new Error('unused');
     },

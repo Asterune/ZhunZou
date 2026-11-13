@@ -217,6 +217,18 @@ export const AGENT_KINDS = [
 
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
+/**
+ * What a local engine's output stream turns into once the bridge reads it.
+ * Three kinds, each with exactly one consumer: `tool_call` for the audit
+ * trail, `permission_required` for parking, `session` for resume.
+ */
+export const ENGINE_EVENT_KINDS = [
+  'tool_call',
+  'permission_required',
+  'session',
+] as const;
+export type EngineEventKind = (typeof ENGINE_EVENT_KINDS)[number];
+
 /** Re-exported for task records: an engine is the agent kind that runs it. */
 export const TASK_ENGINES = AGENT_KINDS;
 
