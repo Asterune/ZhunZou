@@ -663,6 +663,12 @@ export interface TicketStore {
     stats: DeviceStats | undefined,
     now?: number,
   ): Agent | null;
+  /**
+   * Store the placement profile a device reported with a heartbeat. Separate
+   * from the beat itself: an env without a machine card has nothing to attach
+   * routing facts to, and dropping them is better than inventing a card.
+   */
+  recordNodeProfile(env: string, profile: NodeProfile, now?: number): void;
   /** Mark the WS peer as gone without deleting its capability inventory. */
   markDeviceDisconnected(env: string, now?: number): Agent | null;
   /**
@@ -696,6 +702,12 @@ export interface TicketStore {
   ): AgentTask | null;
   /** Pending/CLAIMED tasks for an env, for bridge restart recovery. */
   listActiveTasks(env: string, limit?: number): AgentTask[];
+  /**
+   * How much unfinished work each env already owns. HEALING counts as occupied
+   * because the supervisor is still holding that node's process; BLOCKED does
+   * not, since a parked task is exactly the work a node is free to leave.
+   */
+  activeTaskCountsByEnv(): Record<string, number>;
   appendTaskLog(
     taskId: number,
     input: AppendTaskLogInput,
@@ -1900,6 +1912,29 @@ export class TicketRepository implements TicketStore {
     }
 
     return row ? this.getAgent(env, now) : null;
+  }
+
+  recordNodeProfile(env: string, profile: NodeProfile, now = Date.now()): void {
+    const row = this.db
+      .select({ deviceId: agents.deviceId })
+      .from(agents)
+      .where(eq(agents.env, env))
+      .get();
+
+    if (!row?.deviceId) return;
+
+    this.db
+      .update(devices)
+      .set({
+        role: profile.role,
+        tags: profile.tags,
+        maxConcurrency: profile.maxConcurrency,
+        repos: profile.repos,
+        freeMemoryMB: profile.freeMemoryMB ?? null,
+        updatedAt: now,
+      })
+      .where(eq(devices.id, row.deviceId))
+      .run();
   }
 
   markDeviceDisconnected(env: string, now = Date.now()): Agent | null {
@@ -3331,6 +3366,17 @@ export class TicketRepository implements TicketStore {
       .limit(limit)
       .all()
       .map(toTask);
+  }
+
+  activeTaskCountsByEnv(): Record<string, number> {
+    const rows = this.db
+      .select({ env: agentTasks.env, count: count() })
+      .from(agentTasks)
+      .where(inArray(agentTasks.status, ['PENDING', 'CLAIMED', 'HEALING']))
+      .groupBy(agentTasks.env)
+      .all();
+
+    return Object.fromEntries(rows.map((row) => [row.env, Number(row.count)]));
   }
 
   listResumeTickets(

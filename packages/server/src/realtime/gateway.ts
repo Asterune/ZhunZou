@@ -272,6 +272,7 @@ export function attachRealtimeGateway(
             protocolVersion: frame.protocol,
             capabilities: frame.capabilities as DeviceCapabilities,
             ...(frame.stats ? { stats: frame.stats } : {}),
+            ...(frame.profile ? { profile: frame.profile } : {}),
             transport: 'ws',
           },
           connection.connectedAt,
@@ -296,6 +297,10 @@ export function attachRealtimeGateway(
           frame.stats as DeviceStats | undefined,
           connection.lastSeenAt,
         );
+        // A beat may re-state the inventory (a new checkout, less free RAM)
+        // without the node reconnecting, and routing reads the card, not the
+        // socket, so store it while the beat is fresh.
+        if (frame.profile) repo.recordNodeProfile(env, frame.profile, connection.lastSeenAt);
         if (agent) broadcast({ type: 'device.updated', agent });
         return;
       }

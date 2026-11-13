@@ -36,6 +36,7 @@ import {
   createTerminalSchema,
   createTicketSchema,
   decisionRequestSchema,
+  dispatchTaskSchema,
   fleetBrowseResultInputSchema,
   fleetWorkspaceStatusInputSchema,
   extendTicketSchema,
@@ -59,6 +60,7 @@ import {
   listWorkspaceProjectsQuerySchema,
   ENROLLMENT_CODE_MAX_USES,
   ENROLLMENT_CODE_TTL_MS,
+  NODE_HEARTBEAT_TIMEOUT_MS,
   nextChatMessageQuerySchema,
   nextTaskQuerySchema,
   proposeChatReplySchema,
@@ -142,6 +144,7 @@ import {
 } from './realtime/terminal-manager.js';
 import { buildRealtimeTicket } from './realtime/ticket.js';
 import { RulesStore } from './rules-store.js';
+import { routeTask, toRouteCandidates } from './scheduler.js';
 import { SERVER_VERSION, STARTED_AT } from './version.js';
 
 declare module 'fastify' {
@@ -1487,6 +1490,75 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return repo.listTasks(query);
       });
 
+      /**
+       * Routing facts for every identity that may take work: the agent says
+       * which CLI it runs, its machine card says what the box has.
+       */
+      const routeCandidates = () =>
+        toRouteCandidates(
+          repo.listAgents().filter((agent) => agent.status === 'active'),
+          repo.listDevices(),
+          repo.activeTaskCountsByEnv(),
+        );
+
+      // Resource-aware dispatch: the human says what the work is and which
+      // repository it lives in, the hub decides which machine runs it.
+      api.post('/tasks/dispatch', async (request, reply) => {
+        requireAdmin(request);
+        const input = dispatchTaskSchema.parse(request.body);
+        const now = Date.now();
+
+        let target: string;
+        let route: Record<string, unknown>;
+
+        if (input.env) {
+          // An explicit pin is a human decision, not a hint: honour it even
+          // when that node looks loaded, and say so in the audit trail.
+          if (!repo.getAgent(input.env, now)) {
+            throw new ConflictError(
+              `env ${input.env} is not registered with this hub`,
+              'UNKNOWN_TARGET',
+            );
+          }
+          target = input.env;
+          route = { env: input.env, pinned: true };
+        } else {
+          const decision = routeTask(routeCandidates(), {
+            ...(input.repoName ? { repoName: input.repoName } : {}),
+            ...(input.engine ? { engine: input.engine } : {}),
+            ...(input.tags.length ? { tags: input.tags } : {}),
+          });
+
+          if (!decision.env) {
+            throw new ConflictError(decision.reason, 'NO_ROUTE_TARGET');
+          }
+
+          target = decision.env;
+          route = {
+            env: decision.env,
+            reason: decision.reason,
+            assessed: decision.assessed,
+          };
+        }
+
+        const task = repo.createTask(
+          {
+            env: target,
+            title: input.title,
+            instruction: input.instruction,
+            ...(input.repoName ? { repoName: input.repoName } : {}),
+            ...(input.engine ? { engine: input.engine } : {}),
+            ...(input.managedBySupervisor === undefined
+              ? {}
+              : { managedBySupervisor: input.managedBySupervisor }),
+          },
+          now,
+        );
+
+        taskBus.publish(task);
+        return reply.code(201).send({ task, route });
+      });
+
       // Bridge long-polls for the next task assigned to its env.
       api.get('/tasks/next', async (request) => {
         const query = nextTaskQuerySchema.parse(request.query);
@@ -2393,6 +2465,24 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       api.get('/devices', async (request) => {
         requireAdmin(request);
         return { devices: repo.listDevices() };
+      });
+
+      /**
+       * The fleet as the scheduler sees it: one row per dispatchable identity,
+       * aged out on the node heartbeat window rather than the 90s display
+       * window, because a box that has not beaten in half a minute may be
+       * asleep and must not be handed work.
+       */
+      api.get('/nodes', async (request) => {
+        requireAdmin(request);
+        const now = Date.now();
+        const nodes = routeCandidates().map((candidate) => ({
+          ...candidate,
+          online:
+            candidate.lastSeenAt !== undefined &&
+            now - candidate.lastSeenAt <= NODE_HEARTBEAT_TIMEOUT_MS,
+        }));
+        return { nodes };
       });
 
       /**

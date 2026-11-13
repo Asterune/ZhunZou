@@ -57,7 +57,7 @@ packages/
 ### Phase 1 — 契约层、零依赖 Hub 与资源感知节点注册
 - [x] **Step 1.1 (`shared`)** Zod 契约：`NodeProfile{nodeId,hostname,role:'portal'|'worker'|'hybrid',tags,freeMemoryMB,maxConcurrency,repos}`；`TaskRecord{id,title,repoName,engine:'cursor'|'opencode',origin:'HUB_DISPATCH'|'LOCAL_WRAP',sessionId,managedBySupervisor,status:'QUEUED'|'RUNNING'|'BLOCKED'|'HEALING'|'DONE'|'FAILED',retryCount}`；`WsMessage` 覆盖 `NODE_REGISTER/NODE_HEARTBEAT/TASK_DISPATCH/TASK_LOG_STREAM/PERMISSION_REQUEST/SUPERVISOR_DECISION`。
 - [x] **Step 1.2 (`server/src/db`)** better-sqlite3(WAL) 建表与自动升级：`nodes`（在线状态/画像/最后心跳，扩展现有 `devices`）、`tasks`（元数据/状态机/关联节点/sessionId，扩展现有 `agent_tasks`）、`task_logs`（已有）、`learned_rules`（用户手动授权的命令匹配白名单）。
-- [ ] **Step 1.3 (`server`)** REST `/api/nodes`、`/api/tasks`、`/api/tasks/dispatch`；WS Token 校验 + 30s 心跳超时置 offline；智能调度器按 `repoName` 匹配度 + `role!=='portal'` + `freeMemoryMB>2048` 分配算力节点。
+- [x] **Step 1.3 (`server`)** REST `/api/nodes`、`/api/tasks`、`/api/tasks/dispatch`；WS Token 校验 + 30s 心跳超时置 offline；智能调度器按 `repoName` 匹配度 + `role!=='portal'` + `freeMemoryMB>2048` 分配算力节点。
 - [ ] **Step 1.4 (`bridge`)** `zz hub --port 8765 --token <secret>` 一键拉起控制面；`zz join <hub-url> --token --role --tags --scan-dir`：递归扫描 Git 仓库、每 15s 上报 `os.freemem()` 与心跳。
 
 ### Phase 2 — 双向适配器、Session 断点续跑、Worktree 隔离
@@ -95,7 +95,8 @@ packages/
 | 0.2 Monorepo 基建 | 完成 | `test(repo)` | 全仓 555 tests / 66 files 双链路（`pnpm test`、`npx vitest run`）通过 |
 | 1.1 契约层 | 完成 | `feat(shared)` | `shared/src/{node,supervisor}.ts` 新增；`constants/realtime/schemas` 扩写；tasks 新字段落库并带旧库升级迁移 |
 | 1.2 数据层 | 完成 | `feat(server)` | `devices` 加画像列、`task_logs` 加诊断列、新增 `learned_rules` 表；全仓 74 files / 617 tests 通过 |
-| 1.3–1.4 | 未开始 | — | — |
+| 1.3 调度器与 API | 完成 | `feat(server)` | `server/src/scheduler.ts` 新增；`/api/nodes`、`/api/tasks/dispatch` 上线；全仓 76 files / 642 tests 通过 |
+| 1.4 | 未开始 | — | — |
 | 2.1–2.3 | 未开始 | — | — |
 | 3.1–3.3 | 未开始 | — | — |
 
@@ -114,4 +115,17 @@ packages/
 - `learned_rules` 是新表，与已有的 `rule_candidates`（规则蒸馏候选）并存：候选是人审阅的草稿，`learned_rules` 是已生效的放行/拒绝决定，L1 引擎只读后者。`(pattern, action)` 唯一索引让重复批准更新同一行，避免白名单越长越大。
 - 迁移沿用本仓库既有约定：`DDL` 里只建表，所有依赖新列的索引都在 `ensureColumn()` 之后单独创建，否则从旧库升级会在缺失列上中断整次升级。
 - 测试：`test/db-nodes.test.ts`（画像持久化/单卡修订/无画像不擦除/旧 `devices`+`agents` 升级）、`test/db-learned-rules.test.ts`（增删改查/去重/计数/正则拒绝/旧库建表）、`test/db-task-diagnostics.test.ts`（诊断回读/普通行不留痕/旧 `task_logs` 升级保数据）。
+
+**Step 1.3 落地说明（与蓝图的差异）**
+
+设计先行，见 `docs/design/scheduler-1.3.md`（含现状核实、规则表、测试矩阵与三个待定问题）。
+
+- **只新增，不改现有语义**：`POST /api/tasks`（人指定 env）与 `claimNextTask` 完全不动；调度只挂在新的 `POST /api/tasks/dispatch`。原计划里"claim 时校验 repo 匹配"被否决——`ListTasksQuery` 没有 `repoName` 维度，加进去会改动所有 bridge 的取任务路径。
+- 调度对象是 **env（identity）而不是机器**：dispatch 的结果仍然写进 `agent_tasks.env`，因此老的长轮询 `GET /api/tasks/next?env=` 天然能取到派单结果，无需新增推送路径。
+- `repoName` 是**硬过滤**而非加分项：节点没上报该 checkout 就派不过去，返回 409 并附每台候选机被排除的原因（`assessed[]`），比让任务在第一条命令上失败更诚实。
+- 从未上报内存的遗留 bridge 不因 `freeMemoryMB` 缺失被淘汰（只是没测，不是没内存），但排在健康节点之后；`role==='portal'`、心跳超 30s、`activeCount>=maxConcurrency`、缺 tag、引擎不符一律淘汰。
+- 30s 心跳窗口只用于节点视图与调度（`GET /api/nodes` 的 `online`），`/api/devices` 与 `/api/agents` 的 90s 显示窗口保持不变，避免已部署控制台上的设备卡片闪烁离线。
+- `maxConcurrency` 只在 dispatch 决策时生效（占位计数为 `PENDING/CLAIMED/HEALING`；`BLOCKED` 等人期间不占额度）；claim 侧不做容量检查，容量由节点自己决定。
+- 本步**不落 `repoPath`/`workspacePath`**：worktree 还不存在（Step 2.1），且 `repos[].path` 是节点本机绝对路径，Hub 无法推导，写进去只会被误当本地路径。落地方式已在设计文档 §6 写给 Step 2.1 遵循。
+- 测试：`test/scheduler.test.ts`（17 项：过滤原因、边界值 2048/2049 与 30s、内存缺失仍候选、空闲优先、同分按 env 字典序、原因汇总、`toRouteCandidates` 默认值与心跳折算）、`test/nodes-api.test.ts`（8 项：节点视图鉴权与画像、按仓库选节点并能被该节点 claim、无候选 409 说明原因、显式 env 直派且不调度、派给未注册 env 被拒、缺 repo/env 校验 400、满载节点不再接单）。
 
