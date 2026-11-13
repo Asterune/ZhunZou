@@ -66,7 +66,7 @@ packages/
 - [x] **Step 2.3 (`bridge/src/wrappers`)** `zz run <cursor|opencode> [args...]`：本地交互 + 注册 `origin:'LOCAL_WRAP'` 任务；监听 stdin 活动，连续 5 分钟无操作且卡在确认/报错时置 `managedBySupervisor=true` 触发 Hub 接管（落地为"管道中继、不开 pty"，因此只覆盖 print/stream 模式；接管不调 `releaseTask`，见 §5 说明）。
 
 ### Phase 3 — Supervisor Agent（降噪、分级风控、自愈、自学习）
-- [ ] **Step 3.1 (`bridge/src/sanitizer`)** `LogSanitizer`：剥离 ANSI；折叠重复进度条/构建输出；提炼 `Error:`、TS 错误码、单测断言与堆栈，输出 ≤2000 字符高密度诊断。
+- [x] **Step 3.1 (`bridge/src/sanitizer`)** `LogSanitizer`：剥离 ANSI；折叠重复进度条/构建输出；提炼 `Error:`、TS 错误码、单测断言与堆栈，输出 ≤2000 字符高密度诊断。
 - [ ] **Step 3.2 (`server/src/supervisor/guard.ts`)** L1 确定性风控：只读命令/单测编译/工作区内源码变更 0ms 放行；`rm -rf`、跨工作区、`.env*` 与 `~/.ssh/*`、`git push -f`、`git reset --hard` 0ms 拦截挂起；查 `learned_rules` 正则/通配命中自动放行。
 - [ ] **Step 3.3 (`server/src/supervisor/healer.ts`)** L2 轻量 LLM 结构化诊断（`decision:'APPROVE'|'RETRY_WITH_FIX'|'ESCALATE_TO_HUMAN'` + `diagnosisSummary`≤50 字 + `fixPrompt`）；熔断：`retryCount>=3`、连续两次报错相似度 >85% 或 Git diff hash 无变动 → `BLOCKED`。
 
@@ -187,4 +187,20 @@ packages/
 - **`run` 命令注册在 `createProgram()` 的最后**：commander 要求父命令开 `enablePositionalOptions()` 子命令才允许 `passThroughOptions()`，而该开关会影响同层其它命令的解析。把 `run` 放最后、开关紧挨着它打开，`init/wait/upgrade/service/wake/fleet` 的 argv 语义一字未变（实测确认：反向做法——注册后再关回去，会让 `zz run claude -p hi` 变成 `unknown option '-p'`）。包装器选项必须在 `<engine>` 之前，之后的全部原样进子进程；开头那一个 `--` 分隔符会被剥掉。
 - 范围外：L1 确定性风控（Step 3.2）、L2 自愈与熔断（Step 3.3）、仪表盘"托管开关"（蓝图 :164 属 Phase 4）；web 本步未动（延续"数据层留字段、UI 不先动"）。
 - 测试：`packages/shared/test/schemas.test.ts` 追加 4 项（`createLocalTaskSchema` 最小 body 不注入 undefined、相对 `workspacePath`/空 title/未知 engine 拒绝、`takeoverTaskSchema` 空 reason 与超 500 字符拒绝）、`packages/server/test/task-local.test.ts`（10 项：CLAIMED+LOCAL_WRAP+attempts=1 且 `claimedAt===leaseAt`、建完立刻 `GET /tasks/next` 领不到、log/events 不 409、申报字段无效、跨 env 403、takeover 留痕与幂等、非 CLAIMED 409、未知 404、旧库无 `origin`/`managed_by_supervisor` 列升级后可用）、`packages/bridge/test/wrappers-idle.test.ts`（14 项纯函数判据）、`test/wrappers-runner.test.ts`（22 项，注入 fake HubApi + fake spawner + fake stdio + fake 定时器，PATH 指向临时目录里的假 CLI，因此断言与本机装了什么无关）、`test/cli-run.test.ts`（8 项 commander 层行为）。全仓 5 packages / 839 tests（本步 +4 files / +58 tests）与 `pnpm typecheck` 全绿。
+
+**Step 3.1 落地说明（与蓝图的差异）**
+
+设计先行，见 `docs/design/sanitizer-3.1.md`（含现状核实事实表、三条降噪语义、与既有状态机/字段的共存口径、安全边界与 A/P/E/L/S/W/D 测试矩阵）。
+
+- **接入点选 `createLogSink` 而不是适配器**：它是"字节→Hub"唯一的咽喉，`wake/daemon.ts`（派单）和 `wrappers/runner.ts`（伴随）两条上报路径都在它上面汇合，因此一处接线、两个生产者同时受益，`send` 的第三个实参 `meta` 把 `errorSignature` 带进 `appendTaskLogSchema`。`session.ts:434` 的聊天事件走的是 `appendChatEvent`（另一套 schema，且是给人读的对话正文），**没接降噪**；`device-router.ts` 的 pty→WS 实时镜像与 `zz run` 给人看的终端中继同样原样不动——历史上一次日志被"洗干净"而屏幕没变，是最难自查的一类不一致，这里刻意让二者各自保持原样，Hub 侧存的那份才是清理过的。
+- **`feed` 只输出"已定论"的行，代价是一行延迟**：一条重复了几次，只有看到下一行才知道。释放时机三条——出现不同形状的行、`settle()`（sink 每次冲刷前**按流**调一次，所以额外时延与它既有的 600ms 批量同级，没加新计时器）、扣着的文本超过 `MAX_HELD_BYTES=8KiB` 时强制断行（抄 `events.ts:44` 的教训：宁可断行，不可永久沉默）。半截转义另有一道 `MAX_ESCAPE_BYTES=64`：一截 64 字节还收不了尾的序列不是文本，留着只会把后面的真实输出一起扣死。
+- **两处矩阵按实现改写**（这是设计文档 §6 的修正，不是断言放松）：① L7 原写"超长行强制释放 ⇒ `feed` 直接返回该行"，折叠语义下做不到——释放的是半行，它后面还接着同一条逻辑行的字节。改成断言护栏真正的契约：**不永久沉默**（超阈值立刻有输出）、**一个字节不丢**（`feed` 分片 + `settle` 拼接后逐字节等于原文）、**后续行不受影响**。② S4 的测试替身原来预置 `held={stdout,stderr}`，会把"未喂过的流也 settle 出内容"这种实现细节锁死；改成 `feed` 记账、`settle` 一次性交还，与真实状态机同形。③ 矩阵里的 `pendingEscapeTail(text)→长度` 落地为 `sanitizeAnsi(text)→{text,pending}`：一次调用同时给正文与待接片段，调用方不必自己再切一遍下标。
+- **`errorSignature` 是本步唯一的新写入方**，形状与既有 Hub 测试 `db-task-diagnostics.test.ts:44-67` 逐字对齐（`TS2322 src/pages/list.ts`——码 + 空格 + 文件，不带行列）；纯进度/普通行的入参仍是 `{stream, chunk}`，**不产生空字段**（该文件 69-83 行要求三字段整个缺席）。`diagnosis`/`diffHash` 继续留空等 Step 3.3 的管家写，字段先于写入方存在是本仓一贯做法（1.1/1.2/2.3 都是）。
+- **失败结论走诊断、成功结论一字不动**：`result = summarize() || 原尾巴`，只作用于 `status:'FAILED'`；DONE 的 `result` 是 Agent 给人看的回答正文，保持原样（R1 的 `'hello world'` 断言即回归护栏）。wrapper 的尾巴兜底额外过一道 `stripAnsi`——认不出错误时不能把 `\x1b[31m` 存进结论里。`summarize()` 为空（真的什么都没跑出来）才回落到原有文案，D3 守住这条。
+- **管家自己的 `[zhunzou] …` 旁白不作为证据**：`system` 流照常入库、照常给人看，但 `note()` 跳过它。否则一条失败任务的诊断会被我们自己的"执行失败：…"占满，真正的引擎错误反而挤不进去（L19 专门锁这条）。
+- **两处判据在实现中被证伪后修正**：`GENERIC` 原来只认小写 `error|fatal|panic`，于是 60 条彩色 `Error: fault N` 被当成"同形进度行"折叠成一条（W3/L18 当场抓住）——补上大写形式；`GLYPH` 的盲文区间写成 `⣀-⣿`（U+28C0 起），漏掉 spinner 真正在用的 `⠋⠙⠹`（U+2800 段），改为整个 U+2800–U+28FF 并把方块区扩到几何形状（▀-◿），P3/P6 由此转绿。
+- **既有断言零修改**（唯一例外是两条与本步无关的计时脆弱用例，见下）：`log-sink.test.ts` 原 6 条、`wrappers-runner.test.ts` R1–R17、`wake.test.ts` 全部原样通过；只加宽了测试替身的 `logs` 入参类型为 `AppendTaskLogInput`（TS 形状，不是行为变更）。sink 不传 `sanitizer` 时走的仍是"逐字节缓冲 + 16KB 切片"老路径，`MAX_BUFFER_BYTES`/`CHUNK_BYTES`/重排队顺序不变量一个没动。
+- **顺手修掉两个既有 flake**（本步连续 4 次全仓跑绿里有 3 次被它们绊住，与降噪无关，是宿主负载问题）：① `wake-adapters-events.test.ts` 的 park 用例——假 CLI 挂 5s、断言 `elapsed<3000`，而静默运行实测 2.87s，130ms 的余量在并行跑时必然翻车；改为假 CLI 挂 10s、界限 5s（`runTimeoutMs` 抬到 30s，让"没有中断"这种回归稳定表现为 10s 而非恰好卡在界限上），断言的不变量（中断让结论远早于挂完）反而更严格。② `packages/bridge/vitest.config.ts` 显式 `testTimeout: 20_000`：本包到处在 spawn 真进程（PATH 上的假 CLI、真 `git worktree`），`git-worktree-repo.test.ts` 的 squash 用例静默跑 2.1s、全量并行跑就顶穿默认 5s——把预算从宿主的调度抖动改成测试自己的常数，并在配置文件里写明理由。
+- 范围外：L1 确定性风控（Step 3.2）、L2 诊断与熔断（Step 3.3，含 `diagnosis`/`diffHash` 的写入方）、密钥脱敏（降噪器只做**删除与折叠**，不猜敏感值）、看板展示（延续"数据层留字段、UI 不先动"）。
+- 测试：新增 `packages/bridge/test/sanitizer-ansi.test.ts`（8 项，含跨 chunk 半截 OSC/CSI 与 `pending` 续喂）、`sanitizer-progress.test.ts`（9 项，形状键与 `collapseRuns` 纯函数）、`sanitizer-errors.test.ts`（15 项：四类错误的签名形状、重试可比、业务栈帧选取、预算与省略标注）、`sanitizer-log.test.ts`（19 项状态机：一行延迟、`\r` 末帧、跨 feed 折叠、护栏、逐流隔离、`describe`/`summarize`）；`log-sink.test.ts` 追加 5 项接线用例，`wrappers-runner.test.ts` 追加 3 项（中继原样 / 签名为真 / 结论有界），`wake.test.ts` 追加 3 项（派单循环降噪 / FAILED 走诊断 / 无输出回落）。全仓 99 files / 901 tests（本步 +4 files / +62 tests）与 `pnpm typecheck` 全绿。
 

@@ -6,6 +6,7 @@ import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest
 
 import type {
   AgentTask,
+  AppendTaskLogInput,
   CompleteTaskInput,
   CreateLocalTaskInput,
   CreateTicketInput,
@@ -83,7 +84,7 @@ interface Calls {
   /** Named hops in the order they happened; the sequencing assertions read this. */
   seq: string[];
   localTasks: CreateLocalTaskInput[];
-  logs: Array<{ stream: LogStream; chunk: string }>;
+  logs: AppendTaskLogInput[];
   events: EngineEventInput[];
   tickets: Omit<CreateTicketInput, 'env'>[];
   takeovers: Array<{ id: string; reason: string }>;
@@ -238,7 +239,7 @@ async function start(options: HarnessOptions = {}): Promise<Harness> {
       calls.localTasks.push(input);
       return options.localTask ? options.localTask(input) : task;
     },
-    appendTaskLog: async (id: string, input: { stream: LogStream; chunk: string }) => {
+    appendTaskLog: async (id: string, input: AppendTaskLogInput) => {
       calls.seq.push('log');
       calls.logs.push(input);
       return { id: '1', taskId: id, stream: input.stream, chunk: input.chunk, createdAt: 1 };
@@ -415,6 +416,71 @@ describe('runWrapped', () => {
     expect(h.stderrText()).toContain('boom');
     expect(h.calls.completions[0]?.input).toMatchObject({ status: 'FAILED' });
     expect(h.calls.completions[0]?.input.result).toContain('model overloaded');
+  });
+
+  /**
+   * Step 3.1: the human keeps the colour they were already getting, the hub
+   * gets plain text, a signature on the rows that say something broke, and a
+   * diagnosis that fits instead of four thousand characters of progress bar.
+   */
+  describe('noise reduction', () => {
+    const ESC = String.fromCodePoint(0x1b);
+    const CSI = ESC + '[';
+    const CR = String.fromCodePoint(0x0d);
+    const TS_LINE =
+      'src/pages/list.ts(24,7): error TS2322: Type "string" is not assignable to type "number".';
+
+    function frame(n: number): string {
+      return `Progress: resolved ${n}, reused ${n}`;
+    }
+
+    it('relays raw bytes and ships sanitised ones (W1)', async () => {
+      vi.useFakeTimers();
+      const h = await start();
+
+      h.emit('stdout', CSI + '32m' + frame(1) + CR + CSI + '0m');
+      h.emit('stdout', frame(2) + CR + '\n');
+      h.finish({ code: 0, signal: null });
+      await h.settle();
+
+      expect(h.stdoutText()).toContain(CSI + '32m');
+      const shipped = h.calls.logs.map((entry) => entry.chunk).join('');
+      expect(shipped).not.toContain(ESC);
+      expect(shipped).not.toContain(frame(1));
+      expect(shipped).toContain(frame(2));
+    });
+
+    it('signs the log row that carries a TypeScript error (W2)', async () => {
+      vi.useFakeTimers();
+      const h = await start();
+
+      h.emit('stderr', TS_LINE + '\n');
+      h.finish({ code: 0, signal: null });
+      await h.settle();
+
+      expect(h.calls.logs).toContainEqual({
+        stream: 'stderr',
+        chunk: TS_LINE + '\n',
+        errorSignature: 'TS2322 src/pages/list.ts',
+      });
+    });
+
+    it('reports a bounded diagnosis instead of a raw tail when the run fails (W3)', async () => {
+      vi.useFakeTimers();
+      const h = await start();
+
+      for (let index = 0; index < 60; index += 1) {
+        h.emit('stderr', CSI + '31m' + `Error: fault ${index} ` + 'y'.repeat(60) + CSI + '0m\n');
+      }
+      h.finish({ code: 1, signal: null });
+      await h.settle();
+
+      const result = h.calls.completions[0]?.input.result ?? '';
+      expect(result.length).toBeLessThanOrEqual(2000);
+      expect(result).toContain('Error: fault 0');
+      expect(result).toContain('未列出');
+      expect(result).not.toContain(ESC);
+    });
   });
 
   it('runs the command anyway when the hub refuses registration (R3)', async () => {

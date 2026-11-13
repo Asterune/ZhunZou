@@ -20,6 +20,8 @@ import type { BridgeConfig } from '../config.js';
 import { detectWorkspaceProject } from '../config.js';
 import { HubApiError, type HubApi } from '../hub-client.js';
 import { createPresenceReporter } from '../presence.js';
+import { stripAnsi } from '../sanitizer/ansi.js';
+import { createLogSanitizer } from '../sanitizer/log-sanitizer.js';
 import { agentKindForAdapter, findPresetBinary } from '../wake/adapters.js';
 import type { WakeAdapterName } from '../wake/config.js';
 import { WAKE_ADAPTERS } from '../wake/config.js';
@@ -205,10 +207,17 @@ export async function runWrapped(options: RunWrappedOptions): Promise<number> {
   }
 
   const registered = task;
+  const sanitizer = createLogSanitizer();
   const logSink = registered
     ? createLogSink(
-        (stream, chunk) => options.client.appendTaskLog(registered.id, { stream, chunk }),
+        (stream, chunk, meta) =>
+          options.client.appendTaskLog(registered.id, {
+            stream,
+            chunk,
+            ...(meta.errorSignature ? { errorSignature: meta.errorSignature } : {}),
+          }),
         (message) => log(`日志上报：${message}`),
+        { sanitizer },
       )
     : NOOP_LOG_SINK;
   const eventSink = registered
@@ -434,12 +443,13 @@ export async function runWrapped(options: RunWrappedOptions): Promise<number> {
 
   if (registered) {
     const ok = exit.code === 0;
+    const plain = truncate(stripAnsi(tail.trim()), RESULT_CHARS);
+    const result = (ok ? plain : sanitizer.summarize() || plain) ||
+      (ok ? '本地伴随执行完成' : '本地伴随执行失败（无输出）');
     try {
       await options.client.completeTask(registered.id, {
         status: ok ? 'DONE' : 'FAILED',
-        result:
-          truncate(tail.trim(), RESULT_CHARS) ||
-          (ok ? '本地伴随执行完成' : '本地伴随执行失败（无输出）'),
+        result,
         workspacePath: options.cwd,
       });
     } catch (error) {

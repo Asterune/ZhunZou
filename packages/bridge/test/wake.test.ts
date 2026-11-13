@@ -61,7 +61,10 @@ interface Calls {
   completed: Array<{ taskId: string; input: CompleteTaskInput }>;
   released: Array<{ taskId: string; input: ReleaseTaskInput }>;
   heartbeats: Array<Omit<HeartbeatInput, 'env'>>;
-  logs: Array<{ taskId: string; input: { stream: string; chunk: string } }>;
+  logs: Array<{
+    taskId: string;
+    input: { stream: string; chunk: string; errorSignature?: string };
+  }>;
 }
 
 function makeClient(
@@ -282,6 +285,70 @@ describe('runWakeDaemon', () => {
     expect(
       calls.logs.map((entry) => entry.input.chunk).join(''),
     ).toContain('开始执行');
+  });
+
+  /**
+   * Step 3.1: the claim loop ships through the same sanitizer as the local
+   * companion, so a dashboard shows text a person can read and a failed task
+   * carries a diagnosis instead of four thousand characters of build noise.
+   */
+  describe('noise reduction', () => {
+    const ESC = String.fromCodePoint(0x1b);
+    const CSI = ESC + '[';
+    const CR = String.fromCodePoint(0x0d);
+    const TS_LINE =
+      'src/pages/list.ts(24,7): error TS2322: Type "string" is not assignable to type "number".';
+
+    it('ships sanitised bytes and leaves plain rows unsigned (D1)', async () => {
+      const adapter = makeAdapter(async (_task, context) => {
+        context.reportLog?.('stdout', CSI + '32mProgress: resolved 1, reused 1' + CR + CSI + '0m');
+        context.reportLog?.('stdout', 'Progress: resolved 2, reused 2' + CR + '\n');
+        return { delivery: 'run', completion: { status: 'DONE', result: 'ok' } };
+      });
+
+      const { calls } = await runOnce(adapter, makeTask());
+      const shipped = calls.logs.map((entry) => entry.input.chunk).join('');
+
+      expect(shipped).not.toContain(ESC);
+      expect(shipped).toContain('Progress: resolved 2, reused 2');
+      expect(shipped).not.toContain('Progress: resolved 1, reused 1');
+      expect(
+        calls.logs.filter((entry) => entry.input.chunk.includes('Progress')),
+      ).toEqual([
+        {
+          taskId: '12',
+          input: { stream: 'stdout', chunk: 'Progress: resolved 2, reused 2\n' },
+        },
+      ]);
+    });
+
+    it('replaces the raw tail of a failed run with the diagnosis (D2)', async () => {
+      const adapter = makeAdapter(async (_task, context) => {
+        context.reportLog?.('stderr', CSI + '31m' + TS_LINE + CSI + '0m\n');
+        return {
+          delivery: 'run',
+          completion: { status: 'FAILED', result: TS_LINE + ESC + '[0m' + 'y'.repeat(4_000) },
+        };
+      });
+
+      const { calls } = await runOnce(adapter, makeTask());
+
+      expect(calls.completed[0]?.input.status).toBe('FAILED');
+      expect(calls.completed[0]?.input.result).toContain('TS2322');
+      expect((calls.completed[0]?.input.result ?? '').length).toBeLessThanOrEqual(2_000);
+      expect(calls.logs.some((entry) => entry.input.errorSignature === 'TS2322 src/pages/list.ts')).toBe(true);
+    });
+
+    it('keeps the adapter result when there is nothing to diagnose (D3)', async () => {
+      const adapter = makeAdapter(async () => ({
+        delivery: 'run',
+        completion: { status: 'FAILED', result: '端侧执行失败（无输出）' },
+      }));
+
+      const { calls } = await runOnce(adapter, makeTask());
+
+      expect(calls.completed[0]?.input.result).toBe('端侧执行失败（无输出）');
+    });
   });
 
   it('releases the task when the adapter cannot wake a client', async () => {

@@ -8,6 +8,7 @@
  */
 
 import { HubApiError } from '../hub-client.js';
+import type { LogChunkMeta, LogSanitizer } from '../sanitizer/log-sanitizer.js';
 
 export type LogStream = 'stdout' | 'stderr' | 'system';
 
@@ -16,15 +17,22 @@ export interface LogSink {
   close: () => Promise<void>;
 }
 
+export interface LogSinkOptions {
+  /** Rewrites the bytes before they ship; see `sanitizer/log-sanitizer.ts`. */
+  sanitizer?: LogSanitizer;
+}
+
 const FLUSH_INTERVAL_MS = 600;
 const CHUNK_BYTES = 12_000;
 const BUFFER_BYTES = 24_000;
 const MAX_BUFFER_BYTES = 1_000_000;
 
 export function createLogSink(
-  send: (stream: LogStream, chunk: string) => Promise<unknown>,
+  send: (stream: LogStream, chunk: string, meta: LogChunkMeta) => Promise<unknown>,
   onError: (message: string) => void,
+  options: LogSinkOptions = {},
 ): LogSink {
+  const sanitizer = options.sanitizer;
   const buffers: Record<LogStream, string> = {
     stdout: '',
     stderr: '',
@@ -46,17 +54,19 @@ export function createLogSink(
     warnOnce('日志缓冲超过上限，已丢弃最旧内容');
   };
 
-  const take = (): Array<{ stream: LogStream; chunk: string }> => {
-    const chunks: Array<{ stream: LogStream; chunk: string }> = [];
+  const take = (): Array<{ stream: LogStream; chunk: string; meta: LogChunkMeta }> => {
+    const chunks: Array<{ stream: LogStream; chunk: string; meta: LogChunkMeta }> = [];
     for (const stream of ['stdout', 'stderr', 'system'] as const) {
+      // A sanitizer holds the last line of a run until the run ends; a flush
+      // is the hub asking what happened, so ask the sanitizer instead.
+      const held = sanitizer?.settle(stream);
+      if (held) buffers[stream] += held;
       const text = buffers[stream];
       if (!text) continue;
       buffers[stream] = '';
       for (let index = 0; index < text.length; index += CHUNK_BYTES) {
-        chunks.push({
-          stream,
-          chunk: text.slice(index, index + CHUNK_BYTES),
-        });
+        const chunk = text.slice(index, index + CHUNK_BYTES);
+        chunks.push({ stream, chunk, meta: sanitizer?.describe(chunk) ?? {} });
       }
     }
     return chunks;
@@ -72,7 +82,7 @@ export function createLogSink(
         for (let index = 0; index < chunks.length; index += 1) {
           const item = chunks[index]!;
           try {
-            await send(item.stream, item.chunk);
+            await send(item.stream, item.chunk, item.meta);
           } catch (error) {
             const permanent =
               error instanceof HubApiError && !error.retryable;
@@ -115,7 +125,9 @@ export function createLogSink(
   return {
     push(stream, chunk) {
       if (closed || !chunk) return;
-      buffers[stream] += chunk;
+      const text = sanitizer ? sanitizer.feed(stream, chunk) : chunk;
+      if (!text) return;
+      buffers[stream] += text;
       trim(stream);
       if (buffers[stream].length >= BUFFER_BYTES) {
         void flush();

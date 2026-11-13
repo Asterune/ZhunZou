@@ -172,15 +172,16 @@ describe('wake adapters engine events', () => {
         '{"type":"control_request","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"rm -rf dist"}}}',
       ].join('\n'),
     );
-    // Without the abort this run would sit here for the whole hold.
-    vi.stubEnv('FAKE_HOLD', '50');
+    // Without the abort this run would sit here for the whole hold: 10s of
+    // child against a 5s bound, so the margin is the child's, not the host's.
+    vi.stubEnv('FAKE_HOLD', '100');
 
-    const harness = makeHarness({ runTimeoutMs: 5_000 });
+    const harness = makeHarness({ runTimeoutMs: 30_000 });
     const started = Date.now();
     const outcome = await runWith(harness);
     const elapsed = Date.now() - started;
 
-    expect(elapsed).toBeLessThan(3_000);
+    expect(elapsed).toBeLessThan(5_000);
     expect(outcome.completion).toBeUndefined();
     expect(outcome.parked?.reason).toContain('rm -rf dist');
     expect(outcome.parked?.tool).toBe('Bash');

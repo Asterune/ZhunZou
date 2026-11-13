@@ -4,7 +4,8 @@ import type { BridgeConfig } from '../config.js';
 import { WorktreeManager } from '../git/worktree.js';
 import type { HubApi } from '../hub-client.js';
 import type { PresenceReporter } from '../presence.js';
-import type { WakeContext, WakeParked } from './adapters.js';
+import { createLogSanitizer, type LogSanitizer } from '../sanitizer/log-sanitizer.js';
+import type { WakeCompletion, WakeContext, WakeParked } from './adapters.js';
 import {
   agentKindForAdapter,
   notifyTask,
@@ -120,11 +121,27 @@ function createTaskLogSink(
   client: HubApi,
   taskId: string,
   onError: (message: string) => void,
+  sanitizer: LogSanitizer,
 ) {
   return createLogSink(
-    (stream, chunk) => client.appendTaskLog(taskId, { stream, chunk }),
+    (stream, chunk, meta) =>
+      client.appendTaskLog(taskId, {
+        stream,
+        chunk,
+        ...(meta.errorSignature ? { errorSignature: meta.errorSignature } : {}),
+      }),
     (message) => onError(`任务 #${taskId} ${message}`),
+    { sanitizer },
   );
+}
+
+/** A failed run reports what broke, not the last four kilobytes of noise. */
+function refineResult(
+  completion: WakeCompletion,
+  sanitizer: LogSanitizer,
+): WakeCompletion {
+  if (completion.status !== 'FAILED') return completion;
+  return { ...completion, result: sanitizer.summarize() || completion.result };
 }
 
 function createTaskEventSink(
@@ -239,7 +256,8 @@ async function runClaimLoop(
       ...(hub.projectName ? { projectName: hub.projectName } : {}),
     }, internals.presence);
 
-    const sink = createTaskLogSink(client, task.id, logError);
+    const sanitizer = createLogSanitizer();
+    const sink = createTaskLogSink(client, task.id, logError, sanitizer);
     const eventSink = createTaskEventSink(client, task.id, logError);
     sink.push('system', `[zhunzou] 任务 #${task.id} 开始执行\n`);
 
@@ -273,18 +291,19 @@ async function runClaimLoop(
         await parkTask(client, hub, task, outcome.parked, log, logError);
         await beat(client, idlePatch, internals.presence);
       } else if (outcome.completion) {
+        const { completion } = outcome;
         sink.push(
           'system',
-          `\n[zhunzou] 任务 #${task.id} → ${outcome.completion.status}\n`,
+          `\n[zhunzou] 任务 #${task.id} → ${completion.status}\n`,
         );
         await sink.close();
         await client.completeTask(task.id, {
-          ...outcome.completion,
+          ...refineResult(completion, sanitizer),
           ...(workspace.workspacePath
             ? { workspacePath: workspace.workspacePath }
             : {}),
         });
-        log(`任务 #${task.id} → ${outcome.completion.status}`);
+        log(`任务 #${task.id} → ${completion.status}`);
         await beat(client, idlePatch, internals.presence);
       } else {
         sink.push(
