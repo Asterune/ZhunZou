@@ -1,6 +1,8 @@
 import type {
+  Agent,
   AgentListResponse,
   AgentResponse,
+  AgentTask,
   AgentTokenResponse,
   BatchResolveResponse,
   BatchResolveTicketsInput,
@@ -17,6 +19,7 @@ import type {
   CreateTaskInput,
   CreateTerminalInput,
   DecisionTicket,
+  DispatchTaskInput,
   EnrollmentResponse,
   EnvHeartbeat,
   ExchangeListResponse,
@@ -31,6 +34,7 @@ import type {
   RuleCandidateStatus,
   RulesResponse,
   RealtimeTicketResponse,
+  SupervisorInboxResponse,
   SyncResponse,
   TaskListResponse,
   TaskLogListResponse,
@@ -71,6 +75,26 @@ export interface ServerHealth {
   /** Process start; moves on every server deploy. */
   startedAt?: number;
   now?: number;
+}
+
+/** Why the hub put a task where it did — the human may want to disagree. */
+export interface DispatchRoute {
+  env: string;
+  /** Set when a person named the machine, so no scoring was applied. */
+  pinned?: boolean;
+  reason?: string;
+  assessed?: Array<{ env: string; score?: number; rejection?: string }>;
+}
+
+export interface DispatchTaskResponse {
+  task: AgentTask;
+  route: DispatchRoute;
+}
+
+export interface TakeoverTaskResponse {
+  task: AgentTask;
+  /** False when the run was already handed to the supervisor. */
+  changed: boolean;
 }
 
 export interface HubApi {
@@ -226,7 +250,24 @@ export interface HubApi {
     messageId?: string,
   ): Promise<ChatEventListResponse>;
   createTask(token: string, input: CreateTaskInput): Promise<TaskResponse>;
+  dispatchTask(
+    token: string,
+    input: DispatchTaskInput,
+  ): Promise<DispatchTaskResponse>;
   cancelTask(token: string, taskId: string): Promise<TaskResponse>;
+  /** Ask the supervisor to take over a live run; one-way, never undone. */
+  takeoverTask(
+    token: string,
+    taskId: string,
+    reason: string,
+  ): Promise<TakeoverTaskResponse>;
+  /** Override the breaker: the task goes back to the queue by hand. */
+  retryTask(
+    token: string,
+    taskId: string,
+    reason?: string,
+  ): Promise<TaskResponse>;
+  getInbox(token: string, limit?: number): Promise<SupervisorInboxResponse>;
   listWorkspaceProjects(
     token: string,
     env?: string,
@@ -590,10 +631,33 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
         body: JSON.stringify(input),
       }),
 
+    dispatchTask: (token, input) =>
+      request<DispatchTaskResponse>(token, '/api/tasks/dispatch', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
     cancelTask: (token, taskId) =>
       request<TaskResponse>(token, `/api/tasks/${taskId}/cancel`, {
         method: 'POST',
       }),
+
+    takeoverTask: (token, taskId, reason) =>
+      request<TakeoverTaskResponse>(token, `/api/tasks/${taskId}/takeover`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+
+    retryTask: (token, taskId, reason) =>
+      request<TaskResponse>(token, `/api/tasks/${taskId}/retry`, {
+        method: 'POST',
+        ...(reason ? { body: JSON.stringify({ reason }) } : {}),
+      }),
+
+    // Not part of the sync snapshot: the inbox reads the supervisor's own log
+    // rows, which do not move the revision the snapshot is keyed on.
+    getInbox: (token, limit = 20) =>
+      request<SupervisorInboxResponse>(token, `/api/supervisor/inbox?limit=${limit}`),
 
     listWorkspaceProjects: (token, env) => {
       const query = env ? `?env=${encodeURIComponent(env)}` : '';

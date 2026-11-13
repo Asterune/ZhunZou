@@ -30,6 +30,7 @@ import type {
 
 import { clientKindLabel, relativeTime } from '../lib/format';
 import { useI18n } from '../lib/i18n';
+import { buildNodeMatrix, type NodeCard } from '../lib/matrix';
 import { useHubStore } from '../stores/hub';
 import FleetWorkspaces from './FleetWorkspaces.vue';
 import ProjectBindings from './ProjectBindings.vue';
@@ -80,76 +81,16 @@ watch(
   () => store.agents.filter((agent) => !agent.online).length,
 );
 
-interface NodeCard {
-  host: string;
-  os?: string;
-  version?: string;
-  total: number;
-  online: number;
-  disabled: number;
-  lastSeenAt?: number;
-}
-
-/** Cards the hub reports per machine, with unattributed agents grouped by host. */
-const nodes = computed<NodeCard[]>(() => {
-  const groups = new Map<string, NodeCard>();
-
-  const tally = (node: NodeCard, agent: Agent): void => {
-    node.total += 1;
-    if (agent.online) node.online += 1;
-    if (agent.status === 'disabled') node.disabled += 1;
-    if (!node.os && agent.os) node.os = agent.os;
-    if (!node.version && agent.version) node.version = agent.version;
-    if (
-      agent.lastSeenAt &&
-      (!node.lastSeenAt || agent.lastSeenAt > node.lastSeenAt)
-    ) {
-      node.lastSeenAt = agent.lastSeenAt;
-    }
-  };
-
-  // Two machines can legitimately report one hostname — an image clone does.
-  const duplicates = new Map<string, number>();
-  for (const device of store.devices) {
-    const label = device.host?.trim() || t('agents.unknownHost');
-    duplicates.set(label, (duplicates.get(label) ?? 0) + 1);
-  }
-
-  for (const device of store.devices) {
-    const label = device.host?.trim() || t('agents.unknownHost');
-    const node: NodeCard = {
-      host:
-        duplicates.get(label)! > 1 && !device.id.startsWith('host:')
-          ? `${label} · ${device.id.slice(0, 8)}`
-          : label,
-      os: device.os,
-      total: 0,
-      online: 0,
-      disabled: 0,
-      lastSeenAt: device.lastSeenAt,
-    };
-    for (const agent of store.agents) {
-      if (agent.deviceId === device.id) tally(node, agent);
-    }
-    groups.set(device.id, node);
-  }
-
-  for (const agent of store.agents) {
-    if (agent.deviceId && groups.has(agent.deviceId)) continue;
-    const host = agent.host?.trim() || t('agents.unknownHost');
-    const key = `ungrouped:${host}`;
-    const node = groups.get(key) ?? { host, total: 0, online: 0, disabled: 0 };
-    tally(node, agent);
-    groups.set(key, node);
-  }
-
-  return [...groups.values()].sort(
-    (left, right) =>
-      right.online - left.online ||
-      right.total - left.total ||
-      left.host.localeCompare(right.host),
-  );
-});
+/**
+ * Cards the hub reports per machine, with unattributed agents grouped by host.
+ * The grouping itself is `buildNodeMatrix`, so the same numbers can be read
+ * here and tested without a DOM.
+ */
+const nodes = computed<NodeCard[]>(() =>
+  buildNodeMatrix(store.devices, store.agents, store.tasks, {
+    unknownHost: t('agents.unknownHost'),
+  }),
+);
 
 function formatBytes(bytes: number | undefined): string {
   if (!bytes) return '—';
@@ -389,6 +330,63 @@ async function copyEnrollmentCommand(): Promise<void> {
             <span v-if="node.os" class="font-mono">· {{ node.os }}</span>
             <span v-if="node.version" class="font-mono">· bridge {{ node.version }}</span>
           </div>
+
+          <!-- Placement facts the node reported itself; absent means it never said. -->
+          <div class="mt-2 flex flex-wrap items-center gap-1 text-[10px]">
+            <span class="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-primary">
+              {{ t(`agents.role.${node.role}`) }}
+            </span>
+            <span
+              v-for="tag in node.tags"
+              :key="tag"
+              class="rounded bg-surface-container-high px-1.5 py-0.5 font-mono text-on-surface-variant"
+            >
+              {{ tag }}
+            </span>
+            <span
+              v-if="node.repoCount"
+              class="rounded bg-surface-container px-1.5 py-0.5 text-on-surface-variant"
+            >
+              {{ t('agents.repos', { count: node.repoCount }) }}
+            </span>
+          </div>
+
+          <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-on-surface-variant">
+            <span>
+              {{ t('agents.busy') }}
+              <span class="font-mono text-on-surface">{{ node.activeCount }}</span>
+              <span v-if="node.maxConcurrency" class="font-mono">
+                / {{ node.maxConcurrency }}
+              </span>
+            </span>
+            <span>
+              {{ t('agents.isolated') }}
+              <span class="font-mono text-on-surface">{{ node.isolatedCount }}</span>
+            </span>
+            <span v-if="node.freeMemoryMB !== undefined" class="font-mono">
+              {{ t('agents.freeMemory') }}
+              {{ (node.freeMemoryMB / 1024).toFixed(1) }} GiB
+            </span>
+          </div>
+
+          <div
+            v-if="node.memoryRatio !== undefined"
+            class="mt-1.5 h-1 overflow-hidden rounded-full bg-surface-container-high"
+            :title="t('agents.freeMemory')"
+          >
+            <div
+              class="h-1 rounded-full"
+              :class="
+                node.memoryRatio < 0.15
+                  ? 'bg-error'
+                  : node.memoryRatio < 0.35
+                    ? 'bg-tertiary'
+                    : 'bg-secondary'
+              "
+              :style="{ width: `${Math.round(node.memoryRatio * 100)}%` }"
+            />
+          </div>
+
           <p class="mt-1 text-[11px] text-on-surface-variant/60">
             {{ t('agents.lastHeartbeat', { time: node.lastSeenAt ? relativeTime(node.lastSeenAt) : '—' }) }}
           </p>

@@ -1,4 +1,4 @@
-import type { DecisionTicket } from '@zhunzou/shared';
+import type { DecisionTicket, RuleCandidate } from '@zhunzou/shared';
 
 export type HistoryFilter =
   | 'all'
@@ -38,6 +38,18 @@ export function ticketSearchText(ticket: DecisionTicket): string {
   ]
     .join(' ')
     .toLowerCase();
+}
+
+/**
+ * A resolved decision and its distilled rule are separate records: the candidate
+ * only exists once the meta-agent has written one, so the remember button appears
+ * on the rows that have a handle and nowhere else.
+ */
+export function candidateForTicket(
+  candidates: RuleCandidate[],
+  ticketId: string,
+): RuleCandidate | undefined {
+  return candidates.find((candidate) => candidate.ticketId === ticketId);
 }
 
 export function filterHistory(

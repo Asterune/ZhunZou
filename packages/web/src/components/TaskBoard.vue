@@ -6,12 +6,13 @@ import {
   Inbox,
   Loader2,
   Send,
+  ShieldCheck,
   Terminal,
   XCircle,
 } from 'lucide-vue-next';
 import { computed, nextTick, reactive, ref, watch } from 'vue';
 
-import type { CreateTaskInput } from '@zhunzou/shared';
+import type { AgentTask, CreateTaskInput } from '@zhunzou/shared';
 
 import {
   relativeTime,
@@ -43,10 +44,26 @@ const form = reactive({
 });
 const submitting = ref(false);
 const cancelling = ref('');
+const takingOver = ref('');
 const openLogs = ref('');
 
 function toggleLogs(taskId: string): void {
   openLogs.value = openLogs.value === taskId ? '' : taskId;
+}
+
+/**
+ * One-way, and only for a run that is actually live: the hub may answer this
+ * run's questions without a person. There is no route to undo it, so there is
+ * no switch — the button disappears once the flag is set.
+ */
+async function takeOver(task: AgentTask): Promise<void> {
+  if (takingOver.value) return;
+  takingOver.value = task.id;
+  try {
+    await store.takeoverTask(task.id, t('tasks.takeoverReason'));
+  } finally {
+    takingOver.value = '';
+  }
 }
 
 /** The sidebar and this list share a page, so a click must scroll the card in. */
@@ -246,6 +263,14 @@ async function cancel(taskId: string): Promise<void> {
               >
                 {{ t('tasks.attempt', { count: task.attempts }) }}
               </span>
+              <span
+                v-if="task.managedBySupervisor"
+                class="inline-flex items-center gap-1 rounded bg-secondary/10 px-2 py-0.5 text-[10px] font-semibold text-secondary"
+                :title="t('tasks.takeoverHint')"
+              >
+                <ShieldCheck :size="11" />
+                {{ t('tasks.managed') }}
+              </span>
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-on-surface-variant">
               <span class="rounded bg-surface-container-high px-1.5 py-0.5 font-mono">
@@ -263,6 +288,18 @@ async function cancel(taskId: string): Promise<void> {
           </div>
 
           <div class="flex shrink-0 items-center gap-1">
+            <button
+              v-if="task.status === 'CLAIMED' && !task.managedBySupervisor"
+              type="button"
+              :disabled="!!takingOver"
+              class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-primary transition hover:bg-primary/10 disabled:opacity-50"
+              :title="t('tasks.takeoverHint')"
+              @click="takeOver(task)"
+            >
+              <Loader2 v-if="takingOver === task.id" :size="13" class="animate-spin" />
+              <ShieldCheck v-else :size="13" />
+              {{ t('tasks.takeover') }}
+            </button>
             <button
               type="button"
               class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface"

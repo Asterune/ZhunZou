@@ -7,6 +7,8 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
+import { wipBranchName } from '@zhunzou/shared';
+
 /**
  * Git worktree isolation for dispatched tasks.
  *
@@ -157,7 +159,7 @@ export class WorktreeManager {
     targetBranch?: string,
   ): Promise<WorktreeHandle> {
     const id = assertTaskId(taskId);
-    const branch = `wip/zz-${id}`;
+    const branch = wipBranchName(id);
     const base = targetBranch
       ? assertRef(targetBranch, 'target branch')
       : undefined;
@@ -323,7 +325,7 @@ export class WorktreeManager {
       taskId: id,
       repoRoot,
       workspacePath,
-      branch: found.branch ?? `wip/zz-${id}`,
+      branch: found.branch ?? wipBranchName(id),
       created: false,
     };
   }

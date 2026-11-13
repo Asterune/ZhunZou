@@ -5,10 +5,12 @@ import {
   ChevronDown,
   Ellipsis,
   Gavel,
+  Inbox,
   LogOut,
   MessageSquare,
   RefreshCw,
   ScrollText,
+  Send,
   SlidersHorizontal,
   SquareTerminal,
   WifiOff,
@@ -29,18 +31,21 @@ import AgentPanel from './components/AgentPanel.vue';
 import BatchApproveDialog from './components/BatchApproveDialog.vue';
 import ChatPanel from './components/ChatPanel.vue';
 import HistoryList from './components/HistoryList.vue';
+import InboxPanel from './components/InboxPanel.vue';
 import LoginGate from './components/LoginGate.vue';
 import LocaleToggle from './components/LocaleToggle.vue';
+import QuickDispatchDialog from './components/QuickDispatchDialog.vue';
 import RulesEditor from './components/RulesEditor.vue';
 import StatusBar from './components/StatusBar.vue';
 import TicketCard from './components/TicketCard.vue';
 import ToastStack from './components/ToastStack.vue';
 import UpdatePrompt from './components/UpdatePrompt.vue';
 import { relativeTime, formatUptime } from './lib/format';
+import { blockedCount } from './lib/inbox';
 import { useI18n } from './lib/i18n';
 import { useHubStore } from './stores/hub';
 
-type Tab = 'pending' | 'chat' | 'terminal' | 'agents' | 'history' | 'rules';
+type Tab = 'pending' | 'inbox' | 'chat' | 'terminal' | 'agents' | 'history' | 'rules';
 
 const TerminalPanel = defineAsyncComponent(
   () => import('./components/TerminalPanel.vue'),
@@ -54,7 +59,8 @@ function initialTab(): Tab {
   const value = new URLSearchParams(window.location.search).get('tab');
   // `?tab=tasks` is a legacy bookmark: the page now lives inside Chat.
   if (value === 'tasks') return 'chat';
-  return value === 'chat' ||
+  return value === 'inbox' ||
+    value === 'chat' ||
     value === 'terminal' ||
     value === 'agents' ||
     value === 'history' ||
@@ -65,6 +71,7 @@ function initialTab(): Tab {
 
 const activeTab = ref<Tab>(initialTab());
 const batchOpen = ref(false);
+const dispatchOpen = ref(false);
 
 // 下发任务 is now a mode inside 会话, so it no longer earns a nav slot.
 const tabs = computed(() => [
@@ -73,6 +80,12 @@ const tabs = computed(() => [
     label: t('app.tabs.pending'),
     icon: ScrollText,
     count: store.pendingTickets.length,
+  },
+  {
+    key: 'inbox' as const,
+    label: t('app.tabs.inbox'),
+    icon: Inbox,
+    count: blockedCount(store.inbox),
   },
   {
     key: 'chat' as const,
@@ -109,6 +122,7 @@ const toolTabs = computed(() => [
 // rest into a "More" sheet (see docs/UI_REDESIGN_BRIEF.md §16.3).
 const primaryTabKeys: ReadonlySet<Tab> = new Set([
   'pending',
+  'inbox',
   'chat',
   'agents',
 ]);
@@ -360,6 +374,15 @@ onBeforeUnmount(() => {
         </nav>
 
         <div class="ml-auto flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            class="flex h-9 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-[12px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container"
+            :title="t('app.dispatchHint')"
+            @click="dispatchOpen = true"
+          >
+            <Send :size="15" />
+            <span class="hidden sm:inline">{{ t('app.dispatch') }}</span>
+          </button>
           <div ref="toolsWrap" class="relative">
             <button
               type="button"
@@ -541,6 +564,8 @@ onBeforeUnmount(() => {
 
       <ChatPanel v-else-if="activeTab === 'chat'" />
 
+      <InboxPanel v-else-if="activeTab === 'inbox'" />
+
       <TerminalPanel v-else-if="activeTab === 'terminal'" />
 
       <AgentPanel v-else-if="activeTab === 'agents'" />
@@ -555,6 +580,8 @@ onBeforeUnmount(() => {
       :tickets="store.pendingTickets"
       @close="batchOpen = false"
     />
+
+    <QuickDispatchDialog :open="dispatchOpen" @close="dispatchOpen = false" />
 
     <footer
       class="mx-auto hidden max-w-6xl px-6 pb-6 text-center text-[11px] text-on-surface-variant/60 md:block"

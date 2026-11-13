@@ -8,6 +8,7 @@ import type {
   CreateTaskInput,
   DecisionTicket,
   Device,
+  DispatchTaskInput,
   EnrollmentResponse,
   EnvHeartbeat,
   Exchange,
@@ -17,6 +18,7 @@ import type {
   ResolveTicketInput,
   RuleCandidate,
   RulesResponse,
+  SupervisorInboxItem,
   SyncState,
   UpdateAgentInput,
   WorkspaceProject,
@@ -28,6 +30,7 @@ import {
   isAwaitingTicket,
   isTerminalTicket,
 } from '../lib/format';
+import { sortInbox } from '../lib/inbox';
 import { pushToast } from '../lib/toast';
 import { t } from '../lib/i18n';
 
@@ -140,6 +143,8 @@ export function createHubStore(api: HubApi = hubApi) {
   const exchanges = ref<Exchange[]>([]);
   const tickets = ref<DecisionTicket[]>([]);
   const tasks = ref<AgentTask[]>([]);
+  /** The supervisor's queue: work that owes a person a look, with its ruling. */
+  const inbox = ref<SupervisorInboxItem[]>([]);
   const rules = ref<RulesResponse | null>(null);
   const ruleCandidates = ref<RuleCandidate[]>([]);
   const workspaceProjects = ref<WorkspaceProject[]>([]);
@@ -168,6 +173,8 @@ export function createHubStore(api: HubApi = hubApi) {
   const fleetLoading = ref(false);
   const agentActionEnv = ref('');
   const agentsLoading = ref(false);
+  const inboxLoading = ref(false);
+  const inboxActionId = ref('');
   const connection = ref<'idle' | 'online' | 'offline'>('idle');
   const realtimeState = ref<'idle' | 'connecting' | 'online' | 'offline'>('idle');
   const serverVersion = ref('');
@@ -490,6 +497,9 @@ export function createHubStore(api: HubApi = hubApi) {
       lastError.value = '';
       connection.value = 'online';
       if (options.manual) void pollHealth();
+      // The header's refresh button means "everything", and the inbox is the
+      // one slice the snapshot does not carry.
+      if (options.manual) void loadInbox();
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         logout(t('store.sessionExpired'));
@@ -686,6 +696,7 @@ export function createHubStore(api: HubApi = hubApi) {
     devices.value = [];
     tickets.value = [];
     tasks.value = [];
+    inbox.value = [];
     rules.value = null;
     ruleCandidates.value = [];
     workspaceProjects.value = [];
@@ -701,6 +712,9 @@ export function createHubStore(api: HubApi = hubApi) {
     void runSyncLoop(syncGeneration);
     void runRealtimeLoop(realtimeGeneration);
     void pollHealth();
+    // The nav badge counts stuck tasks before anyone opens the page, so the
+    // inbox is read once up front even though it is not part of the snapshot.
+    void loadInbox();
     healthTimer = setInterval(() => void pollHealth(), HEALTH_POLL_MS);
   }
 
@@ -856,6 +870,81 @@ export function createHubStore(api: HubApi = hubApi) {
     } catch (error) {
       fail(error, t('store.taskCancelFailed'));
       return false;
+    }
+  }
+
+  /**
+   * Let the hub choose the machine. When it refuses, the refusal names every
+   * candidate it ruled out — that is the useful part, so it reaches the toast
+   * untouched instead of being reduced to "dispatch failed".
+   */
+  async function dispatchTask(input: DispatchTaskInput): Promise<boolean> {
+    try {
+      const response = await api.dispatchTask(token.value, input);
+      tasks.value = [response.task, ...tasks.value];
+      pushToast(
+        t('store.taskRouted', { id: response.task.id, env: response.route.env }),
+        'success',
+      );
+      void refresh();
+      return true;
+    } catch (error) {
+      fail(error, t('store.taskDispatchFailed'));
+      return false;
+    }
+  }
+
+  /** Ask the supervisor to watch a live run. One-way: nothing undoes it. */
+  async function takeoverTask(taskId: string, reason: string): Promise<boolean> {
+    try {
+      const response = await api.takeoverTask(token.value, taskId, reason);
+      tasks.value = tasks.value.map((task) =>
+        task.id === taskId ? response.task : task,
+      );
+      pushToast(
+        response.changed
+          ? t('store.taskTakenOver', { id: taskId })
+          : t('store.taskAlreadyTakenOver', { id: taskId }),
+        'success',
+      );
+      void refresh();
+      return true;
+    } catch (error) {
+      fail(error, t('store.taskTakeoverFailed'));
+      return false;
+    }
+  }
+
+  async function loadInbox(): Promise<void> {
+    if (!token.value || inboxLoading.value) return;
+
+    inboxLoading.value = true;
+    try {
+      const response = await api.getInbox(token.value);
+      inbox.value = sortInbox(response.items);
+    } catch (error) {
+      fail(error, t('store.inboxLoadFailed'));
+    } finally {
+      inboxLoading.value = false;
+    }
+  }
+
+  /** Override the breaker. The task leaves the queue, so it leaves the inbox. */
+  async function retryTask(taskId: string, reason?: string): Promise<boolean> {
+    if (inboxActionId.value) return false;
+
+    inboxActionId.value = taskId;
+    try {
+      const response = await api.retryTask(token.value, taskId, reason);
+      inbox.value = inbox.value.filter((item) => item.task.id !== response.task.id);
+      pushToast(t('store.taskReopened', { id: taskId }), 'success');
+      void refresh();
+      return true;
+    } catch (error) {
+      fail(error, t('store.taskRetryFailed'));
+      return false;
+    } finally {
+      inboxActionId.value = '';
     }
   }
 
@@ -1281,6 +1370,7 @@ export function createHubStore(api: HubApi = hubApi) {
     rules,
     tickets,
     tasks,
+    inbox,
     ruleCandidates,
     workspaceProjects,
     fleetCandidates,
@@ -1316,6 +1406,8 @@ export function createHubStore(api: HubApi = hubApi) {
     unbindingProjectId,
     agentActionEnv,
     agentsLoading,
+    inboxLoading,
+    inboxActionId,
     connection,
     realtimeState,
     serverVersion,
@@ -1335,7 +1427,11 @@ export function createHubStore(api: HubApi = hubApi) {
     extendTicket,
     cancelTicket,
     createTask,
+    dispatchTask,
     cancelTask,
+    takeoverTask,
+    loadInbox,
+    retryTask,
     bindProject,
     unbindProject,
     associateFleetCandidate,

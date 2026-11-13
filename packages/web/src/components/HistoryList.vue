@@ -5,17 +5,20 @@ import {
   CheckCircle2,
   Clock,
   FileText,
+  Loader2,
   RotateCcw,
+  ScrollText,
   Search,
   User,
   X,
 } from 'lucide-vue-next';
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 
-import type { DecisionTicket } from '@zhunzou/shared';
+import type { DecisionTicket, RuleCandidate } from '@zhunzou/shared';
 
 import {
   HISTORY_FILTERS,
+  candidateForTicket,
   filterHistory,
   type HistoryFilter,
 } from '../lib/history';
@@ -33,6 +36,31 @@ const store = useHubStore();
 const { t } = useI18n();
 const query = ref('');
 const activeFilter = ref<HistoryFilter>('all');
+const remembering = ref(false);
+
+/**
+ * Approving a ticket already distills a rule candidate server-side; this page
+ * is where a person can turn one into a rule without leaving the decision they
+ * just made. The list is only fetched for this page, so an unloaded hub simply
+ * shows no chip.
+ */
+onMounted(() => {
+  void store.loadRuleCandidates();
+});
+
+function pendingCandidate(ticketId: string): RuleCandidate | undefined {
+  return candidateForTicket(store.pendingRuleCandidates, ticketId);
+}
+
+async function remember(candidateId: string): Promise<void> {
+  if (remembering.value) return;
+  remembering.value = true;
+  try {
+    await store.acceptRuleCandidate(candidateId);
+  } finally {
+    remembering.value = false;
+  }
+}
 
 const all = computed(() => store.historyTickets);
 const items = computed(() =>
@@ -235,6 +263,25 @@ function watermark(ticket: DecisionTicket): string {
           <p class="text-sm font-medium text-on-surface">
             {{ t('history.option', { key: ticket.selectedOption, label: optionLabel(ticket, ticket.selectedOption) }) }}
           </p>
+        </div>
+
+        <div
+          v-if="pendingCandidate(ticket.id)"
+          class="mt-2.5 flex flex-wrap items-center gap-2 rounded-lg border border-primary/20 bg-primary/[0.04] px-2.5 py-2"
+        >
+          <ScrollText :size="13" class="shrink-0 text-primary" />
+          <p class="min-w-0 flex-1 break-words text-[11px] leading-5 text-on-surface-variant">
+            {{ pendingCandidate(ticket.id)!.content }}
+          </p>
+          <button
+            type="button"
+            class="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-on-primary transition hover:bg-primary-container disabled:opacity-50"
+            :disabled="remembering"
+            @click="remember(pendingCandidate(ticket.id)!.id)"
+          >
+            <Loader2 v-if="remembering" :size="12" class="animate-spin" />
+            {{ t('history.rememberRule') }}
+          </button>
         </div>
 
         <div

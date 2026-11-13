@@ -53,6 +53,7 @@ import {
   listExchangesQuerySchema,
   listFleetQuerySchema,
   listLearnedRulesQuerySchema,
+  listSupervisorInboxQuerySchema,
   listRuleCandidatesQuerySchema,
   listTaskEventsQuerySchema,
   listTaskLogsQuerySchema,
@@ -3211,6 +3212,20 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         }
 
         return { candidate: updated };
+      });
+
+      // -----------------------------------------------------------------
+      // 决策收件箱: the statuses that owe a person a look.
+      //
+      // A read-model over `agent_tasks` plus the supervisor's own log lines.
+      // It exists so the dashboard does not page through 500 rows per card to
+      // find the one sentence that explains a stuck task — and so that
+      // sentence is read from where it was written, never copied onto the job.
+      // -----------------------------------------------------------------
+      api.get('/supervisor/inbox', async (request) => {
+        requireAdmin(request);
+        const query = listSupervisorInboxQuerySchema.parse(request.query ?? {});
+        return { items: repo.listSupervisorInbox(query) };
       });
 
       // -----------------------------------------------------------------

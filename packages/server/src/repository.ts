@@ -60,6 +60,7 @@ import type {
   ListExchangesQuery,
   ListLearnedRulesQuery,
   ListRuleCandidatesQuery,
+  ListSupervisorInboxQuery,
   ListTerminalAuditQuery,
   ListTaskEventsQuery,
   ListTaskLogsQuery,
@@ -73,6 +74,7 @@ import type {
   ResolveTicketInput,
   RuleCandidate,
   SendChatMessageInput,
+  SupervisorInboxItem,
   TaskEvent,
   TaskEventListResponse,
   TaskLog,
@@ -90,6 +92,7 @@ import {
   HEARTBEAT_ONLINE_WINDOW_MS,
   createLearnedRuleSchema,
   nodeFreeMemoryMB,
+  wipBranchName,
 } from '@zhunzou/shared';
 
 import { normalizeHost, sameMachine } from './env-allocator.js';
@@ -718,6 +721,11 @@ export interface TicketStore {
   createWrappedTask(input: CreateLocalTaskInput, now?: number): AgentTask;
   getTask(id: number): AgentTask | null;
   listTasks(query: ListTasksQuery): { tasks: AgentTask[]; total: number };
+  /**
+   * The dashboard's 决策收件箱: tasks a person owes a look, each with the
+   * supervisor's last word beside it. Read-only projection over `task_logs`.
+   */
+  listSupervisorInbox(query: ListSupervisorInboxQuery): SupervisorInboxItem[];
   claimNextTask(env: string, now?: number): AgentTask | null;
   completeTask(id: number, input: CompleteTaskInput, now?: number): AgentTask;
   cancelTask(id: number, now?: number): AgentTask | null;
@@ -3423,6 +3431,78 @@ export class TicketRepository implements TicketStore {
       tasks: rows.map(toTask),
       total: countRow?.value ?? 0,
     };
+  }
+
+  /**
+   * BLOCKED first, then DONE, each newest-first; the limit cuts the merged
+   * list so a pile of finished work can never push a stuck task off the page.
+   */
+  listSupervisorInbox(query: ListSupervisorInboxQuery): SupervisorInboxItem[] {
+    const rows = [
+      ...this.inboxRows('BLOCKED', query.limit),
+      ...this.inboxRows('DONE', query.limit),
+    ].slice(0, query.limit);
+    if (rows.length === 0) return [];
+
+    const ids = rows.map((row) => row.id);
+    const notes = this.db
+      .select({
+        taskId: taskLogs.taskId,
+        diagnosis: taskLogs.diagnosis,
+        createdAt: taskLogs.createdAt,
+      })
+      .from(taskLogs)
+      .where(
+        and(
+          inArray(taskLogs.taskId, ids),
+          isNotNull(taskLogs.diagnosis),
+          sql`${taskLogs.id} = (SELECT MAX(id) FROM task_logs tl WHERE tl.task_id = ${taskLogs.taskId} AND tl.diagnosis IS NOT NULL)`,
+        ),
+      )
+      .all();
+
+    const signatures = this.db
+      .select({
+        taskId: taskLogs.taskId,
+        errorSignature: taskLogs.errorSignature,
+      })
+      .from(taskLogs)
+      .where(
+        and(
+          inArray(taskLogs.taskId, ids),
+          isNotNull(taskLogs.errorSignature),
+          sql`${taskLogs.id} = (SELECT MAX(id) FROM task_logs tl WHERE tl.task_id = ${taskLogs.taskId} AND tl.error_signature IS NOT NULL)`,
+        ),
+      )
+      .all();
+
+    const noteByTask = new Map(notes.map((row) => [row.taskId, row]));
+    const signatureByTask = new Map(
+      signatures.map((row) => [row.taskId, row.errorSignature]),
+    );
+
+    return rows.map((row) => {
+      const task = toTask(row);
+      const note = noteByTask.get(row.id);
+      const signature = signatureByTask.get(row.id);
+      return {
+        task,
+        ...(note?.diagnosis ? { diagnosis: note.diagnosis } : {}),
+        ...(note ? { diagnosisAt: note.createdAt } : {}),
+        ...(signature ? { errorSignature: signature } : {}),
+        ...(row.workspacePath ? { branch: wipBranchName(task.id) } : {}),
+      };
+    });
+  }
+
+  private inboxRows(status: 'BLOCKED' | 'DONE', limit: number): AgentTaskRow[] {
+    return this.db
+      .select()
+      .from(agentTasks)
+      .where(eq(agentTasks.status, status))
+      .orderBy(desc(agentTasks.updatedAt), desc(agentTasks.id))
+      .limit(limit)
+      .all();
   }
 
   /**

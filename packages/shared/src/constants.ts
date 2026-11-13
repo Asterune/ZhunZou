@@ -325,3 +325,14 @@ export const SUPERVISOR_RETRY_CEILING = 3;
  */
 export const SUPERVISOR_SIGNATURE_SIMILARITY = 0.85;
 
+/**
+ * Branch prefix for a task's isolated worktree. The node creates it, the hub
+ * names it in the inbox card, so this lives where both can read one answer.
+ */
+export const WIP_BRANCH_PREFIX = 'wip/zz-';
+
+/** The branch a task's worktree lives on. Ids are validated where they are used. */
+export function wipBranchName(taskId: number | string): string {
+  return `${WIP_BRANCH_PREFIX}${taskId}`;
+}
+

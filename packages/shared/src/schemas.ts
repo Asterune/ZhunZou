@@ -565,6 +565,46 @@ export const takeoverTaskSchema = z.object({
 });
 
 /* ------------------------------------------------------------------ */
+/* Supervisor inbox (dashboard read-model)                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One card in 决策收件箱.
+ *
+ * `task` is the untouched task row: the supervisor's words live beside it, in
+ * the log line they were written to, so a card can never be read as if the
+ * hub had rewritten what the engine concluded.
+ */
+export const supervisorInboxItemSchema = z.object({
+  task: agentTaskSchema,
+  /** What the supervisor said last time it handled this task, one line. */
+  diagnosis: z.string().trim().min(1).max(500).optional(),
+  /** When that line was written, so a stale verdict reads as stale. */
+  diagnosisAt: z.number().int().nonnegative().optional(),
+  /** The fault name the node reported for the attempt being judged. */
+  errorSignature: z.string().trim().min(1).max(500).optional(),
+  /** Only for tasks that ran in an isolated worktree. */
+  branch: z.string().min(1).max(200).optional(),
+});
+
+export type SupervisorInboxItem = z.infer<typeof supervisorInboxItemSchema>;
+
+export const supervisorInboxResponseSchema = z.object({
+  items: z.array(supervisorInboxItemSchema),
+});
+
+export type SupervisorInboxResponse = z.infer<typeof supervisorInboxResponseSchema>;
+
+/** Query accepted by GET /api/supervisor/inbox. */
+export const listSupervisorInboxQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
+export type ListSupervisorInboxQuery = z.infer<
+  typeof listSupervisorInboxQuerySchema
+>;
+
+/* ------------------------------------------------------------------ */
 /* Task execution logs                                                 */
 /* ------------------------------------------------------------------ */
 

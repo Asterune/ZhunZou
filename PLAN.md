@@ -71,7 +71,7 @@ packages/
 - [x] **Step 3.3 (`server/src/supervisor/healer.ts`)** L2 轻量 LLM 结构化诊断（`decision:'APPROVE'|'RETRY_WITH_FIX'|'ESCALATE_TO_HUMAN'` + `diagnosisSummary`≤50 字 + `fixPrompt`）；熔断：`retryCount>=3`、连续两次报错相似度 >85% 或 Git diff hash 无变动 → `BLOCKED`。
 
 ### Phase 4 — 上帝视角控制台与移动端闭环（本次范围外，待后续）
-- [ ] **Step 4.1 (`web`)** 决策收件箱（仅 BLOCKED/DONE，设备标签 + 管家一句话诊断 + Git 变更摘要 + 审批按钮组）、设备矩阵（在线/空闲内存/Worktree 数/托管开关）、快速派单弹窗。
+- [x] **Step 4.1 (`web`)** 决策收件箱（仅 BLOCKED/DONE，设备标签 + 管家一句话诊断 + Git 变更摘要 + 审批按钮组）、设备矩阵（在线/空闲内存/Worktree 数/托管开关）、快速派单弹窗。
 - [ ] **Step 4.2 (`server/src/notify`)** 飞书/企微交互卡片 + 通用 Webhook；`BLOCKED`/`DONE` 推送带 `[批准继续]` `[批准并记住规则]` `[一键 Squash 变基合并]`。
 
 ## 5. 实施进度记录（AI 自动维护）
@@ -239,3 +239,18 @@ packages/
 - **L1 的 ReDoS 时间箱仍然欠着**：3.2 §7 说"等 3.3 给 L1/L2 一起加"。L2 真加了（`AbortController` + `timeoutMs`，A6 兑现）；L1 没加——它是同进程纯内存匹配，要限时只能上 worker 或加字符预算，比本步该有的改动更大。如实记录，不留假承诺。
 - 范围外：`permission.request` 帧仍然没有生产方（同 3.2）；`rule_candidates → learned_rules` 自动学习、"批准并补充指令"按钮、仪表盘 BLOCKED 推送与展示全部留给 Phase 4（本步把 `fix_prompt` 通道打通，Phase 4 不必再改 schema）。
 - 测试：新增 `packages/server/test/supervisor-heal.test.ts`（30 项纯函数：B1–B12 熔断、E1–E8 证据、N1–N9 提示词与解析）、`supervisor-healer.test.ts`（9 项：A1–A8 客户端与时间箱，A1/A2/A8b 断言 `fetch` 调用数为 0）、`db-task-heal.test.ts`（10 项：R1–R10 三条边 + 旧库 `DROP COLUMN` 再升级）、`api-healer.test.ts`（13 项：H1–H13 端到端，含 `POST /tasks/:id/retry` 的 403）、`packages/bridge/test/wake-heal.test.ts`（9 项：W1–W8，真实 git 仓库跑指纹）。全仓 108 files / 1041 tests（本步 +5 files / +71 tests）与 `pnpm -r typecheck` 全绿；`tasks`/`stale-tasks`/`task-protocol`/`task-logs`/`log-sink`/`wake` 等既有用例**一条断言未改**。
+
+**Step 4.1 落地说明（与蓝图的差异）**
+
+设计全文见 `docs/design/console-4.1.md`（16 条现状核实 + S/R/H/I/M/T 六张矩阵）；此处只记偏离。
+
+- **"Git 变更摘要 + 审批按钮组"落成"合并信息 + 一颗人工放行"**（用户批准：只给合并信息，不动 git）：卡片给 `wip/zz-<id>` 分支名、节点上报的 `workspacePath` 和两个复制按钮，并写明"发布动作仍在节点上做"。Hub 侧从来没有 diff——2.1 的 `squashAndMerge` 只在返回值里给 `base/commit`，没有持久化，节点也只回报路径；由 Hub 现编摘要就得隔空对别人机器上的仓库跑 git，而事实 16 里根本没有这条通道。`BLOCKED` 卡上一颗「人工放行」（`POST /tasks/:id/retry`），`DONE` 卡只读——放行一张已完成的票没有语义。
+- **不画"托管开关"**：2.3 的 takeover 是单向置位、只认 `CLAIMED`，也没有反向路由。TaskBoard 上是「交给管家」按钮，置位后换成一枚"管家托管中"标签；能关掉的开关就是在撒谎。
+- **收件箱是读模型，不是任务的新字段**：`GET /api/supervisor/inbox`（admin）把 `agent_tasks` 与最近一行 `task_logs.diagnosis`/`error_signature` 投影成 `SupervisorInboxItem`。`agentTaskSchema` 一列未加（事实 8：4 处 `toEqual` 精确比对任务行）、`syncStateSchema`/`syncFingerprint` 未动；收录状态固定 `BLOCKED`+`DONE`，`limit` 在合并之后截断，所以 40 张 DONE 挤不掉那一张卡住的。取数时机=进页面 + header 手动刷新，**没**挂在 `applySnapshot` 上：既省掉一次快照耦合，也不逼既有测试替身长出 `getInbox`。
+- **"批准并记住规则"从 TicketCard 迁到 HistoryList**：TicketCard 的两个调用点（御览页、会话页）只渲染**待批**工单，而候选是决议之后才蒸馏的（事实 12）——按钮长在待批页永远不会出现。判据抽成纯函数 `candidateForTicket(candidates, ticketId)` 落进 `lib/history.ts`，T1/T2 才问得到；accept 后由 store 就地改写 `ruleCandidates`，不额外重拉。
+- **`wipBranchName` 是本步唯一的 bridge 侧改动**：新增 `WIP_BRANCH_PREFIX = 'wip/zz-'` + `wipBranchName(taskId)`，bridge `git/worktree.ts` 两处内联改引用，**串逐字节不变**（`grep -rn "wip/zz" packages/*/src` 只剩常量定义与一行注释），bridge 的 worktree 用例一条未改。
+- **设备矩阵从 AgentPanel 抽进 `lib/matrix.ts`**：分组语义原样保留（同 host 多机加 device id 前缀、`host:` 派生的行不加前缀、未归属 agent 落 `ungrouped:<host>`、在线数→总数→host 排序，M1/M1b 钉住），`unknownHost` 文案由组件注入、lib 不碰 i18n。补上画像后才暴露原 computed 的对象字面量缺 `activeCount`/`isolatedCount` 初值——纯函数里 `+= 1` 会算出 `NaN`，由 `pnpm -r typecheck` 逼出。
+- **"Worktree 数"改名"独立工作区"**：`workspace_path` 只在完成回报时写入（2.1），运行中的隔离任务在 Hub 侧不可见；`fleetWorkspaces` 是另一回事（登记表，事实 13）。宁可标口径，也不显示一个看着实时其实滞后的数字。
+- **动作失败只 toast，不写 `lastError`**：沿用 `fail()`（`loadAgents`/`loadRules` 的既有口径，401 才登出）；`lastError` 专用于 sync 健康灯，收件箱读失败去点亮"同步中断"横幅是假信号。矩阵 I5 按实现改写。
+- 范围外：`BLOCKED`/`DONE` 的飞书/企微推送与审批深链（Step 4.2）、真合并（节点自己的 git）、`rule_candidates → learned_rules` 自动学习、组件渲染测试（事实 3：无 `@vue/test-utils`/jsdom，可断言的全在 lib 与 store，形状由 `vue-tsc` 兜）。
+- 测试：新增 `packages/shared/test/supervisor-inbox.test.ts`（8 项：S1–S5 分支名与契约，含"可选键缺席时不注入 `undefined`"）、`packages/server/test/db-inbox.test.ts`（8 项：R1–R8，含旧库 `DROP COLUMN` 后仍可读写）、`api-inbox.test.ts`（6 项：H1–H6，H1 用真发出去的 Agent Token 断言 403）、`packages/web/test/inbox.test.ts`（15 项：I1–I8，`loadInbox` 不并发、409 原文进 toast、放行后卡片消失且只 refresh 一次）、`matrix.test.ts`（11 项：M1–M5）、`tickets.test.ts`（3 项：T1–T3）。web 测试 7 files/56 tests → 10 files/85 tests，**既有 7 个文件一条断言未改**。第一版 R4 把三张票开在同一环境里逐个 claim，撞上 `claimNextTask` 的 oldest-first（`ConflictError: task #48 is PENDING`），改为排队票自占一环并断言 claim 的返回 id——矩阵 R4 只要求"FAILED/CLAIMED 不入箱"，断言没有放松。全仓 114 files / 1092 tests、`pnpm -r typecheck`、`pnpm --filter @zhunzou/web build` 全绿。
