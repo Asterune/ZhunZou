@@ -26,6 +26,11 @@ export interface PresenceOptions {
   intervalMs: number;
   /** Project name reported with every heartbeat so the dashboard can bind it. */
   projectName?: string;
+  /**
+   * What the first heartbeat should say. The default reads as an idle MCP
+   * server, which is wrong for a process that is already doing something.
+   */
+  initial?: Partial<PresenceState>;
   onError?: (error: unknown) => void;
 }
 
@@ -51,6 +56,7 @@ export function createPresenceReporter(
     status: 'Idle',
     ...(options.projectName ? { projectName: options.projectName } : {}),
     currentTask: 'MCP 已连接',
+    ...options.initial,
   };
   let timer: ReturnType<typeof setInterval> | null = null;
   let paused = false;

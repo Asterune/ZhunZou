@@ -33,6 +33,7 @@ import type {
   CreateAgentInput,
   CreateChatSessionInput,
   CreateLearnedRuleInput,
+  CreateLocalTaskInput,
   CreateTaskInput,
   CreateTerminalInput,
   CreateEnrollmentInput,
@@ -708,11 +709,26 @@ export interface TicketStore {
   renewTaskLease(env: string, now?: number): number;
 
   createTask(input: CreateTaskInput, now?: number): AgentTask;
+  /**
+   * Register a run the human already started in their own terminal. It cannot
+   * go through the queue: it is executing right now, and the wake loop on the
+   * same env would otherwise claim and re-run it.
+   */
+  createWrappedTask(input: CreateLocalTaskInput, now?: number): AgentTask;
   getTask(id: number): AgentTask | null;
   listTasks(query: ListTasksQuery): { tasks: AgentTask[]; total: number };
   claimNextTask(env: string, now?: number): AgentTask | null;
   completeTask(id: number, input: CompleteTaskInput, now?: number): AgentTask;
   cancelTask(id: number, now?: number): AgentTask | null;
+  /**
+   * Say that this live run is unattended, so the supervisor may rule on its
+   * requests without a human. Only ever sets the flag; the reason is logged.
+   */
+  markTaskManaged(
+    id: number,
+    reason: string,
+    now?: number,
+  ): { task: AgentTask; changed: boolean };
   /** CLAIMED tasks, oldest claim first (used by the stale-task sweeper). */
   listClaimedTasks(limit?: number): AgentTask[];
   /** Requeue a lost task, or fail it after too many attempts. */
@@ -3295,6 +3311,81 @@ export class TicketRepository implements TicketStore {
   getTask(id: number): AgentTask | null {
     const row = this.db.select().from(agentTasks).where(eq(agentTasks.id, id)).get();
     return row ? toTask(row) : null;
+  }
+
+  createWrappedTask(input: CreateLocalTaskInput, now = Date.now()): AgentTask {
+    const row = this.db
+      .insert(agentTasks)
+      .values({
+        env: input.env,
+        projectName: input.projectName ?? null,
+        title: input.title,
+        instruction: input.instruction,
+        // Claimed on the way in: the terminal that is running it holds the work.
+        status: 'CLAIMED',
+        attempts: 1,
+        repoName: input.repoName ?? null,
+        engine: input.engine ?? null,
+        origin: 'LOCAL_WRAP',
+        sessionId: input.sessionId ?? null,
+        managedBySupervisor: 0,
+        retryCount: 0,
+        workspacePath: input.workspacePath ?? null,
+        createdAt: now,
+        updatedAt: now,
+        claimedAt: now,
+        leaseAt: now,
+      })
+      .returning()
+      .get();
+
+    if (input.projectName) {
+      this.bindWorkspaceProject(input.env, input.projectName, now);
+    }
+
+    return toTask(row);
+  }
+
+  markTaskManaged(
+    id: number,
+    reason: string,
+    now = Date.now(),
+  ): { task: AgentTask; changed: boolean } {
+    const current = this.getTask(id);
+    if (!current) {
+      throw new ConflictError(`task #${id} not found`, 'NOT_FOUND');
+    }
+    if (current.status !== 'CLAIMED') {
+      throw new ConflictError(
+        `task #${id} is ${current.status}, expected CLAIMED`,
+        'INVALID_TASK_STATUS',
+      );
+    }
+    if (current.managedBySupervisor) return { task: current, changed: false };
+
+    const row = this.db
+      .update(agentTasks)
+      .set({ managedBySupervisor: 1, updatedAt: now })
+      .where(
+        and(
+          eq(agentTasks.id, id),
+          eq(agentTasks.status, 'CLAIMED'),
+          eq(agentTasks.managedBySupervisor, 0),
+        ),
+      )
+      .returning()
+      .get();
+
+    if (!row) {
+      // Lost the race to another takeover or to a status change; report the truth.
+      const latest = this.getTask(id);
+      if (!latest) throw new ConflictError(`task #${id} not found`, 'NOT_FOUND');
+      return { task: latest, changed: false };
+    }
+
+    this.appendTaskLog(id, { stream: 'system', chunk: `已交由 Hub 管家托管：${reason}` }, now);
+
+    return { task: toTask(row), changed: true };
   }
 
   listTasks(query: ListTasksQuery): { tasks: AgentTask[]; total: number } {

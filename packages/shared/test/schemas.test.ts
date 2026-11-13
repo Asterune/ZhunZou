@@ -5,6 +5,8 @@ import {
   bindWorkspaceProjectSchema,
   completeTaskSchema,
   createTaskSchema,
+  createLocalTaskSchema,
+  takeoverTaskSchema,
   createTicketSchema,
   decisionTicketSchema,
   extendTicketSchema,
@@ -211,6 +213,61 @@ describe('task schemas', () => {
     expect(isActiveTaskStatus('DONE')).toBe(false);
     expect(isTerminalTaskStatus('FAILED')).toBe(true);
     expect(isTerminalTaskStatus('PENDING')).toBe(false);
+  });
+
+  it('accepts a minimal local wrap registration', () => {
+    const parsed = createLocalTaskSchema.parse({
+      env: 'company-cursor',
+      title: 'cursor-agent -p 修登录页',
+      instruction: 'cursor-agent -p 修登录页',
+    });
+    expect(parsed.engine).toBeUndefined();
+    expect(parsed.sessionId).toBeUndefined();
+    expect(parsed.workspacePath).toBeUndefined();
+  });
+
+  it('keeps a wrapped run honest about its workspace', () => {
+    expect(
+      createLocalTaskSchema.safeParse({
+        env: 'company-cursor',
+        title: 't',
+        instruction: 'i',
+        workspacePath: '/Users/qiliu/code/pte-dojo',
+        engine: 'claude-code',
+      }).success,
+    ).toBe(true);
+    expect(
+      createLocalTaskSchema.safeParse({
+        env: 'company-cursor',
+        title: 't',
+        instruction: 'i',
+        workspacePath: 'code/pte-dojo',
+      }).success,
+    ).toBe(false);
+    expect(
+      createLocalTaskSchema.safeParse({
+        env: 'company-cursor',
+        title: '',
+        instruction: 'i',
+      }).success,
+    ).toBe(false);
+    expect(
+      createLocalTaskSchema.safeParse({
+        env: 'company-cursor',
+        title: 't',
+        instruction: 'i',
+        engine: 'vim',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('requires a takeover to say why', () => {
+    expect(takeoverTaskSchema.safeParse({ reason: '本地 5 分钟无操作，卡在 y/n' }).success).toBe(
+      true,
+    );
+    expect(takeoverTaskSchema.safeParse({ reason: '   ' }).success).toBe(false);
+    expect(takeoverTaskSchema.safeParse({}).success).toBe(false);
+    expect(takeoverTaskSchema.safeParse({ reason: 'x'.repeat(501) }).success).toBe(false);
   });
 });
 

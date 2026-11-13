@@ -32,6 +32,7 @@ import {
   createEnrollmentSchema,
   createFleetBrowseSchema,
   createFleetWorkspaceSchema,
+  createLocalTaskSchema,
   createTaskSchema,
   createTerminalSchema,
   createTicketSchema,
@@ -74,6 +75,7 @@ import {
   resumeQuerySchema,
   sendChatMessageSchema,
   syncQuerySchema,
+  takeoverTaskSchema,
   terminalAuditExportQuerySchema,
   terminalCloseSchema,
   ticketIdSchema,
@@ -1486,6 +1488,19 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return reply.code(201).send({ task });
       });
 
+      /**
+       * A wrapped local terminal (`zz run`) registers the command it is already
+       * executing. Scoped to the agent's own env, and the hub — not the caller —
+       * decides the origin and the status, so a node cannot fake a dispatch.
+       */
+      api.post('/tasks/local', async (request, reply) => {
+        const input = createLocalTaskSchema.parse(request.body);
+        requireEnvAccess(request, input.env);
+        const task = repo.createWrappedTask(input);
+        taskBus.publish(task);
+        return reply.code(201).send({ task });
+      });
+
       api.get('/tasks', async (request) => {
         requireAdmin(request);
         const query = listTasksQuerySchema.parse(request.query);
@@ -2204,6 +2219,25 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
         taskBus.publish(task);
         return { task };
+      });
+
+      /**
+       * The edge declares a live run unattended, so the hub supervisor may rule
+       * on its requests without waiting for a human (Step 2.3 auto-handover).
+       * One-way and idempotent: taking a task over is easy, and only a human
+       * resolves the ticket that follows.
+       */
+      api.post('/tasks/:id/takeover', async (request) => {
+        const { id } = paramsSchema.parse(request.params);
+        const taskId = parseTicketId(id);
+        const current = repo.getTask(taskId);
+        if (!current) throw new NotFoundError(`task ${formatTicketId(id)} not found`);
+        requireEnvAccess(request, current.env);
+        const input = takeoverTaskSchema.parse(request.body ?? {});
+
+        const { task, changed } = repo.markTaskManaged(taskId, input.reason);
+        if (changed) taskBus.publish(task);
+        return { task, changed };
       });
 
       // Human cancels a task that has not finished.

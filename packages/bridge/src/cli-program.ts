@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Command } from 'commander';
 
-import { loadBridgeConfig, detectWorkspaceProject } from './config.js';
+import { loadBridgeConfig, detectWorkspaceProject, type BridgeConfig } from './config.js';
 import {
   addFleetProjects,
   agentKindForAdapter,
@@ -20,6 +20,7 @@ import {
   type FleetProjectEntry,
 } from './fleet.js';
 import { createHubApi } from './hub.js';
+import type { HubApi } from './hub-client.js';
 import { runInit } from './init.js';
 import { machineId } from './machine-id.js';
 import { createPresenceReporter } from './presence.js';
@@ -44,6 +45,12 @@ import {
   scanRecentWorkspaces,
   type EditorFlavor,
 } from './workspaces.js';
+import { parseIdleMs } from './wrappers/idle.js';
+import {
+  resolveWrapAdapter,
+  runWrapped,
+  wrappableAdapters,
+} from './wrappers/runner.js';
 
 const DEFAULT_HUB_URL = 'http://127.0.0.1:8787';
 const DEFAULT_INTERVAL_MS = 15_000;
@@ -319,6 +326,48 @@ function currentCliPath(): string {
     if (existsSync(candidate)) return candidate;
   }
   return launched ?? join(here, 'cli.js');
+}
+
+/**
+ * Bridge settings for a `zz run` that never reaches the hub. Only the timers
+ * are read; nothing here authenticates anything.
+ */
+function hublessConfig(cwd: string): BridgeConfig {
+  const project = detectWorkspaceProject(cwd);
+  return {
+    hubUrl: '',
+    token: '',
+    agentEnv: `local-${hostname()}`,
+    ...(project ? { projectName: project } : {}),
+    fallback: 'cli',
+    waitTimeoutMs: DEFAULT_INTERVAL_MS,
+    cliCommand: 'zhunzou-bridge wait',
+    heartbeatIntervalMs: 30_000,
+    agentKind: 'other',
+    transport: 'http',
+  };
+}
+
+/**
+ * A hub that is not configured at all. Every call fails the way an offline one
+ * would, which is what makes `zz run` degrade to a plain local run through the
+ * same code path as any other registration failure.
+ */
+function offlineHubApi(): HubApi {
+  const fail = async (): Promise<never> => {
+    throw new Error('未接入 Hub（缺少 HUB_TOKEN，可先执行 zhunzou-bridge init）');
+  };
+  return {
+    createLocalTask: fail,
+    appendTaskLog: fail,
+    reportTaskEvents: fail,
+    createTicket: fail,
+    takeoverTask: fail,
+    cancelTicket: fail,
+    completeTask: fail,
+    wait: fail,
+    heartbeat: fail,
+  } as unknown as HubApi;
 }
 
 export function createProgram(): Command {
@@ -911,6 +960,94 @@ export function createProgram(): Command {
           fleetConfig: configPath,
         });
         process.stdout.write(`✓ ${restarted.message}\n`);
+      },
+    );
+
+  // `run` hands everything after the engine name to the CLI, which commander
+  // only allows once its parent uses positional options. That is why this
+  // command is registered last: every command above keeps the option parsing
+  // it has always had.
+  program.enablePositionalOptions();
+
+  program
+    .command('run <engine> [runArgs...]')
+    .description(
+      'Watch an agent CLI you start yourself: register it as LOCAL_WRAP and hand it to the Hub when you walk away',
+    )
+    .addHelpText(
+      'after',
+      '\n' +
+        'Only print/stream mode is supported (cursor-agent -p, opencode run, claude -p).\n' +
+        'Full-screen TUIs need a pty this wrapper deliberately does not open; use `wake` or the dashboard for those.\n' +
+        'Wrapper flags must come before <engine>; everything after it goes to the CLI untouched.\n',
+    )
+    .option('--idle-timeout <ms>', 'no-input window before the Hub takes over')
+    .option('--title <text>', 'what the dashboard calls this run')
+    .option('--instruction <text>', 'what the dashboard says the run is doing')
+    .option('--cwd <path>', 'working directory for the CLI (defaults to cwd)')
+    .option('--no-takeover', 'watch and report only; never hand the run to the Hub')
+    .enablePositionalOptions()
+    .passThroughOptions()
+    .action(
+      async (
+        engine: string,
+        runArgs: string[],
+        options: {
+          idleTimeout?: string;
+          title?: string;
+          instruction?: string;
+          cwd?: string;
+          takeover?: boolean;
+        },
+      ) => {
+        const adapter = resolveWrapAdapter(engine);
+        if (!adapter) {
+          process.stderr.write(
+            `[zhunzou] 不能伴随这个引擎: ${engine}\n` +
+              `[zhunzou] 可伴随: ${wrappableAdapters().join(', ') || '（PATH 中没有可用的 agent CLI）'}\n`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+
+        const cwd = resolve(options.cwd ?? process.cwd());
+        const idleMs =
+          options.idleTimeout === undefined
+            ? undefined
+            : parseIdleMs(options.idleTimeout);
+        // Pass-through keeps the separator that split the two option worlds; the
+        // CLI below `zz run` has no reason to see it.
+        const childArgs = runArgs[0] === '--' ? runArgs.slice(1) : runArgs;
+
+        let hub: BridgeConfig;
+        let client: HubApi | null = null;
+        try {
+          hub = loadBridgeConfig(process.env, cwd);
+          client = createHubApi(hub);
+        } catch {
+          // An unconfigured hub costs the dashboard this run, not the run:
+          // the wrapper reports the failure itself and executes locally.
+          hub = hublessConfig(cwd);
+          client = null;
+        }
+
+        try {
+          process.exitCode = await runWrapped({
+            adapter,
+            args: childArgs,
+            cwd,
+            hub,
+            client: client ?? offlineHubApi(),
+            takeover: client !== null && options.takeover !== false,
+            ...(idleMs === undefined ? {} : { idleMs }),
+            ...(options.title === undefined ? {} : { title: options.title }),
+            ...(options.instruction === undefined
+              ? {}
+              : { instruction: options.instruction }),
+          });
+        } finally {
+          client?.close?.();
+        }
       },
     );
 

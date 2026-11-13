@@ -468,6 +468,26 @@ export const createTaskSchema = z.object({
 });
 
 /**
+ * Payload accepted by POST /api/tasks/local.
+ *
+ * A locally wrapped terminal registers the command it is about to run. Unlike
+ * the dashboard payload, this one cannot name its origin or its state: the hub
+ * writes `LOCAL_WRAP` / `CLAIMED` itself, because a wrapped run is already
+ * executing when it appears.
+ */
+export const createLocalTaskSchema = z.object({
+  env: envSchema,
+  projectName: projectNameSchema.optional(),
+  title: z.string().trim().min(1).max(200),
+  instruction: longTextSchema,
+  repoName: z.string().trim().min(1).max(128).optional(),
+  engine: taskEngineSchema.optional(),
+  /** Engine session already open when we attached to it, if known. */
+  sessionId: z.string().trim().min(1).max(128).optional(),
+  workspacePath: workspacePathSchema.optional(),
+});
+
+/**
  * Payload accepted by POST /api/tasks/dispatch: the hub picks the node, so the
  * caller names a repository instead of an env and may narrow with node tags.
  */
@@ -525,6 +545,17 @@ export const completeTaskSchema = z.object({
 export const releaseTaskSchema = z.object({
   requeue: z.boolean().default(true),
   reason: z.string().trim().max(500).optional(),
+});
+
+/**
+ * Payload accepted by POST /api/tasks/:id/takeover.
+ *
+ * The edge says the run is now unattended, so the hub supervisor may rule on its
+ * requests without a human. `reason` is stored in the task log: the flip is the
+ * kind of thing an audit has to be able to read back.
+ */
+export const takeoverTaskSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
 });
 
 /* ------------------------------------------------------------------ */
@@ -1258,6 +1289,8 @@ export type WaitResponse = z.infer<typeof waitResponseSchema>;
 
 export type AgentTask = z.infer<typeof agentTaskSchema>;
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
+export type CreateLocalTaskInput = z.infer<typeof createLocalTaskSchema>;
+export type TakeoverTaskInput = z.infer<typeof takeoverTaskSchema>;
 export type ListTasksQuery = z.infer<typeof listTasksQuerySchema>;
 export type NextTaskQuery = z.infer<typeof nextTaskQuerySchema>;
 export type CompleteTaskInput = z.infer<typeof completeTaskSchema>;

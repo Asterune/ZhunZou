@@ -8,6 +8,7 @@ import type {
   ChatMessageResponse,
   CompleteChatMessageInput,
   CompleteTaskInput,
+  CreateLocalTaskInput,
   CreateTicketInput,
   DecisionRequest,
   DecisionResponse,
@@ -37,6 +38,7 @@ import {
   appendTaskLogSchema,
   completeChatMessageSchema,
   completeTaskSchema,
+  createLocalTaskSchema,
   createTicketSchema,
   decisionRequestSchema,
   fleetBrowseResultInputSchema,
@@ -45,6 +47,7 @@ import {
   proposeChatReplySchema,
   releaseTaskSchema,
   reportExchangeSchema,
+  takeoverTaskSchema,
   reportFleetCandidatesSchema,
   reportTaskEventsSchema,
   ticketIdSchema,
@@ -111,6 +114,18 @@ export interface HubApi {
    */
   reportTaskEvents(taskId: string, events: EngineEventInput[]): Promise<number>;
   releaseTask(taskId: string, input: ReleaseTaskInput): Promise<AgentTask>;
+  /**
+   * Register a run the human started in their own terminal (`zz run`). The hub
+   * files it as LOCAL_WRAP and already claimed, so no wake loop can pick it up.
+   */
+  createLocalTask(input: Omit<CreateLocalTaskInput, 'env'>): Promise<AgentTask>;
+  /**
+   * Say the run is now unattended, so the hub supervisor may rule on its
+   * requests without waiting for a person.
+   */
+  takeoverTask(taskId: string, reason: string): Promise<AgentTask>;
+  /** Withdraw a question nobody needs to answer any more. */
+  cancelTicket(ticketId: string): Promise<DecisionTicket>;
   reportExchange(
     input: Omit<ReportExchangeInput, 'env'>,
   ): Promise<Exchange>;
@@ -428,6 +443,42 @@ export class HubClient implements HubApi {
     );
 
     return body.task;
+  }
+
+  async createLocalTask(
+    input: Omit<CreateLocalTaskInput, 'env'>,
+  ): Promise<AgentTask> {
+    const payload = createLocalTaskSchema.parse({
+      ...input,
+      env: this.config.agentEnv,
+    });
+    const body = await this.request<{ task: AgentTask }>(
+      '/api/tasks/local',
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
+    return body.task;
+  }
+
+  async takeoverTask(taskId: string, reason: string): Promise<AgentTask> {
+    const id = ticketIdSchema.parse(String(taskId));
+    const payload = takeoverTaskSchema.parse({ reason });
+    const body = await this.request<{ task: AgentTask }>(
+      `/api/tasks/${id}/takeover`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      REQUEST_GRACE_MS,
+    );
+    return body.task;
+  }
+
+  async cancelTicket(ticketId: string): Promise<DecisionTicket> {
+    const id = ticketIdSchema.parse(String(ticketId));
+    const body = await this.request<{ ticket: DecisionTicket }>(
+      `/api/tickets/${id}/cancel`,
+      { method: 'POST', body: JSON.stringify({}) },
+      REQUEST_GRACE_MS,
+    );
+    return body.ticket;
   }
 
   async reportExchange(
