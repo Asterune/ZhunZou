@@ -16,3 +16,5 @@ pnpm-debug.log*
 
 # 准奏 MCP 配置（含环境 Token，禁止提交）
 .cursor/mcp.json
+# 准奏节点规则（由 hub 的 bridge 模板安装，按机器而异）
+/AGENTS.md

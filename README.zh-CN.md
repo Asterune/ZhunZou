@@ -37,11 +37,21 @@ AI Agent 写代码很快，但一到「需要人类拍板」就慢下来。现�
 ```text
 Agent 遇到卡点
   → 提交「三行简报 + 2~6 个封闭选项（可标高危）」
+  → Supervisor L1：不可逆动作、或人明确批过的放行，直接从 hub 自己的记录里
+    得到答案——不调模型、不等人
   → 总管 Agent 按 GLOBAL_RULES.md 和历史判例预审
       → 常规决策：几秒内自动准奏
       → 其余情况：进入手机 / 桌面上的统一待批队列
   → 你点一下，长轮询立即唤醒正在等待的 Agent
   → 本次批复沉淀为候选规则，下次直接复用
+
+不只是会提问的活，你直接派下的活也一样：
+  → 调度器把它放到真正具备该 repo、引擎、tags、内存与空闲容量的节点上——
+    放不下就拒绝，并列出每台机器的拒绝原因
+  → 每次运行有独立的 git worktree 和用完即弃的分支，实时日志先降噪，
+    该等权限的地方会停下来等
+  → 被证据证明会重复的失败会被拦下（`BLOCKED`），不是一直重试；卡住的任务
+    会带着签名放行链接推给能放行的人
 ```
 
 不用轮询，不会丢上下文，也不需要一直把编辑器摆在面前。
@@ -52,7 +62,7 @@ Agent 遇到卡点
 - **规则先行，人只在关键处出现。** 总管 Agent 按 `GLOBAL_RULES.md` 和历史判例处理常规问题，真正需要判断的才转人工。
 - **一个入口管所有 Agent。** Cursor、OpenCode、Claude Code、Codex、Gemini、Qoder、Windsurf，或任意 MCP 客户端；桌面、手机、通知里的签名链接都能批。统一队列，统一审计。
 - **人不在也能推进。** 长轮询让你点完的瞬间 Agent 就恢复执行；编辑器关了，还有无头 `wake` / `fleet` 守护进程继续领任务。
-- **默认安全。** 高危选项永不自动执行，超时裁决默认关闭；人工决定永远覆盖迟到的总管或超时结果。
+- **默认安全。** 高危选项永不自动执行——Meta-Agent、超时策略、批量审批与 Supervisor L1 都不能替人放行破坏性操作；超时裁决默认关闭；人工决定永远覆盖迟到的总管或超时结果。
 - **判例复用，而不是重复回答。** 已解决的决策会被召回为判例，每次人工批复还能一键沉淀成规则。
 - **部署极轻。** 一个 Node.js 进程、一个 SQLite 文件、一个端口；不需要 Redis、消息队列，端侧也没有原生编译步骤。
 - **开源、可自托管。** MIT 协议，纯 HTTP API，模型、通知渠道、Agent 适配器都可替换，决策数据留在自己的服务器上。
@@ -63,7 +73,7 @@ Agent 遇到卡点
 
 ## 当前状态
 
-当前状态：**M1–M13 全部完成**，具备共享协议、云端服务、长轮询、Meta-Agent、MCP/CLI 桥接、Web 看板、单端口部署、「历史判例 + 批复沉淀」的决策记忆闭环、超时裁决、批量审批、高风险保护、陈旧任务治理、通知内签名一键批复与接入向导，以及反向长连（M9）、交互式 PTY 终端与治理（M10–M12）、bridge WS 混合传输（M13）、可安装 PWA 看板与一键接入。里程碑表见 [PROJECT_PLAN.md](./PROJECT_PLAN.md)，尚未覆盖的部分见文末「后续可选增强」。
+当前状态：**M1–M13 全部完成**，具备共享协议、云端服务、长轮询、Meta-Agent、MCP/CLI 桥接、Web 看板、单端口部署、「历史判例 + 批复沉淀」的决策记忆闭环、超时裁决、批量审批、高风险保护、陈旧任务治理、通知内签名一键批复与接入向导，以及反向长连（M9）、交互式 PTY 终端与治理（M10–M12）、bridge WS 混合传输（M13）、可安装 PWA 看板与一键接入。在里程碑之上，**蓝图的阶段 0–3** 也已落地：节点 / 任务 / Supervisor 协议契约、资源感知的节点路由、带归一化 engine events 的引擎适配器、可暂停续跑的 wrapped run、git worktree 隔离、本地 run 包裹、日志降噪、Supervisor（规则先行放行、失败熔断、学习规则）、决策收件箱，以及带签名放行链接的任务侧通知。阶段 4（移动端闭环）尚未实现。里程碑表见 [PROJECT_PLAN.md](./PROJECT_PLAN.md)，阶段蓝图见 [PLAN.md](./PLAN.md)，尚未覆盖的部分见文末「后续可选增强」。
 
 ---
 
@@ -76,9 +86,12 @@ zhunzou/
 ├── tsconfig.base.json
 ├── GLOBAL_RULES.md              # Meta-Agent 预审依据（可在线编辑）
 ├── .env.example
+├── PLAN.md / PROJECT_PLAN.md    # 阶段蓝图 / 里程碑表
 ├── Dockerfile / docker-compose.yml
 ├── ecosystem.config.cjs         # pm2 单实例配置
 ├── docs/                        # PLUGINS.md / REALTIME.md / RELEASING.md / UI 说明
+├── docs/design/                 # 各切片简报：调度器、适配器、worktree、wrappers、
+│                                # 降噪、Supervisor guard/healer、通知、终端
 ├── examples/plugins/            # 外部插件示例（审计日志 / 自定义通知）
 ├── scripts/
 │   ├── smoke-test.sh            # 启动真实服务 + HTTP 冒烟测试
@@ -92,11 +105,13 @@ zhunzou/
 │   └── zhunzou.service / nginx.conf
 ├── release/bridge/              # standalone bridge 发布产物（对应 /releases/bridge/）
 └── packages/
-    ├── shared/                  # Zod Schema、TypeScript 类型、状态机常量
-    ├── server/                  # Fastify API、SQLite/Drizzle、Meta-Agent、通知、插件、长轮询、WS 网关
-    ├── bridge/                  # 端侧 MCP Server + CLI（init / wait / wake / fleet / service / upgrade）
-    ├── web/                     # Vue 3 + Vite + TailwindCSS 批奏折看板（可安装 PWA）
-    └── device/                  # 反向长连守护进程：在线状态、机器能力、node-pty 终端
+    ├── shared/                  # Zod Schema、TypeScript 类型、节点/任务/Supervisor 协议契约与状态机
+    ├── server/                  # Fastify API、SQLite/Drizzle、调度器、Meta-Agent、
+    │                              Supervisor（guard + healer）、通知、插件、长轮询、WS 网关
+    ├── bridge/                  # 端侧 MCP Server + CLI（init / wait / wake / fleet /
+    │                              service / upgrade / run）、适配器、wrappers、worktree、日志降噪
+    ├── web/                     # Vue 3 + Vite + TailwindCSS 批奏折看板（可安装 PWA，含决策收件箱）
+    └── device/                  # 反向长连节点守护进程：在线状态、节点 profile、机器能力、node-pty 终端
 ```
 
 ---
@@ -114,6 +129,13 @@ pnpm server                   # 默认 http://127.0.0.1:8787
 ```
 
 浏览器打开 `http://127.0.0.1:8787`，输入 `HUB_SECRET_TOKEN` 即可进入批奏折看板。生产构建由 Fastify 同端口托管，无需额外 Web 服务器。
+
+构建好的 server 也可以直接用一行参数启动，不依赖 `.env`——`hub` 子命令的 `--port` / `--host` / `--token` / `--db` 等价于同名环境变量（`PORT` / `HOST` / `HUB_SECRET_TOKEN` / `DATABASE_PATH`）：
+
+```bash
+node packages/server/dist/main.js hub --port 8765 --token "$(openssl rand -hex 16)"
+node packages/device/bin/device.js join http://127.0.0.1:8765 --token <token> --scan-dir ~/code
+```
 
 开发模式（服务端热重载 + Vite 前端代理）：
 
@@ -171,9 +193,10 @@ curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
 - **待批奏折**：`PENDING_META` / `PENDING_HUMAN` 工单按创建时间排队；卡片即三行简报（已完成 / 卡点 / 下一步），点击任一方案即提交审批，可附带补充指令。推荐方案会高亮，但不影响选择。
 - **超时默认裁决**：开启 `AUTO_RESOLVE_TIMEOUT_MS` 后，待批卡片显示倒计时，到期按推荐方案自动准奏；可「暂缓 10 分钟」。推荐方案标记为 `destructive` 时永不自动执行。
 - **批量准奏**：积压多封时一键按各自推荐方案批复，提交前有 3 秒撤销窗口；高风险方案默认跳过，需勾选后才会一并批准。
-- **高风险保护**：选项支持 `risk: safe | caution | destructive`；破坏性选项必须人类二次确认，Meta-Agent 与超时策略都不能自动通过。
+- **高风险保护**：选项支持 `risk: safe | caution | destructive`；破坏性选项必须人类二次确认，Meta-Agent、超时策略与 Supervisor L1 都不能自动通过——L1 的放行规则只覆盖人明确批过的动作。
 - **通知内一键批复**：设置 `PUBLIC_BASE_URL` 后，Bark / 飞书 / 企业微信 / Slack / Discord / ntfy / Telegram / Webhook 的通知都会带签名审批链接；手机点开即可选方案提交，无需登录看板。链接绑定单张工单、默认 30 分钟过期，重复提交会被状态机拒绝。
 - **托管任务也会找上门**：任务卡住（`BLOCKED`）时推送「批准继续」深链，打开签名页面放行重跑；完工（`DONE`）时推送分支与工作区路径，给出合并信息——Hub 只转达，不代为执行 git 动作。
+- **决策收件箱**：一个页签集中列出还欠人看一眼的任务（`PENDING` / `CLAIMED` / `BLOCKED` / `HEALING`），每张卡片直接带上 Supervisor 自己的解释，以及放行或重试动作；数据来自 `GET /api/supervisor/inbox`，看板不必逐卡翻完整日志去找那句结论。
 - **下发任务**：人 → Agent 的反向调度，现在是「会话」页里的「单次执行」模式——同一套环境/项目选择，派一次活、跑完收工、不保留上下文。端侧 Agent 通过 `agent_hub_next_task` 领取并执行，完成后回报结果。
 - **工作区项目绑定**：每个环境（工作区）可绑定多个项目，已移到「接入端」页；绑定后会话与单次执行的项目下拉框只列出这些项目。Agent 心跳会自动上报 OpenCode / Cursor 当前打开的工作区（git 根目录名），服务端据此自动绑定；也可在看板用下拉框绑定其他已上报项目 / 解除（当前活跃项目不可解除，心跳会自动恢复）。
 - **历史决策**：自动放行与人工审批的完整记录，含决定、理由与补充指令。
@@ -194,20 +217,30 @@ MCP bridge 仍是 HTTP 长轮询；如果希望中心主动保持到每台机器
 ```bash
 pnpm --filter @zhunzou/device build
 
+# 以「可被路由的节点」身份接入：上报节点 profile，并扫描根目录登记仓库
+node packages/device/bin/device.js join https://hub.example.com \
+  --token zz_xxx \
+  --env home-mac \
+  --role worker \
+  --tags gpu,monorepo \
+  --max-concurrency 2 \
+  --scan-dir ~/code --scan-dir ~/work
+
+# 普通反向长连（只上报在线状态 + PTY，不覆盖路由 profile）
 node packages/device/bin/device.js run \
   --hub https://hub.example.com \
   --token zz_xxx \
   --env home-mac \
   --project agent-hub \
-  --heartbeat 30000
+  --heartbeat 15000
 
 # 查看本机能力：OS、负载、CLI 清单、PTY 支持
 node packages/device/bin/device.js capabilities --json   # 子命令别名：print
 ```
 
-`run` 是默认子命令。`--token` 依次回退 `ZHUNZOU_DEVICE_TOKEN` → `HUB_TOKEN` → `HUB_SECRET_TOKEN`，`--hub` 回退 `ZHUNZOU_HUB_URL` → `HUB_URL`，`--env` 回退 `ZHUNZOU_DEVICE_ENV` → `AGENT_ENV`（默认 `device-<hostname>`）；重连退避用 `ZHUNZOU_RECONNECT_MIN_MS` / `ZHUNZOU_RECONNECT_MAX_MS`。
+`run` 是默认子命令；`join` 就是 `run` 再加一份节点 profile（`--role worker|portal|hybrid`、`--tags`、`--max-concurrency 1-16`、可重复的 `--scan-dir`），同样可由 `ZHUNZOU_NODE_ROLE` / `ZHUNZOU_NODE_TAGS` / `ZHUNZOU_MAX_CONCURRENCY` / `ZHUNZOU_SCAN_DIRS` 读取。`portal` 节点永远不会被派活；`worker` 与 `hybrid` 由调度器放置。`--token` 依次回退 `ZHUNZOU_DEVICE_TOKEN` → `HUB_TOKEN` → `HUB_SECRET_TOKEN`，`--hub` 回退 `ZHUNZOU_HUB_URL` → `HUB_URL`，`--env` 回退 `ZHUNZOU_DEVICE_ENV` → `AGENT_ENV`（默认 `device-<hostname>`）；重连退避用 `ZHUNZOU_RECONNECT_MIN_MS` / `ZHUNZOU_RECONNECT_MAX_MS`。
 
-daemon 主动连接 `wss://<hub>/ws/device`，发送 `hello` 上报协议版本、OS/架构/主机名/shell、PTY 后端、CPU/内存/负载与本地 CLI 清单（claude、cursor-agent、agent、opencode、codex、gemini、qoder、qodercli、aider、goose、amp、git、node、pnpm、docker、tmux 等），之后按服务端下发的间隔（默认 30 秒）心跳。看板「接入端」页会显示反向长连徽标、CPU/负载/内存与可用 CLI；断开后立即标记离线。帧级细节见 [docs/REALTIME.md](./docs/REALTIME.md)。
+daemon 主动连接 `wss://<hub>/ws/device`，发送 `hello` 上报协议版本、OS/架构/主机名/shell、PTY 后端、本地 CLI 清单（claude、cursor-agent、agent、opencode、codex、gemini、qoder、qodercli、aider、goose、amp、git、node、pnpm、docker、tmux 等）、节点 profile 与 CPU/内存/负载，之后按服务端下发的间隔（默认 15 秒，`NODE_HEARTBEAT_REPORT_MS`）心跳，心跳同时携带空闲内存。空闲内存低于 `ROUTE_MIN_FREE_MEMORY_MB`（2 GB）或静默超过 `NODE_HEARTBEAT_TIMEOUT_MS`（30 秒）的节点不会被派发。看板「接入端」页会显示反向长连徽标、CPU/负载/内存与可用 CLI；断开后立即标记离线。帧级细节见 [docs/REALTIME.md](./docs/REALTIME.md)。
 
 - 设备端使用专属 Agent Token（`zz_...`）或管理员 Token；浏览器看板先调用 `POST /api/realtime/ticket` 换取 60 秒短期 ticket，再连接 `/ws/realtime`。
 - `REALTIME_ENABLED=false` 可关闭 WS 网关，完全回退到原有 HTTP 心跳 / 长轮询。
@@ -248,7 +281,7 @@ pnpm --filter @zhunzou/device add node-pty
 
 ## API
 
-除 `GET /healthz` 与签名审批页 `/a/:token` 外，所有接口都需要 `Authorization: Bearer <token>`。
+除 `GET /healthz`、签名审批页 `/a/:token` 与签名任务放行页 `/t/:token` 外，所有接口都需要 `Authorization: Bearer <token>`。
 Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看板「接入端」页签发的专属 Agent Token
 （只能操作自己的 `env`）。服务端未配置专属 Token 时，继续用管理员 Token 也完全兼容。
 错误统一返回 `{ "error": { "code": "...", "message": "...", "details"?: ... } }`。
@@ -258,10 +291,12 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/healthz` | 健康检查（免鉴权） |
 | `GET` | `/a/:token` | 签名审批页（免 Bearer，链接自带能力与有效期） |
 | `POST` | `/a/:token/resolve` | 从签名审批页提交决定 |
+| `GET` | `/t/:token` | 签名任务放行页（免 Bearer；任务 Token 与审批 Token 分属不同命名空间，永不互认） |
+| `POST` | `/t/:token/release` | 放行页唯一的状态变更入口（destructive 勾选在服务端复核） |
 | `GET` | `/install.sh` · `/install.ps1` | 服务端渲染的一键安装脚本（`?code=ABCDE-FGHIJ`，免鉴权） |
 | `POST` | `/api/enroll` | 接入码换取专属 Agent Token（免鉴权，码本身是能力凭证） |
 | `GET` | `/api/bridge/latest` | standalone bridge 发布清单，供 `upgrade` / 自更新使用（免鉴权） |
-| `POST` | `/api/tickets` | 创建工单，返回 `201`，随后异步触发 Meta-Agent 预审 |
+| `POST` | `/api/tickets` | 创建工单，返回 `201`；挂在 parked run 上的 permission 工单先由 Supervisor L1 用学习规则做确定性裁决，其余再异步触发 Meta-Agent 预审 |
 | `POST` | `/api/decisions` | 统一裁决入口：`{ kind, proposal, context?, risk?, options? }` → `APPROVED` 或 `PENDING` 工单 |
 | `GET` | `/api/tickets/:id` | 查询单个工单 |
 | `GET` | `/api/tickets` | 列表，支持 `?status=&projectName=&env=&limit=` |
@@ -270,13 +305,23 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `POST` | `/api/tickets/batch-resolve` | 批量审批 `{ ticketIds, selectedOption?, confirmDestructive? }` |
 | `POST` | `/api/tickets/:id/extend` | 暂缓自动裁决 `{ minutes? }`，默认 10 分钟 |
 | `POST` | `/api/tickets/:id/cancel` | 取消仍在等待的工单 |
-| `POST` | `/api/tasks` | 人 → Agent 下发任务 `{ env, title, instruction, projectName? }` |
+| `POST` | `/api/tasks` | 人 → Agent 下发任务到指定 env `{ env, title, instruction, projectName? }` |
+| `POST` | `/api/tasks/dispatch` | 按 `{ repoName?, env?, engine?, tags? }` 路由：hub 选定节点并返回 `{ task, route }`；无可行节点时报 `NO_ROUTE_TARGET` 并附各节点拒绝原因 |
+| `POST` | `/api/tasks/local` | `run` 包裹的本机 CLI 把自己注册为 `LOCAL_WRAP` 任务（env 锁定为调用方，origin 由 hub 判定） |
 | `GET` | `/api/tasks` | 任务列表，支持 `?env=&status=&limit=` |
-| `GET` | `/api/tasks/next?env=...&timeout=40000` | 端侧长轮询领取任务；无任务时超时返回 |
+| `GET` | `/api/nodes` | 调度器视角下的机群：按节点心跳窗口（而非看板 90s 窗口）判活 |
+| `GET` | `/api/tasks/next?env=...&timeout=40000` | 端侧长轮询领取任务（`PENDING` 与 `HEALING` 同队）；无任务时超时返回 |
 | `POST` | `/api/tasks/:id/complete` | Agent 回报完成 / 失败 `{ status, result? }` |
-| `POST` | `/api/tasks/:id/release` | 端侧唤不醒 Agent 时交回任务 `{ requeue?, reason? }`，重新排队而不是卡在 `CLAIMED` |
-| `POST` | `/api/tasks/:id/log` | Agent 追加执行输出 `{ stream: stdout / stderr / system, chunk }` |
+| `POST` | `/api/tasks/:id/takeover` | 本地 watcher 把自己盯着的 run 移交给 hub supervisor 裁决（`reason` 必填，幂等） |
+| `POST` | `/api/tasks/:id/release` | 端侧唤不醒 Agent 时交回任务 `{ requeue?, reason? }`，重新排队而不是卡在 `CLAIMED`；人类放行走签名页 `/t/:token/release` |
+| `POST` | `/api/tasks/:id/retry` | 人工覆盖失败熔断：把 `BLOCKED` 重开回队列，重试预算清零 |
+| `POST` | `/api/tasks/:id/log` | Agent 追加执行输出 `{ stream: stdout / stderr / system, chunk }`；wrapped run 与 wake 的输出在发送前已做降噪 |
 | `GET` | `/api/tasks/:id/logs` | 增量读取执行输出 `?after=<id>&limit=` |
+| `POST` | `/api/tasks/:id/events` | Agent 追加归一化 engine events（`tool_call` / `permission_required` / `session`）；仅在任务 `CLAIMED` 时受理 |
+| `GET` | `/api/tasks/:id/events` | 增量读取 engine events `?after=&limit=`——parked run 续跑就靠它 |
+| `GET` | `/api/supervisor/inbox` | 决策收件箱读模型：列出还欠人看一眼的任务（`PENDING` / `CLAIMED` / `BLOCKED` / `HEALING`）与 Supervisor 的解释 |
+| `GET` · `POST` | `/api/learned-rules` | 查看 / 授予 L1 放行规则：命中规则的 permission 工单不再调模型、直接裁决 |
+| `PATCH` | `/api/learned-rules/:id` | 启用 / 停用一条放行规则（授予是唯一的写入方式，收回就是这把开关） |
 | `POST` | `/api/sessions` | 新建会话 `{ env, projectName?, title? }` |
 | `GET` | `/api/sessions` | 会话列表，支持 `?env=&limit=` |
 | `GET` | `/api/sessions/:id` | 会话详情与消息 |
@@ -325,7 +370,7 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 | `GET` | `/api/terminals/stats` | 终端指标（活跃数/窗口数/字节数） |
 | `GET` | `/api/agents` | 接入端列表，支持 `?status=active` / `disabled` |
 | `POST` | `/api/agents` | 手动登记接入端 `{ env, name?, kind? }` |
-| `GET` | `/api/devices` | 设备列表：每台机器及其承载的接入端 |
+| `GET` | `/api/devices` | 设备列表：每台机器及其承载的接入端，并带上调度器路由所用的节点 profile |
 | `GET` | `/api/projects` | 项目列表：项目名对应的接入端、设备与工单/任务数量 |
 | `PATCH` | `/api/agents/:env` | 改名 / 改类型 / 停用 `{ name?, kind?, status? }` |
 | `DELETE` | `/api/agents/:env` | 删除接入端（历史工单保留；心跳/在线状态一并清除，在线连接立即断开） |
@@ -345,7 +390,7 @@ Token 分两种：`HUB_SECRET_TOKEN`（管理员，拥有全部权限）和看�
 
 | 路径 | 方向 | 用途与鉴权 |
 | --- | --- | --- |
-| `/ws/device` | 设备 → 中心 | 反向长连：`hello` + `heartbeat` + `pty.*`。管理员 Token（带 `?env=`）或设备专属 Token，走 Bearer 头或 `?token=` |
+| `/ws/device` | 设备 → 中心 | 反向长连：`hello` + `heartbeat`（两者都可携带节点 profile，心跳另带空闲内存）、节点发来的 `permission.request` 与 hub 回下的 `supervisor.decision`，以及 `pty.*` 帧。管理员 Token（带 `?env=`）或设备专属 Token，走 Bearer 头或 `?token=` |
 | `/ws/bridge` | bridge → 中心 | 任务 / 工单 / 会话领取（`task.claim` / `ticket.wait` / `chat.claim`），对应 `ZHUNZOU_TRANSPORT=auto` |
 | `/ws/realtime` | 中心 → 浏览器 | 看板推送 `sync.snapshot` / `sync.changed`；需要 `POST /api/realtime/ticket` 换来的 `?ticket=`，或管理员 Bearer |
 | `/ws/terminal` | 浏览器 ↔ 中心 | 一个 PTY 会话：`?ticket=&sessionId=&afterSeq=` 回放 scrollback，输入 / resize / 接管 / 关闭都会审计 |
@@ -374,21 +419,34 @@ PENDING_META ──(规范覆盖，自动拍板)──▶ AUTO_RESOLVED
 
 人工决定永远优先：即使 Meta-Agent 的回复迟到，也不会覆盖已完成的 `HUMAN_RESOLVED`（数据库条件更新保证）。
 
+挂在 parked run 上的 permission 工单在进入预审前先过 Supervisor L1 的确定性裁决：命中人工授予过的放行规则立即 `AUTO_RESOLVED`（0ms、不调模型），命中提权、强推等不可逆动作签名则直接拒；L1 覆盖不了的灰区原样落回上面这条 `PENDING_META` → 人工的通路。
+
 ### 任务状态机（人 → Agent）
 
+任务状态是 `PENDING` / `CLAIMED` / `BLOCKED` / `HEALING` / `DONE` / `FAILED` / `CANCELLED`（`packages/shared/src/constants.ts`）。两个需要人来解的状态：`BLOCKED` 表示 Supervisor 不敢自己做的决定正等人放行（失败熔断拦下来的），`HEALING` 表示 Supervisor 已下令重试、引擎将续跑同一个 session。蓝图里这两个运行态叫 `QUEUED` / `RUNNING`，别名表把它们映射到 `PENDING` / `CLAIMED`；`BLOCKED` / `HEALING` 两边同名。
+
 ```text
-POST /api/tasks
+任务创建：POST /api/tasks · POST /api/tasks/dispatch · POST /api/tasks/local（origin LOCAL_WRAP）
       │
       ▼
-PENDING ──(agent_hub_next_task 领取)──▶ CLAIMED ──(agent_hub_complete_task)──▶ DONE / FAILED
-   │                                        │
-   └──────────────(看板取消)────────────────┴──▶ CANCELLED
+PENDING ──(领取：agent_hub_next_task / wake，条件更新)──▶ CLAIMED ──(agent_hub_complete_task)──▶ DONE / FAILED
+
+CLAIMED ──(release：端侧唤不醒，交回)────────────▶ PENDING / FAILED
+FAILED  ──(熔断：同一失败重演 / 工作树无变化 / 重试满 3 次)──▶ BLOCKED
+FAILED  ──(Supervisor 判定可自愈：RETRY_WITH_FIX)──▶ HEALING
+HEALING ──(与 PENDING 同队被领取，engine 续跑同一 session)──▶ CLAIMED
+BLOCKED ──(retry · 签名放行页：重新排队，retryCount 清零)──▶ PENDING
+PENDING / CLAIMED ──(看板取消)──▶ CANCELLED
+
+CLAIMED 期间还可被 POST /api/tasks/:id/takeover：本地 wrapped run 主动移交，
+此后它的权限请求由 hub supervisor 裁决，不再等终端前的人。
 ```
 
 - 任务按 `env` 隔离：只有同一 `AGENT_ENV` 的桥接能领取。
-- 领取是条件更新，两个 Agent 同时轮询也只有一个能拿到同一条任务。
+- 领取是条件更新，两个 Agent 同时轮询也只有一个能拿到同一条任务；`HEALING` 与 `PENDING` 在同一队列里被领取，领取时带出 Supervisor 写下的修复指令（`fixPrompt`，只供这一次领取消费）。
 - 每次领取会累加 `attempts`。如果端侧离线超过 `TASK_CLAIM_TIMEOUT_MS`，任务自动放回 `PENDING`；
   超过 `TASK_MAX_ATTEMPTS` 或 `TASK_HARD_TIMEOUT_MS` 后标记 `FAILED`，不会永久卡在 `CLAIMED`。
+- `BLOCKED` 永远不会被系统替人解开：`POST /api/tasks/:id/retry`（管理员）或签名放行页 `/t/:token/release` 是唯一的出口。
 - `GET /api/tasks/next` 使用与审批相同的进程内 `EventEmitter` 唤醒，单实例部署约束不变。
 
 ---
@@ -449,6 +507,32 @@ OpenAI 兼容模式的流程：
 `DECISION_POLICY` 控制 hub 的权限边界：`off` 全问人、`reply` 只自动裁决会话回复、
 `all` 连下一步动作也裁决。默认 `reply`，即「说话可以自动、动代码必须问人」。
 
+### Supervisor 预审（确定性先行）
+
+Supervisor 在 Meta-Agent 之前接管两类场景，共同点是「hub 手里已有证据能判的，
+绝不调模型」：
+
+- **L1 权限预审（guard）**：run 停下来等批准的 permission 请求先匹配学习放行
+  规则——命中即裁决（`APPROVE` / `DENY`，0ms、不花一个模型 token）；提权、
+  `dd` 裸设备写入、`chmod 777`、强推、fork bomb 这类不可逆动作签名永远被拒，
+  任何规则都放行不了。请求只在 55 秒内（`SUPERVISOR_PERMISSION_TIMEOUT_MS`）
+  值得自动作答，过期不再代答。规则覆盖不到的灰区原样落回 Meta-Agent 与人工，
+  所以扩充规则表不会发明新的自动放行。
+- **L2 失败熔断与自愈（healer）**：`FAILED` 的任务先做纯算术判定——两次失败的
+  归一化错误签名相似度超过 0.85（`SUPERVISOR_SIGNATURE_SIMILARITY`）就是同一个
+  错、两次尝试之间工作树指纹没变则重跑不会有新结果、已自愈满 3 次
+  （`SUPERVISOR_RETRY_CEILING`）则预算用尽——命中任意一条就 0ms 拦下并转
+  `BLOCKED`，等人放行；熔断不认罪时才让模型出一份一行诊断，模型认为可修复就
+  下令 `RETRY_WITH_FIX`（任务转 `HEALING`，引擎带修复指令续跑同一 session）。
+  模型答案不可用（JSON 非法、超时、provider 未配置）时什么都不改。
+
+裁决取值为 `APPROVE` / `DENY` / `RETRY_WITH_FIX` / `ESCALATE_TO_HUMAN`，并注明由
+哪一层给出：`L1`（规则）、`L2`（模型）或 `HUMAN`。学习放行规则的来源：
+`HUMAN_APPROVAL`（人工批复过）、`RULE_DISTILLER`（批复沉淀）或 `SEED`（种子）；
+在 `GET` / `POST /api/learned-rules` 查看与授予，`PATCH /api/learned-rules/:id`
+只能启用 / 停用——授予是唯一的写入方式，收回就是这把开关。
+`GET /api/supervisor/inbox` 把这些裁决与卡住的原因汇成看板上的「决策收件箱」。
+
 ### 通知渠道
 
 `NOTIFY_CHANNELS` 逗号分隔、并行 fan-out；不配置时保持旧行为（有 `WEBHOOK_URL` 就用通用 Webhook）：
@@ -462,6 +546,11 @@ NOTIFY_CHANNELS=bark,feishu,console
 设置 `PUBLIC_BASE_URL=https://hub.example.com` 后，通知正文会列出全部选项并附带签名审批链接
 （`/a/:token`）。手机点开即可直接选择方案提交，不需要登录看板；链接默认 30 分钟过期，
 只对一张工单有效，高风险选项仍需勾选确认。Bark 会把链接作为点击跳转，ntfy 使用 `Click` 头。
+
+通知不只覆盖工单，也覆盖托管任务：任务 `BLOCKED` 时推「卡住等人放行」、`DONE` 时推
+「完工等人合并」，正文带签名放行链接（`/t/:token`，`POST /t/:token/release` 是唯一的状态
+变更入口）。任务 Token 与审批 Token 分属不同命名空间、永不互认，destructive 勾选在服务端
+复核；飞书与企业微信渠道会把任务渲染成带链接按钮的卡片。
 
 ### 外部插件
 
@@ -518,8 +607,8 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 | `APPROVAL_LINK_TTL_MS` | `1800000` | 审批链接有效期 |
 | `REALTIME_ENABLED` | `true` | 是否启用设备 / 看板 WebSocket 网关 |
 | `REALTIME_TICKET_TTL_MS` | `60000` | 浏览器 WebSocket ticket 有效期 |
-| `REALTIME_HEARTBEAT_MS` | `30000` | 设备心跳间隔 |
-| `REALTIME_HEARTBEAT_TIMEOUT_MS` | `90000` | 设备静默多久后关闭连接 |
+| `REALTIME_HEARTBEAT_MS` | `15000` | 服务端向设备通告的心跳间隔（默认取 `NODE_HEARTBEAT_REPORT_MS`）；节点静默超过 30s（`NODE_HEARTBEAT_TIMEOUT_MS`）即被移出可路由集合。注意 `.env.example` 仍写着 `30000`——显式设置它，或干脆不管、拿默认 15s |
+| `REALTIME_HEARTBEAT_TIMEOUT_MS` | `90000` | 设备 WS 静默多久后关闭连接（看板 env 在线状态仍按 90s 心跳窗口判定） |
 | `TERMINAL_ENABLED` | `true` | 是否启用交互式 PTY 终端 |
 | `TERMINAL_MAX_SESSIONS` | `32` | 全局终端会话上限 |
 | `TERMINAL_MAX_SESSIONS_PER_DEVICE` | `4` | 每台设备的终端会话上限 |
@@ -534,6 +623,18 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 | `BRIDGE_RELEASES_PATH` | `./release/bridge` | standalone bridge 发布目录，公开托管在 `/releases/bridge/`，清单在 `/api/bridge/latest` |
 
 相对路径统一以仓库根目录为基准解析，因此从任意目录启动都不会写错位置。
+
+节点路由与 Supervisor 还太新，它们的旋钮放在代码常量里而不是 `.env`：parked 的权限请求只在 `SUPERVISOR_PERMISSION_TIMEOUT_MS`（55s）内值得自动作答；失败熔断在 `SUPERVISOR_RETRY_CEILING`（3 次）处放弃；归一化错误签名相似度超过 `SUPERVISOR_SIGNATURE_SIMILARITY`（0.85）即判定两次是同一个错；节点在 `NODE_HEARTBEAT_TIMEOUT_MS`（30s）内有心跳才算活着；空闲内存低于 `ROUTE_MIN_FREE_MEMORY_MB`（2 GB）直接不派。Supervisor 裁决取值为 `APPROVE` / `DENY` / `RETRY_WITH_FIX` / `ESCALATE_TO_HUMAN`，归属层 `L1`（0ms、确定性规则）、`L2`（模型）或 `HUMAN`；学习放行规则来自人工批复（`HUMAN_APPROVAL`）、批复沉淀（`RULE_DISTILLER`）或种子（`SEED`）。
+
+设备节点（`zhunzou-device join` / `run` 读取，均可用同名 CLI flag 覆盖，flag 优先）：
+
+| 变量 | Flag | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `ZHUNZOU_NODE_ROLE` | `--role` | `worker` | `worker` / `portal` / `hybrid`；`portal` 只上报在线、永不接活 |
+| `ZHUNZOU_NODE_TAGS` | `--tags` | 空 | 逗号分隔、最多 10 个——下发时可要求全部命中 |
+| `ZHUNZOU_MAX_CONCURRENCY` | `--max-concurrency` | `1` | 该节点同时接几个任务，钳制 1~16；到顶后调度器跳过 |
+| `ZHUNZOU_SCAN_DIRS` | `--scan-dir`（可重复） | 空 | 扫描 git checkout 的根目录，供 `repoName` 路由匹配；为空表示只按 env 路由 |
+| `ZHUNZOU_HEARTBEAT_INTERVAL_MS` | `--heartbeat` | `15000` | 设备上报节奏，与服务端节点窗口对齐 |
 
 ---
 
@@ -551,12 +652,15 @@ HUB_PLUGINS=./examples/plugins/audit-log.mjs
 | `init` | 检测编辑器、写 MCP 配置与决策规则、签发专属 Token、校验连通性 |
 | `wait --ticket 104 [--interval 15000]` | 阻塞等待该工单裁决，把决定打印到 stdout |
 | `wake` | 长轮询领取下发任务并唤醒本机 Agent（`--adapter --command --cwd --args --poll --run-timeout --once`） |
+| `run <engine> [args...]` | 看着你自己起的 Agent CLI 跑：把这次运行注册为 `LOCAL_WRAP` 任务，你走开时再移交 hub（`--idle-timeout --title --instruction --cwd --no-takeover`） |
 | `fleet` | 一个进程跑多个项目的 wake 循环（`--config --once --refresh-tokens --print-launchd --no-auto-discover`） |
 | `fleet add` · `scan` · `list` · `remove` | 维护 `~/.zhunzou/fleet.json` 里的项目 |
 | `service`（`install` / `uninstall` / `status` / `restart`） | 管理登录自启的常驻服务 |
 | `upgrade`（`--check` / `--force` / `--rollback`） | 从 hub 拉取最新 bridge 并切换版本指针 |
 
 `wake` 适配器：`auto` / `opencode` / `opencode-run` / `claude` / `codex` / `gemini` / `qoder` / `cursor-agent` / `aider` / `goose` / `amp` / `command`（自定义命令模板）/ `notify`（只把任务显示在看板，不跑 CLI）。`auto` 优先接管已运行的 OpenCode 服务，其次按 `claude` → `codex` → `gemini` → `qoder` → `cursor-agent` → `aider` → `goose` → `amp` 探测，最后回退 `notify`。`qoder` 适配器运行 Qoder CLI（`qoder -p`，也能识别 `qodercli` / `qcode` 可执行文件）。交互式会话需要可续跑的适配器：`opencode` / `opencode-run` / `cursor-agent` / `claude` / `qoder` / `command`。
+
+`run` 能包裹除 `auto` / `command` / `notify` 之外的每个适配器，且只支持 print/stream 模式（`cursor-agent -p`、`opencode run`、`claude -p`）——全屏 TUI 需要 pty，wrapper 刻意不开，这类运行请交给 `wake` 或看板。wrapper 参数必须写在 `<engine>` **之前**，之后的所有内容原样传给 CLI。它把 CLI 自己的输出归一化成 engine events，日志先降噪再上报，只有在你停下输入*并且*运行确实卡住时才提出移交——每次运行最多移交 3 次，本地终端始终是主角。
 
 ### 一键接入（推荐给普通用户）
 
@@ -638,6 +742,19 @@ npx zhunzou-bridge fleet scan --root ~/code --root ~/work --depth 2 --add --code
 自动发现的项目同样会按 `env 前缀-项目名` 命名；同名目录会用 `-2`、`-3` 区分。Token 走 `adminToken` / 缓存的 `fleet-tokens.json`，首次启动前请确保配置了其中一种。
 
 连 `scan` 都不想配也可以：`fleet` 启动时如果配置里没有 `scan`，会自动纳入最近在 Cursor / VS Code 打开过的 **git 仓库**（不需要 `fleet scan --add`，也不需要看板点「关联」）。Windows 走 `%APPDATA%\Cursor|Code\User\globalStorage\storage.json`，路径大小写差异会按同一个项目处理。自动纳入的项目是尽力而为：没有 `adminToken` 或可用 Token 时只跳过它自己，不影响其它项目；不想自动纳入时加 `--no-auto-discover`。
+
+### 派发到真正能跑它的节点
+
+节点开始上报 profile 之后，你不再需要记住「哪个 env 上装着哪个仓库」。`POST /api/tasks/dispatch` 只需说出 **repo**（可再带 engine 与 tags），由 hub 来选目标：
+
+```bash
+curl -s -X POST https://hub.example.com/api/tasks/dispatch \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"repoName":"yikuaomed-erp","engine":"opencode","tags":["monorepo"],
+       "title":"补上导出列","instruction":"…"}'
+```
+
+评分只看节点最近上报过的事实：没上报的排最后，而不是放行——唯一例外是 checkout 记录：没登记过这个仓库的节点，任务第一条命令就会失败，直接拒绝。节点会因 `PORTAL`（角色不接活）、`OFFLINE`（静默超过 30s）、`ENGINE`、`TAGS`、`REPO`、`MEMORY`（空闲内存低于 2 GB）或 `CAPACITY`（已到 `--max-concurrency` 上限）被拒。全部被拒时接口返回 `NO_ROUTE_TARGET` 并逐台列出原因，而不是把注定跑不了的活悄悄排进队列。显式的 `env` 是钉住、不是提示：即使那台机器看起来已经很忙，hub 也照办，并在审计里记 `pinned: true`。`GET /api/nodes` 展示调度器眼中的机群。
 
 ### 在看板上一键关联目录
 
@@ -845,10 +962,26 @@ pm2 save
 > `--print-launchd` 会写入当前 `node` 和 CLI 的绝对路径。请使用全局安装
 > （`npm i -g zhunzou-bridge`）或独立包，避免指向 npx 临时缓存。
 
+### 用 git worktree 隔离每一次派发
+
+两个 Agent 共用一个 checkout 会互相覆盖。设置 `ZHUNZOU_WORKTREES=1` 后，每个被领取的任务都在自己的 worktree（`.zhunzou/wt/<taskId>`）里、用完即弃的 `wip/zz-<taskId>` 分支上运行；跑完只留下一个干净的、可发布的提交：
+
+```bash
+ZHUNZOU_WORKTREES=1 zhunzou-bridge wake           # 或经 fleet：projects[].args 配同一环境变量
+git -C /path/to/project worktree list             # 当前被隔离的运行
+git -C /path/to/project log --oneline wip/zz-118  # 这个任务产出的唯一提交
+```
+
+隔离的兜底方向永远是安全的：目录不是 git 仓库、worktree 缺失、或还有未提交的改动时，任务回退到普通 checkout 继续跑，而不是丢工作。所有 git 调用都以 argv 数组发出，绝不拼 shell 字符串。该开关只有环境变量、没有 CLI flag（`ZHUNZOU_WORKTREES`，取值 `1` / `true` / `yes` / `on`）。
+
 ### 任务执行输出
 
 任务卡点「查看输出」即可实时看 Agent 的 `stdout` / `stderr` 和系统事件。桥接会按 600ms
 批量上报，看板每 1.2 秒增量拉取；任务结束后输出仍保留（每个任务最多 256 KB，超出后丢弃最旧的部分）。
+
+日志在发送前先做降噪：ANSI 转义序列被剥掉、CLI 用回车改写的行只保留最后一帧、重复行折叠成一条并带上次数（错误行例外——长得像的两个错也还是两个错）；错误行同时提炼归一化的错误签名，供 Supervisor 熔断判断「是不是同一个错」。hub 存储与看板展示的都是降噪后的内容，你终端里的原始字节不受影响。
+
+除日志外，桥接还上报归一化的 engine events（`POST /api/tasks/:id/events`）：`tool_call` 进审计、`permission_required` 标出需要停下来等批准的位置、`session` 记下 CLI 会话 id——被熔断后重开或自愈重跑的运行，就从这里找回该续的会话。事件只在任务 `CLAIMED` 期间受理，迟到的 flush 无法改写已结束的 run；`GET /api/tasks/:id/events?after=&limit=` 增量读取。
 
 <p align="center">
   <img src="./docs/assets/task-logs.png" alt="任务执行输出：实时 stdout、stderr 与系统事件" width="920" />
@@ -917,6 +1050,8 @@ pm2 save
 | `ZHUNZOU_WAKE_RUN_TIMEOUT_MS` | 否 | `1800000` | 一次性适配器最长执行时间 |
 | `ZHUNZOU_WAKE_POLL_TIMEOUT_MS` | 否 | `40000` | 领取任务的长轮询窗口（1s ~ 55s） |
 | `ZHUNZOU_WAKE_NOTIFY_INTERVAL_MS` | 否 | `15000` | `notify` 适配器重复提醒的间隔 |
+| `ZHUNZOU_WORKTREES` | 否 | 关闭 | 取 `1` / `true` / `yes` / `on` 时，每个被领取的任务在 `.zhunzou/wt/<taskId>` 的独立 worktree（`wip/zz-<taskId>` 分支）里运行；仅环境变量，无 CLI flag |
+| `ZHUNZOU_WRAP_IDLE_MS` | 否 | `300000` | `run` wrapper：多久没有按键才向 hub 提出移交，钳制 30s ~ 2h（`--idle-timeout` 优先） |
 | `ZHUNZOU_CHAT_SESSION_ID` | 否 | 空 | 会话 runner 注入，用来把本轮接回正确的聊天会话 |
 | `ZHUNZOU_AUTO_UPGRADE` | 否 | 开启 | 设 `0` / `false` / `off` / `no` 关闭后台自更新 |
 | `ZHUNZOU_AUTO_UPGRADE_INTERVAL_MS` | 否 | `21600000` | 自更新检查间隔（最小 60s） |
@@ -968,7 +1103,7 @@ bash deploy/deploy.sh        # 随仓库上传到 hub
 ## 测试
 
 ```bash
-pnpm test          # shared 28 + server 249 + bridge 164 + device 9 + web 51 = 501 个测试
+pnpm test          # 1130 个测试：server 514 + bridge 389 + shared 101 + web 85 + device 41
 pnpm typecheck     # 全量类型检查（tsc + vue-tsc）
 pnpm build         # 全量构建（含 Vue 看板）
 pnpm smoke         # 构建、启动真实服务、HTTP 长轮询冒烟测试
@@ -1064,6 +1199,9 @@ pm2 logs zhunzou
 - **设备是机器，接入端是进程**：每个客户端只生成一次指纹（`~/.zhunzou/machine.json`），之后每次通信都带上，hub 因此能把同一台机器上的 Cursor、OpenCode、Claude Code 归到一张节点卡——也分得清被镜像复制成同一主机名的两台机器。没上报指纹的客户端仍按主机名归组，与升级前的行为一致。
 - **`env` 由 hub 分配，不由客户端决定**：两台机器打开同名仓库会得到相同标签，而 `agents.env` 是主键——所以注册时后来者改名（`cursor-erp` → `cursor-erp-home-mac`），而不是覆盖先来者的设备归属。会读取响应的客户端自动采用新标签；心跳无法被改名，它写入其它机器设备信息的请求会被拒绝，并且服务端会记一条 warning——卡片变旧却查不到原因，比多一条日志更难排查。
 - **项目是一张视图，不是一个实体**：`GET /api/projects` 把工单、任务、工作区绑定里已经存在的 `projectName` 归组，回答「哪些仓库有过工作、发生在哪几台机器」，客户端不必上报任何新东西。这个名字仍是 bridge 推断的 git 根目录名，因此两个恰好同名、却互不相关的仓库会被读成同一个项目。
+- **放置只信节点上报过的事实**：hub 看不见任何机器的文件系统，所以路由按节点上报的事实排序；没上报的算弱证据（排最后），绝不因此豁免规则——唯一例外是 checkout：没登记仓库意味着任务第一条命令就会失败。未接入的节点是被跳过，而不是被冤枉。
+- **一个任务的产出就是一个提交**：worktree 隔离把每次派发放在用完即弃的 `wip/zz-<taskId>` 分支上；除了压出来的那个提交，什么都不指望它带出来——猜错了也能廉价回滚，共用的 checkout 保持干净。
+- **Supervisor 先确定性、后模型**：hub 已经掌握的证据（错误签名、重试次数、记录在案的拒绝）在任何模型调用之前就把结论定了；不可用的模型答案什么都不改，判断的成本与延迟因此始终不在热路径上。
 
 ---
 
@@ -1073,7 +1211,10 @@ pm2 logs zhunzou
 扩展开发见 [docs/PLUGINS.md](./docs/PLUGINS.md)，实时链路与终端设计见
 [docs/REALTIME.md](./docs/REALTIME.md)，bridge 发版与自更新见
 [docs/RELEASING.md](./docs/RELEASING.md)，端侧细节见
-[packages/bridge/README.md](./packages/bridge/README.md)，安全约定见
+[packages/bridge/README.md](./packages/bridge/README.md)，阶段蓝图（0~4 期）见
+[PLAN.md](./PLAN.md)，各切片简报（scheduler 1.3、worktree 2.1、adapters 2.2、
+wrappers 2.3、sanitizer 3.1、supervisor guard 3.2 / healer 3.3、notify 4.2、
+console 4.1）见 [docs/design/](./docs/design/)，安全约定见
 [SECURITY.md](./SECURITY.md)，CI 配置见
 [.github/workflows/ci.yml](./.github/workflows/ci.yml)。
 
@@ -1085,7 +1226,7 @@ pm2 logs zhunzou
 
 - 多实例水平扩展：把进程内 `EventEmitter` 唤醒层替换为 Redis pub/sub；
 - 项目身份：让 bridge 上报仓库指纹（git remote），hub 由此拆散今天会合并成同一个项目的同名仓库；
-- 更多内置通知渠道（企业微信、钉钉、Gotify…）；
+- 尚未内置的通知渠道（钉钉、Gotify）；企业微信（`wecom`）已随任务通知一并落地，见配置表；
 - 存储适配器（Postgres / MySQL）与多租户；
 - 工单归档与统计：自动放行率、平均决策耗时；
 - 终端运维增强：录制留存、按角色的终端策略。
