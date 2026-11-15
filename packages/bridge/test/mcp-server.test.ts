@@ -83,6 +83,9 @@ function fakeHub(overrides: Partial<HubApi> = {}): HubApi {
       createdAt: 4,
       ...input,
     })),
+    cancelTicket: vi.fn(async (ticketId: string) =>
+      makeTicket({ id: ticketId, status: 'CANCELLED' }),
+    ),
     resume: vi.fn(async () => ({
       tickets: [makeTicket(), makeTicket({ status: 'AUTO_RESOLVED', selectedOption: 'A' })],
       tasks: [makeTask()],
@@ -359,6 +362,137 @@ describe('agent_hub_report_exchange', () => {
         question: '能看到 Cursor 在跑什么吗？',
         conclusion: '已接入对话摘要。',
       });
+    } finally {
+      await close();
+    }
+  });
+});
+
+const waitExpired = (): Partial<HubApi> => ({
+  wait: vi.fn(async () => ({
+    resolved: false,
+    timedOut: true,
+    ticket: makeTicket(),
+  })),
+});
+
+const decidePending = (): Partial<HubApi> => ({
+  decide: vi.fn(async () => ({
+    verdict: 'PENDING' as const,
+    reason: '当前策略转人工',
+    ticket: makeTicket(),
+  })),
+});
+
+const escalatedToHuman = (): Partial<HubApi> => ({
+  ...waitExpired(),
+  ...decidePending(),
+});
+
+describe('local answers clear the board', () => {
+  it('withdraws a ticket the human answered in the editor instead', async () => {
+    const client = fakeHub(escalatedToHuman());
+    const { mcpClient, close } = await connect(client);
+
+    try {
+      await mcpClient.callTool({
+        name: 'agent_hub_decide',
+        arguments: { kind: 'next_step', proposal: '改 mcp-server 的撤回逻辑' },
+      });
+
+      const result = await mcpClient.callTool({
+        name: 'agent_hub_report_exchange',
+        arguments: { question: '批复 #104', conclusion: '已按批复实现。' },
+      });
+
+      expect(client.cancelTicket).toHaveBeenCalledWith('104');
+      expect(textOf(result)).toContain('#104');
+
+      const next = await mcpClient.callTool({
+        name: 'agent_hub_report_exchange',
+        arguments: { conclusion: '下一轮汇报' },
+      });
+
+      expect(client.cancelTicket).toHaveBeenCalledTimes(1);
+      expect(textOf(next)).not.toContain('#104');
+    } finally {
+      await close();
+    }
+  });
+
+  it('withdraws a ticket left waiting by agent_hub_wait too', async () => {
+    const client = fakeHub(waitExpired());
+    const { mcpClient, close } = await connect(client);
+
+    try {
+      await mcpClient.callTool({
+        name: 'agent_hub_wait',
+        arguments: { ticketId: '104' },
+      });
+      await mcpClient.callTool({
+        name: 'agent_hub_report_exchange',
+        arguments: { conclusion: '人类已在编辑器里答复。' },
+      });
+
+      expect(client.cancelTicket).toHaveBeenCalledWith('104');
+    } finally {
+      await close();
+    }
+  });
+
+  it('leaves a ticket the board already ruled on alone', async () => {
+    const client = fakeHub({
+      ...decidePending(),
+      wait: vi.fn(async () => ({
+        resolved: true,
+        timedOut: false,
+        ticket: makeTicket({
+          status: 'HUMAN_RESOLVED',
+          selectedOption: 'A',
+          resolvedBy: 'HUMAN',
+        }),
+      })),
+    });
+    const { mcpClient, close } = await connect(client);
+
+    try {
+      await mcpClient.callTool({
+        name: 'agent_hub_decide',
+        arguments: { kind: 'next_step', proposal: '改 mcp-server 的撤回逻辑' },
+      });
+      await mcpClient.callTool({
+        name: 'agent_hub_report_exchange',
+        arguments: { conclusion: '按批复完成。' },
+      });
+
+      expect(client.cancelTicket).not.toHaveBeenCalled();
+    } finally {
+      await close();
+    }
+  });
+
+  it('still mirrors the turn when the board settled the ticket first', async () => {
+    const client = fakeHub({
+      ...escalatedToHuman(),
+      cancelTicket: vi.fn(async () => {
+        throw new HubApiError(409, 'ALREADY_FINALIZED', 'ticket 104 is already HUMAN_RESOLVED');
+      }),
+    });
+    const { mcpClient, close } = await connect(client);
+
+    try {
+      await mcpClient.callTool({
+        name: 'agent_hub_decide',
+        arguments: { kind: 'next_step', proposal: '改 mcp-server 的撤回逻辑' },
+      });
+      const result = await mcpClient.callTool({
+        name: 'agent_hub_report_exchange',
+        arguments: { conclusion: '人类已在编辑器里答复。' },
+      });
+
+      expect((result as ToolResult).isError).toBeFalsy();
+      expect(textOf(result)).toContain('exchange #42 synced');
+      expect(textOf(result)).not.toContain('#104');
     } finally {
       await close();
     }

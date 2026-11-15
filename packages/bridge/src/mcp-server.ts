@@ -247,6 +247,30 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
     version: SERVER_VERSION,
   });
 
+  /**
+   * Tickets this session was told to keep waiting on. The dashboard cannot see
+   * that the human answered in the editor instead, so the bridge withdraws them
+   * when the turn is mirrored back — the rule `zz run` already applies to stdin.
+   */
+  const awaiting = new Set<string>();
+
+  const withdrawAwaiting = async (): Promise<string[]> => {
+    const ids = [...awaiting];
+    awaiting.clear();
+
+    const withdrawn: string[] = [];
+    for (const id of ids) {
+      try {
+        await client.cancelTicket(id);
+        withdrawn.push(id);
+        log(`[zhunzou] 本地已有人应答，已撤回工单 #${id}`);
+      } catch {
+        // The board settled it first: there is nothing left to take back.
+      }
+    }
+    return withdrawn;
+  };
+
   server.registerTool(
     'agent_hub_escalate',
     {
@@ -282,6 +306,7 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
 
         if (outcome.resolved) {
           log(`[zhunzou] ticket #${ticket.id} resolved with option ${outcome.ticket.selectedOption}`);
+          awaiting.delete(ticket.id);
           void presence
             .beat({ status: 'Running', currentTask: '已获审批，恢复执行' })
             .catch(() => undefined);
@@ -289,6 +314,7 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
           return renderToolResult(formatApproved(outcome.ticket));
         }
         if (outcome.ticket.status === 'CANCELLED') {
+          awaiting.delete(ticket.id);
           void presence
             .beat({ status: 'Idle', currentTask: '工单已取消，等待新任务' })
             .catch(() => undefined);
@@ -297,6 +323,7 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
         }
 
         log(`[zhunzou] ticket #${ticket.id} still waiting; fallback=${config.fallback}`);
+        awaiting.add(ticket.id);
         presence.resume();
         return renderToolResult(
           formatWaiting(outcome.ticket, config.fallback, config.cliCommand),
@@ -326,9 +353,11 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
           .beat({ status: 'Blocked', currentTask: '等待审批结果' })
           .catch(() => undefined);
 
-        const outcome = await client.wait(String(args.ticketId), args.timeoutMs);
+        const ticketId = String(args.ticketId);
+        const outcome = await client.wait(ticketId, args.timeoutMs);
 
         if (outcome.resolved) {
+          awaiting.delete(ticketId);
           void presence
             .beat({ status: 'Running', currentTask: '已获审批，恢复执行' })
             .catch(() => undefined);
@@ -336,6 +365,7 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
           return renderToolResult(formatApproved(outcome.ticket));
         }
         if (outcome.ticket.status === 'CANCELLED') {
+          awaiting.delete(ticketId);
           void presence
             .beat({ status: 'Idle', currentTask: '工单已取消，等待新任务' })
             .catch(() => undefined);
@@ -345,6 +375,7 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
 
         // This tool is the MCP relay strategy: always ask the model to call it
         // again, regardless of the escalate fallback setting.
+        awaiting.add(ticketId);
         presence.resume();
         return renderToolResult(formatWaiting(outcome.ticket, 'mcp'));
       } catch (error) {
@@ -493,8 +524,9 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
       description:
         "Call this once per turn after you answer the human, so the dashboard's conversation view shows what was asked " +
         'and what you concluded. Interactive IDE chats do not stream their transcript, so this summary is the only way ' +
-        'the human can follow the work from the hub. Keep the conclusion short (a few sentences), skip secrets, and pass ' +
-        'at least one of question / conclusion.',
+        'the human can follow the work from the hub. Reporting a turn also withdraws tickets this session was still ' +
+        'waiting on: the human has answered here, so the board stops holding the question. Keep the conclusion short ' +
+        '(a few sentences), skip secrets, and pass at least one of question / conclusion.',
       inputSchema: reportExchangeInput,
     },
     async (args) => {
@@ -504,9 +536,19 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
           ...(args.conclusion ? { conclusion: args.conclusion } : {}),
           ...(args.projectName ? { projectName: args.projectName } : {}),
         });
+        const withdrawn = await withdrawAwaiting();
 
         return renderToolResult(
-          `Zhunzou exchange #${exchange.id} synced from ${exchange.env}.`,
+          [
+            `Zhunzou exchange #${exchange.id} synced from ${exchange.env}.`,
+            ...(withdrawn.length
+              ? [
+                  `本地已有人应答，已撤回待批工单 ${withdrawn
+                    .map((id) => `#${id}`)
+                    .join(' ')}。`,
+                ]
+              : []),
+          ].join('\n'),
         );
       } catch (error) {
         return renderToolError(errorText(error));
@@ -603,18 +645,21 @@ export function createMcpServer(deps: McpServerDependencies): McpServer {
         presence.resume();
 
         if (waited.resolved) {
+          awaiting.delete(ticket.id);
           void presence
             .beat({ status: 'Running', currentTask: '已获裁决，恢复执行' })
             .catch(() => undefined);
           return renderToolResult(formatApproved(waited.ticket));
         }
         if (waited.ticket.status === 'CANCELLED') {
+          awaiting.delete(ticket.id);
           void presence
             .beat({ status: 'Idle', currentTask: '工单已取消，等待新指令' })
             .catch(() => undefined);
           return renderToolResult(formatCancelled(waited.ticket));
         }
 
+        awaiting.add(ticket.id);
         return renderToolResult(
           formatWaiting(waited.ticket, config.fallback, config.cliCommand),
         );
