@@ -2,7 +2,7 @@
 
 **English** · [中文说明](./README.zh-CN.md)
 
-> Agents submit a brief. The Meta-Agent drafts a ruling. You say “approved”.
+> Agents submit a brief. The Meta-Agent drafts a ruling. You say "approved".
 
 **A cross-device, editor-agnostic decision hub for AI coding agents.**
 
@@ -16,7 +16,7 @@
   <img src="./docs/assets/dashboard.png" alt="Zhunzou dashboard: environment status, pending decision tickets, meta-agent escalation reasons, and destructive-option confirmation" width="920" />
 </p>
 
-When Cursor, OpenCode, Claude Code, or any MCP-capable agent gets blocked on a decision that needs a human, it submits a compact “three-line brief + closed-form options” ticket to Zhunzou. A Meta-Agent resolves routine decisions automatically against your engineering rules. Everything else waits in a single dashboard, and the agent resumes the moment you click.
+When Cursor, OpenCode, Claude Code, or any MCP-capable agent gets blocked on a decision that needs a human, it submits a compact "three-line brief + closed-form options" ticket to Zhunzou. A Meta-Agent resolves routine decisions automatically against your engineering rules. Everything else waits in a single dashboard, and the agent resumes the moment you click. Work you dispatch yourself rides the same hub: the scheduler places it on the machine that can actually run it, in its own git worktree, and reports back one publishable commit.
 
 Self-hosted, single process, SQLite-backed, MIT licensed. No message queue, no native build step on the client.
 
@@ -24,14 +24,11 @@ Self-hosted, single process, SQLite-backed, MIT licensed. No message queue, no n
 
 ## Contents
 
-- [The problem](#the-problem)
-- [What Zhunzou does](#what-zhunzou-does)
-- [Why Zhunzou](#why-zhunzou)
-- [Status](#status)
-- [Features](#features)
-- [Dashboard](#dashboard)
+- [Why it exists](#why-it-exists)
+- [How a decision flows](#how-a-decision-flows)
 - [Architecture](#architecture)
-- [Repository layout](#repository-layout)
+- [What you get](#what-you-get)
+- [Dashboard](#dashboard)
 - [Quick start](#quick-start)
 - [Connect an agent](#connect-an-agent)
 - [API](#api)
@@ -39,113 +36,128 @@ Self-hosted, single process, SQLite-backed, MIT licensed. No message queue, no n
 - [Safety model](#safety-model)
 - [Development](#development)
 - [Deployment](#deployment)
-- [Design notes](#design-notes)
 - [Roadmap](#roadmap)
 - [Documentation map](#documentation-map)
-- [Contributing](#contributing)
-- [License](#license)
 
 ---
 
-## The problem
+## Why it exists
 
-AI agents are fast until they need a human judgment call. In practice, that is where most of the promised speed disappears:
+AI agents are fast until they need a human judgment call — and that is where the promised speed disappears: the agent stalls in a terminal you are not watching, or guesses and you review the damage later; the same question comes back next week in another chat; every editor has its own approval silo; and automation is all-or-nothing — block on everything, or YOLO through the decisions that matter.
 
-- **The agent stalls where you cannot see it.** It stops in a terminal or editor tab you are not watching, and the task waits for hours.
-- **Or it guesses, and you review the damage later.** You discover the wrong assumption during code review, or in production.
-- **The same question comes back.** A decision lives in one chat transcript, so the next agent (or the next week) asks it again.
-- **Every tool has its own approval silo.** A Cursor window, a Claude Code session, and a CI job each handle “waiting for a human” differently. Multi-repo and multi-agent teams have no single queue.
-- **Automation is all-or-nothing.** Either the agent blocks on every question, or “YOLO mode” rubber-stamps changes that should never be automatic.
+Zhunzou turns every human decision into a small, structured, asynchronous ticket, and every dispatched task into a routed, isolated, auditable run. Decisions have structure (brief + closed-form options), a queue, a timeout policy, an audit trail, and a wakeup path back to the exact agent that asked.
 
-Existing options do not solve this well: a chat message has no structure, no timeout, no audit trail, and no way to resume the exact agent that asked. Vendor-specific approval UIs only cover one editor or one cloud.
+**Good fit:** you run AI coding agents across more than one repo or editor and want automation without giving up control.
+**Not a fit:** you need only a single-session "yes/no" prompt inside one editor, or a fully autonomous coding agent.
 
-## What Zhunzou does
+## How a decision flows
 
-Zhunzou turns every human decision into a small, structured, asynchronous ticket:
-
-```text
-Agent hits a blocker
-  → submits a 3-line brief + 2–6 closed-form options (+ risk metadata)
-  → Supervisor L1: an irreversible action, or an allowance a human granted,
-    is answered from the hub's own records — no model call, no waiting
-  → Meta-Agent applies GLOBAL_RULES.md and similar past decisions
-      → routine decision: auto-ruling in seconds
-      → everything else: one queue on your phone or desktop
-  → your click wakes the waiting agent over a long poll
-  → the ruling becomes a candidate rule for next time
-
-Work you dispatch, not just work that asks:
-  → the scheduler places it on the node that has the repo, engine, tags,
-    memory and free capacity — or refuses and lists why
-  → the run gets its own git worktree and a throwaway branch, ships
-    noise-reduced live logs, and parks for permission where it must
-  → a provably repeated failure is blocked, not retried forever; a stalled
-    task is pushed to the person who can release it, with a signed link
+```mermaid
+flowchart LR
+    A["Agent hits a blocker"] --> B["3-line brief +<br/>2–6 closed-form options"]
+    B --> C{"Supervisor L1:<br/>irreversible action, or an<br/>allowance a human granted?"}
+    C -- "answered from the hub's<br/>own records, no model call" --> R["Agent resumes<br/>via long-poll"]
+    C -- "gray zone" --> D{"Meta-Agent:<br/>GLOBAL_RULES.md +<br/>similar past decisions"}
+    D -- routine --> R
+    D -- "needs judgment" --> E[("One human queue:<br/>dashboard · phone ·<br/>signed notification link")]
+    E --> R
+    E -. "each approval can be" .-> F["Distilled into a<br/>reusable rule"]
+    F -. "recalled next time" .-> D
 ```
 
-No polling loops, no lost context, and no need to keep the editor in front of you.
+The failure side is ruled the same way: a provably repeated failure is blocked (`BLOCKED`), not retried forever, and the stalled task is pushed to the person who can release it — with a signed link.
 
-## Why Zhunzou
+## Architecture
 
-- **Decisions, not chat.** Every ticket is constrained to a three-line brief and closed-form options, so “what exactly are you asking?” never becomes another round trip.
-- **Rules first, humans where it matters.** The Meta-Agent applies your `GLOBAL_RULES.md` and recalls similar resolved tickets. Routine choices clear in seconds; judgment calls always reach you.
-- **One inbox for every agent.** Cursor, OpenCode, Claude Code, Codex, Gemini, Qoder, Windsurf, or any MCP client — desktop, phone, or a signed notification link. One queue, one audit trail.
-- **Works when you are away.** Long-polling resumes the exact agent immediately after approval. If you close the editor, a headless `wake` or `fleet` daemon keeps the work moving.
-- **Safe by construction.** Destructive options are never auto-approved, timeout rulings are opt-in, and human decisions always beat a late Meta-Agent or timeout verdict.
-- **Recall instead of repetition.** Resolved decisions are stored and recalled as precedents; each human approval can be distilled into a reusable rule.
-- **Tiny operational footprint.** One Node.js process, one SQLite file, one port. No Redis, no message queue, no native build step on the client.
-- **Open and self-hosted.** MIT licensed, plain HTTP API, pluggable models, notification channels, and agent adapters. Your decisions stay on your server.
+```mermaid
+flowchart TB
+    subgraph clients["AI coding agents (Cursor · OpenCode · Claude Code · Codex · Qoder · any MCP client)"]
+        BR["zhunzou-bridge<br/>stdio MCP + CLI · zero native deps<br/>adapters · wrappers · worktrees · log sanitizer"]
+        DEV["zhunzou-device<br/>reverse node daemon: presence ·<br/>node profiles · PTY shells"]
+    end
+    subgraph hub["Zhunzou hub — one Fastify + SQLite process, single port"]
+        API["REST + WebSocket API<br/>long-poll wakeups (in-process EventEmitter)"]
+        SUP["Supervisor — L1 rule pre-answers ·<br/>failure breaker · learned rules"]
+        META["Meta-Agent — rules + precedents"]
+        SCHED["Scheduler — resource-aware<br/>node routing"]
+        WEB["Web dashboard — Vue 3 PWA ·<br/>decision inbox · live logs · chat"]
+        NOTIFY["Notifications — Bark · Feishu · Slack ·<br/>Telegram … + signed approval / release links"]
+    end
+    YOU["You — desktop · phone"]
+    BR -- "WebSocket /ws/bridge<br/>(HTTP long-poll fallback)" --> API
+    DEV -- "WebSocket /ws/device" --> API
+    API --- SUP --- META
+    SCHED --> API
+    API <--> WEB
+    API --> NOTIFY
+    NOTIFY -- "push + one-click ruling" --> YOU
+    WEB -- "approve · dispatch · terminal" --> YOU
+    API -- "dispatched work (wake / fleet)" --> BR
+```
 
-**When it is a good fit:** you run AI coding agents across more than one repo or editor, you are tired of being the bottleneck, and you want automation without giving up control.
+Task dispatch, end to end:
 
-**When it is not:** you only need a single-user, single-session “yes/no” prompt inside one editor, or you are looking for a fully autonomous coding agent.
+```mermaid
+flowchart LR
+    D["You dispatch<br/>repo · engine · tags"] --> S{"Scheduler scores<br/>reported node profiles"}
+    S -- "no viable node:<br/>NO_ROUTE_TARGET + reasons" --> X[Rejected]
+    S -- best fit --> N["wake / fleet daemon<br/>on that node"]
+    N --> T["own git worktree<br/>throwaway wip/zz-&lt;taskId&gt; branch"]
+    T --> RUN["engine run · normalized events ·<br/>noise-reduced live logs"]
+    RUN -- success --> C["one publishable commit"]
+    RUN -- "stuck / repeated failure" --> B["BLOCKED / HEALING →<br/>the person who can release it"]
+```
 
-## Status
+<details>
+<summary>Repository layout</summary>
 
-Milestones **M1–M13 are complete**: shared protocol, cloud service, long-poll wakeups, Meta-Agent, MCP/CLI bridge, web dashboard, single-port deployment, decision memory with rule distillation, timeout rulings, batch approval, destructive-option protection, stale-task recovery, signed one-click approvals, one-click enrollment, the reverse WebSocket connection, and the interactive PTY console. On top of them, **phases 0–3 of the blueprint** are shipped: node/task/supervisor protocol contracts, resource-aware node routing, engine adapters with normalized events, resumable parked runs, git worktree isolation, local-run wrapping, log noise reduction, the Supervisor (rule-based permission pre-answers, failure circuit breaker, learned rules), the decision inbox, and task-side notifications with signed release links. Phase 4 (the mobile closed loop) is not built. The tracked gaps are listed in [Roadmap](#roadmap); the milestone table lives in [PROJECT_PLAN.md](./PROJECT_PLAN.md) and the phase blueprint in [PLAN.md](./PLAN.md).
+```text
+zhunzou/
+├── GLOBAL_RULES.md              # Meta-Agent ruling basis (editable in the dashboard)
+├── .env.example                 # annotated source of truth for every variable
+├── docs/                        # API / CONFIGURATION / PLUGINS / REALTIME / RELEASING,
+│   └── design/                  # per-slice briefs (scheduler, adapters, worktrees, sanitizer, …)
+├── examples/plugins/            # audit-log and custom-notification plugin examples
+├── scripts/ · deploy/           # smoke tests; systemd + nginx production setup
+├── release/bridge/              # standalone bridge bundles served at /releases/bridge/
+└── packages/
+    ├── shared/                  # Zod schemas, node/task/supervisor contracts, state machines
+    ├── server/                  # Fastify API, SQLite/Drizzle, scheduler, Meta-Agent,
+    │                            #   supervisor (guard + healer), wakeups, notifications, plugins
+    ├── bridge/                  # stdio MCP server + CLI (init / wait / wake / fleet /
+    │                            #   service / upgrade / run), adapters, wrappers, worktrees
+    ├── web/                     # Vue 3 + Vite + TailwindCSS dashboard (installable PWA)
+    └── device/                  # reverse-connection node daemon: presence, profiles, PTY
+```
 
-## Features
+</details>
 
-| Area | What it does |
+**Status.** Milestones M1–M13 (protocol → cloud service → long-poll wakeups → Meta-Agent → bridge → dashboard → PWA → device console) are complete, plus phases 0–3 of [PLAN.md](./PLAN.md): node routing, engine adapters, worktree isolation, the supervisor, the decision inbox, and task notifications. Phase 4 (mobile closed loop) is not built. The milestone table lives in [PROJECT_PLAN.md](./PROJECT_PLAN.md).
+
+## What you get
+
+| Area | Highlights |
 | --- | --- |
-| Decision tickets | Three-line brief, 2–6 closed-form options, recommended option, optional `risk` metadata |
-| Meta-Agent | OpenAI-compatible / custom HTTP / disabled; strict JSON verdict; historical precedents |
-| Decision memory | Recalls similar resolved tickets in the same project and injects them into the prompt |
-| Rule distillation | Turns each human approval into a candidate rule; one-click accept into `GLOBAL_RULES.md` |
-| Timeout rulings | Optional SLA (`AUTO_RESOLVE_TIMEOUT_MS`) with a countdown and “snooze 10 minutes” |
-| Batch approval | Approve many tickets with a 3-second undo window; destructive options are skipped by default |
-| Notifications | Bark, Feishu, Slack, Discord, ntfy, Telegram, WeCom, generic webhook, console — for tickets and for blocked/finished tasks |
-| One-click approval | HMAC-signed, expiring mobile page that works from any notification channel |
-| Node routing | Dispatch by repo, engine, and tags: the hub places a task on a node that can actually run it, and says why when none can (`PORTAL` / `OFFLINE` / `ENGINE` / `TAGS` / `REPO` / `MEMORY` / `CAPACITY`) |
-| Node profiles | Each machine reports role, tags, engines, checkouts, concurrency and free memory, so placement uses reported facts instead of guesses |
-| Human → Agent tasks | Dispatch work from the dashboard; bridges claim it with `agent_hub_next_task`. Lives inside the Chat page as the “One-shot” mode: same env/project picker, no context kept |
-| Worktree isolation | With `ZHUNZOU_WORKTREES`, each dispatched run gets its own `.zhunzou/wt/<taskId>` on a throwaway `wip/zz-<taskId>` branch that squashes to one publishable commit; it always falls back to the plain checkout rather than losing work |
-| Local-run wrapping | `zhunzou-bridge run <engine>` watches a terminal you started yourself, registers it as a task, and offers the Hub the handover only when the run goes idle or parks |
-| Engine events | Each adapter normalizes its CLI into `tool_call` (audit), `permission_required` (park) and `session` (resume), so a parked run resumes where it stopped |
-| Supervisor | Answers permission tickets from learned rules before any model runs, and refuses to re-run a failure the hub already watched happen (deterministic evidence first, model only for what it cannot judge) |
-| Decision inbox | One dashboard tab for work that owes a person a look (`PENDING` / `CLAIMED` / `BLOCKED` / `HEALING`), each card showing the supervisor's own explanation and a release or retry action |
-| Stale task recovery | Offline `CLAIMED` tasks are requeued; hard timeouts fail them instead of blocking the queue |
-| Agent registry | Every `env` is manageable: client type, version, host, current project, enable/disable/delete |
-| Scoped tokens | Per-agent Bearer tokens can only touch their own env; rotate or revoke without restarting the hub |
-| Live task output | Expand a task card to tail `stdout` / `stderr` / system events while it runs; retained after completion |
-| Interactive sessions | Chat with any project's agent from the hub; each turn resumes the CLI session (`--session` / `--resume`) |
-| Turn mirroring | `agent_hub_report_exchange` mirrors each IDE question + conclusion to the dashboard, so offline agents still have a transcript |
-| Device presence | A device daemon keeps a reverse WebSocket per machine and reports OS, CPU/load/memory, installed agent CLIs and its node profile |
-| Interactive terminals | Real PTY shells (forkpty / ConPTY) streamed to xterm.js, with input lease, limits, and an auditable trail |
-| One-click enrollment | A short-lived dashboard code provisions tokens, editor config, and a login daemon on a new machine |
-| Bridge self-update | Standalone installs check the hub's release manifest and flip their version pointer, with rollback |
-| Resume | `agent_hub_resume` restores pending decisions and active tasks after a restart |
-| Plugins | Lifecycle hooks for audit logs, IM bots, metrics, custom integrations |
-| Realtime dashboard | `/ws/realtime` pushes snapshots and change frames; the legacy `/api/sync` long poll stays as an automatic fallback |
-| PWA | Installable dashboard (manifest + icons + service worker): network-first shell, cached assets, offline fallback page, and an in-app update prompt (update now / later) |
+| Decision tickets | Three-line brief, 2–6 options, risk metadata, batch approval with undo, timeout rulings, rule distillation from each human approval, precedent recall |
+| Meta-Agent | OpenAI-compatible / custom HTTP / disabled; strict JSON verdicts against `GLOBAL_RULES.md` |
+| Supervisor | L1 answers permission tickets from human-granted allowances without a model; a failure breaker stops provably repeated failures; verdicts attributed `L1` / `L2` / `HUMAN` |
+| Node routing | Dispatch by repo, engine, tags, role, memory, and capacity — or rejection with per-node reasons (`GET /api/nodes` shows the fleet as the scheduler sees it) |
+| Isolated runs | Per-task git worktree on a `wip/zz-<taskId>` branch squashing to one commit; safe fallback to the plain checkout |
+| Live observability | Noise-reduced `stdout` / `stderr` / engine events while a task runs; normalized `tool_call` / `permission_required` / `session` events let a parked run resume where it stopped |
+| Human ↔ Agent | Dashboard chat with any project's agent (session-resumed turns), one-shot task dispatch, turn mirroring from the IDE, draft replies awaiting adoption |
+| Daemons | `wake` (one project), `fleet` (one process per machine, many projects), `run` (wrap a terminal you started yourself), login-time `service`, bridge self-`upgrade` |
+| Terminals | Real PTY shells streamed to xterm.js with input lease, limits, and an exportable audit trail |
+| Access | One-click enrollment (short-lived code → tokens + editor config + daemon), scoped per-agent tokens, agent registry with enable/disable |
+| Reach | Nine notification channels, HMAC-signed one-click approval and task-release pages, bilingual installable PWA dashboard |
+| Extensibility | Lifecycle plugin hooks, pluggable model providers and notification channels, `buildApp({ repo })` storage seam |
 
 ## Dashboard
 
-The dashboard is bilingual (EN/中文), installable as a PWA, and usable from a phone. The screenshot above is the ticket queue; three more views carry the workflow:
+The dashboard is bilingual (EN/中文), installable as a PWA, and usable from a phone. The screenshot at the top is the ticket queue; three more views carry the workflow:
 
 <p align="center">
   <img src="./docs/assets/agents.png" alt="Zhunzou agents page: online status, client type, per-agent token, and enable/disable controls" width="920" />
-  <br /><sub>Agents: every environment, its client type, host, current project, scoped token, and an enable/disable switch.</sub>
+  <br /><sub>Agents: every environment and machine, its client type, scoped token, and switches.</sub>
 </p>
 
 <p align="center">
@@ -155,53 +167,8 @@ The dashboard is bilingual (EN/中文), installable as a PWA, and usable from a 
 
 <p align="center">
   <img src="./docs/assets/chat.png" alt="Zhunzou chat: multi-turn conversation with a project agent from the hub" width="920" />
-  <br /><sub>Chat: multi-turn conversation with any project's agent; each turn resumes the CLI session, pending petitions appear inline, and new messages wait in a Cursor-style queue above the composer where they can be edited or withdrawn.</sub>
+  <br /><sub>Chat: multi-turn conversation with any project's agent; pending petitions appear inline, queued messages can be edited or withdrawn.</sub>
 </p>
-
-## Architecture
-
-```text
-Cursor / OpenCode / Claude Code / any MCP client
-        │  agent_hub_escalate / wait / next_task / resume
-        ▼
-zhunzou-bridge (stdio MCP + CLI, zero native deps)
-        │  adapters · wrappers · worktrees · log sanitizer · engine events
-        │  WebSocket /ws/bridge, automatic HTTP long-poll fallback
-        ▼
-Zhunzou server (Fastify + SQLite + in-process EventEmitter)
-        │
-        ├── Scheduler ── places work on the node that can run it
-        ├── Meta-Agent ── rules + similar past decisions
-        ├── Supervisor ── L1 rule pre-answers · failure breaker · learned rules
-        ├── Web dashboard (Vue 3 + PWA, same port, /ws/realtime, decision inbox)
-        ├── Notifications (signed approval links + signed task-release links)
-        └── zhunzou-device ── /ws/device ── node profiles + PTY shells over /ws/terminal
-```
-
-## Repository layout
-
-```text
-zhunzou/
-├── GLOBAL_RULES.md              # Meta-Agent ruling basis (editable in the dashboard)
-├── .env.example
-├── PLAN.md / PROJECT_PLAN.md    # phase blueprint and milestone table
-├── Dockerfile / docker-compose.yml / ecosystem.config.cjs  # container and pm2 setups
-├── docs/                        # PLUGINS.md, REALTIME.md, RELEASING.md, UI briefs
-├── docs/design/                 # per-slice briefs: scheduler, adapters, worktrees,
-│                                # wrappers, sanitizer, supervisor guard/healer, notify, console
-├── examples/plugins/            # audit-log and custom-notification plugin examples
-├── scripts/                     # smoke tests (HTTP, bridge end-to-end, web) and pm2 deploy
-├── deploy/                      # systemd + nginx production setup
-├── release/bridge/              # standalone bridge bundles served at /releases/bridge/
-└── packages/
-    ├── shared/                  # Zod schemas, node/task/supervisor contracts, state machines
-    ├── server/                  # Fastify API, SQLite/Drizzle, scheduler, Meta-Agent,
-    │                              supervisor (guard + healer), wakeups, notifications, plugins
-    ├── bridge/                  # stdio MCP server + CLI (init / wait / wake / fleet /
-    │                              service / upgrade / run), adapters, wrappers, worktrees, sanitizer
-    ├── web/                     # Vue 3 + Vite + TailwindCSS dashboard (installable PWA)
-    └── device/                  # reverse-connection node daemon: presence, profiles, capabilities, PTY
-```
 
 ## Quick start
 
@@ -211,26 +178,21 @@ Requirements: Node.js >= 20, pnpm 9 (`corepack enable pnpm`).
 pnpm install
 cp .env.example .env          # set HUB_SECRET_TOKEN and (optionally) OPENAI_API_KEY
 pnpm build
-pnpm server                   # http://127.0.0.1:8787
+pnpm server                   # dashboard + API on http://127.0.0.1:8787
 ```
 
-The built server also starts with its own flag line, no `.env` required:
+Open the dashboard and paste `HUB_SECRET_TOKEN`. Without an LLM key the Meta-Agent is skipped and every ticket goes to a human (`META_AGENT_PROVIDER=none` makes that explicit).
+
+Dev mode: `pnpm dev` (server hot-reload on :8787) and `pnpm dev:web` (Vite on :5173, `/api` proxied).
+
+One flag line, no `.env` needed:
 
 ```bash
 node packages/server/dist/main.js hub --port 8765 --token "$(openssl rand -hex 16)"
 node packages/device/bin/device.js join http://127.0.0.1:8765 --token <token> --scan-dir ~/code
 ```
 
-Open the dashboard and paste `HUB_SECRET_TOKEN`.
-
-Without an LLM key the Meta-Agent is skipped and every ticket goes to a human. Set `META_AGENT_PROVIDER=none` to make that explicit.
-
-Dev mode (server hot-reload + Vite proxy):
-
-```bash
-pnpm dev          # server on :8787
-pnpm dev:web      # dashboard on :5173, /api proxied to :8787
-```
+Docker: `cp .env.example .env && docker compose up -d --build` — one port serves dashboard and API; SQLite + rules persist in a volume.
 
 ### Try it with curl
 
@@ -241,11 +203,9 @@ TOKEN=dev-token   # must match HUB_SECRET_TOKEN in .env
 
 # 1. an agent submits its blocker
 curl -s -X POST http://127.0.0.1:8787/api/tickets \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{
-    "env": "company-cursor",
-    "projectName": "yikuaomed-erp",
+    "env": "company-cursor", "projectName": "yikuaomed-erp",
     "doneSummary": "Form validation done on the login page",
     "blockerQuestion": "Should field errors use a toast or inline copy?",
     "nextStepPlan": "Wire the choice into shared error handling and add tests",
@@ -262,31 +222,17 @@ curl -s "http://127.0.0.1:8787/api/tickets/1/wait?timeout=40000" \
 
 # 3. from another terminal, rule on it — request 2 returns immediately
 curl -s -X POST http://127.0.0.1:8787/api/tickets/1/resolve \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"selectedOption":"B","customInstruction":"login page only for now"}'
 ```
 
-### Docker
-
-```bash
-cp .env.example .env
-docker compose up -d --build
-```
-
-The image serves the dashboard and API from one port and persists SQLite + rules in a volume.
-
 ## Connect an agent
 
-> **About the `zhunzou-bridge` command.** Your own hub is the distribution channel: the one-click
-> installer downloads a SHA256-verified standalone bundle into `~/.zhunzou/` and `upgrade` keeps it
-> current. `npx -y zhunzou-bridge` only works once the package is on npm; until then, run the same
-> commands from a checkout (`pnpm build && node packages/bridge/bin/cli.js …`) or on an installed
-> machine (`node ~/.zhunzou/cli.mjs …`).
+> **About `zhunzou-bridge`.** Your own hub is the distribution channel: the one-click installer downloads a SHA256-verified standalone bundle into `~/.zhunzou/` and `upgrade` keeps it current. Until the package is on npm, run the same commands from a checkout (`pnpm build && node packages/bridge/bin/cli.js …`) or an installed machine (`node ~/.zhunzou/cli.mjs …`).
 
-### One-click (recommended for end users)
+### One-click (recommended)
 
-Open **Agents → One-click connect** in the dashboard, optionally name the environment, and copy one of the generated commands:
+Open **Agents → One-click connect** in the dashboard and copy a generated command:
 
 ```bash
 # macOS / Linux
@@ -298,294 +244,28 @@ curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash
 irm 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' | iex
 ```
 
-The command provisions Node 20+ (a portable runtime with SHA256 verification when Node is missing), downloads the matching bridge release, exchanges the code for one scoped token per client, writes user-level Cursor / OpenCode / Claude Code / Codex / Qoder config, and registers a login daemon. The end user never sees `HUB_SECRET_TOKEN` and never clones the repo.
-
-Codes expire after 15 minutes and can enroll up to 10 clients on the same machine (the first redemption binds the code to that host). To skip the login daemon and stay online only while the editor is open, pass the installer's own flags:
-
-```bash
-curl -fsSL 'https://hub.example.com/install.sh?code=ABCDE-FGHIJ' | bash -s -- --no-service
-```
-
-```powershell
-# irm | iex cannot take arguments; save the script and pass -NoService instead
-iwr 'https://hub.example.com/install.ps1?code=ABCDE-FGHIJ' -OutFile install.ps1
-.\install.ps1 -NoService          # also accepts -Code / -HubUrl, or $env:ZHUNZOU_ENROLL_CODE
-```
-
-### Several clients on one machine
-
-`init --target all` gives every client its own identity instead of sharing one `AGENT_ENV`:
-
-| Client | Env | Agent kind |
-| --- | --- | --- |
-| Cursor | `cursor-<project or host>` | `cursor` |
-| OpenCode | `opencode-<project or host>` | `opencode` |
-| Claude Code | `claude-<project or host>` | `claude-code` |
-| Codex | `codex-<project or host>` | `codex` |
-| Qoder | `qoder-<project or host>` | `qoder` |
-
-Each env gets its own token and dashboard card, so heartbeats no longer overwrite each other; one project can be bound to several envs. The login daemon switches to `fleet` and keeps every env online (`~/.zhunzou/fleet.json`). Pass `--env` or `--agent-kind` to pin one shared identity instead.
-
-Leave the enrollment dialog's environment field empty so each client derives `<kind>-<project or host>`; if you set it (for example `office`), each client becomes `office-cursor`, `office-opencode`, `office-claude`, `office-codex`, `office-qoder`, and re-running the installer refreshes that card instead of adding `-2`.
-
-Codex only reads the user-level `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`); `init` writes or replaces `[mcp_servers.zhunzou]` and leaves other servers untouched.
-
-Qoder CLI reads `mcpServers` from `$QODER_CONFIG_DIR/settings.json` (default `~/.qoder/settings.json`); a workspace install writes `<project>/.qoder/settings.local.json` instead of `.mcp.json`, so it never fights Claude Code over that file.
-
-To keep a project online without opening an editor, register the directory with `fleet` (no JSON editing):
-
-```bash
-npx zhunzou-bridge fleet add D:\work\erp D:\work\crm --code ABCDE-FGHIJ
-npx zhunzou-bridge fleet list                          # env / path / project / token
-npx zhunzou-bridge fleet remove cursor-erp             # remove by env
-
-# No paths to type: scan the workspaces this machine already opened
-npx zhunzou-bridge fleet scan
-npx zhunzou-bridge fleet scan --add --code ABCDE-FGHIJ # register all (VS Code: --client code)
-
-# Scan for git repositories under one or more roots (depth 2 = children + grandchildren)
-npx zhunzou-bridge fleet scan --root ~/code --depth 2
-npx zhunzou-bridge fleet scan --root ~/code --root ~/work --depth 2 --add --code ABCDE-FGHIJ
-```
-
-`fleet add` infers the project from the git root and writes `~/.zhunzou/fleet.json`; with `--code` it trades a dashboard enrollment code for one scoped token per project (no admin token needed), and `--admin-token` / `--token` also work. If the login daemon is installed it switches to `fleet` and restarts, so the new project can receive tasks immediately.
-
-To avoid re-running the command, add a `scan` block to `~/.zhunzou/fleet.json`; every `fleet` start walks those roots, adds new git repos to the runtime, and leaves the file untouched:
-
-```json
-{
-  "scan": { "roots": ["~/code", "~/work"], "depth": 2 },
-  "projects": []
-}
-```
-
-Discovered projects use the usual `<adapter prefix>-<project>` env name; colliding basenames get `-2`, `-3`. Tokens come from `adminToken` or the cached `fleet-tokens.json`, so configure one of them before the first start.
-
-No `scan` block is required either: when it is absent, `fleet` adopts the **git repositories** Cursor / VS Code opened recently (Windows reads `%APPDATA%\Cursor|Code\User\globalStorage\storage.json`, and path casing is folded), so neither `fleet scan --add` nor a dashboard click is needed. Adoption is best-effort: without an `adminToken` or cached token only that project is skipped. Pass `--no-auto-discover` to keep discovery manual.
-
-### Dispatch to the machine that can actually run it
-
-Once nodes report profiles, you no longer have to know which env hosts which repository. `POST /api/tasks/dispatch` names a **repo** (optionally an engine and tags) and the hub picks the target:
-
-```bash
-curl -s -X POST https://hub.example.com/api/tasks/dispatch \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"repoName":"yikuaomed-erp","engine":"opencode","tags":["monorepo"],
-       "title":"Backfill the export column","instruction":"…"}'
-```
-
-Placement is scored over what the node last reported, and a missing fact ranks last rather than granting a pass — with one exception: no recorded checkout means the task would fail on its first command, so that node is rejected. A node is rejected as `PORTAL` (role never takes work), `OFFLINE` (quiet for over 30 s), `ENGINE`, `TAGS`, `REPO`, `MEMORY` (under 2 GB free) or `CAPACITY` (already at `--max-concurrency`). If nothing survives, the call returns `NO_ROUTE_TARGET` with the reasons instead of silently queueing hopeless work. An explicit `env` is a pin, not a hint: the hub honours it even when that node looks loaded and records `pinned: true` in the audit trail. `GET /api/nodes` shows the fleet as the scheduler sees it.
-
-### Associate a directory from the dashboard
-
-With a bridge that supports fleet directory sync, open **Agents → Associate directory** and either pick one of the reported candidates or use **Browse this machine** to walk the filesystem from home/`scan.roots`. No `fleet add` command or config is required for browsing (the feature is driven by the resident `fleet` process, not a standalone `wake`):
-
-1. The bridge reports candidate directories under `scan.roots` (or recent editor workspaces) every 30 seconds;
-2. Browsing sends a one-off listing request, so the dashboard can enter any allowed folder and associate it;
-3. The dashboard creates an env and a scoped token for the chosen directory;
-4. The bridge polls every 3 seconds, writes the project to `fleet.json` (`source: "hub"`), starts its agent loop, and reports **Associated**;
-5. Removing the association in the dashboard makes the bridge stop that loop and delete the entry.
-
-Safety: browsing is limited to the user's home directory and `scan.roots`, hidden directories are rejected, and symlinks are resolved before the allowlist check; only directories containing `.git` can be associated. A dashboard-issued token is kept on the server only until the bridge confirms `APPLIED`, then cleared.
+The command provisions Node 20+ if missing, downloads the matching bridge, exchanges the code for one scoped token per client (Cursor / OpenCode / Claude Code / Codex / Qoder), writes user-level editor config, and registers a login daemon. Codes expire after 15 minutes and bind to the first redeeming host. Each client gets its own `env` (`cursor-<project>`, `opencode-<project>`, …) so heartbeats never overwrite each other. Flags: `--no-service` (skip the daemon), `-NoService` (saved PowerShell script).
 
 ### Manual setup (developers)
 
 ```bash
-npx -y zhunzou-bridge init
+zhunzou-bridge init            # wizard: detect editors, write MCP config + rules,
+                               # provision a scoped token, verify connectivity
 ```
 
-The wizard asks for the hub URL and token, detects Cursor / OpenCode / Claude Code / Codex / Qoder, writes the MCP config, copies a rules template, provisions a scoped agent token, and verifies connectivity. It never overwrites unrelated MCP servers.
+Run `init` once **per workspace**; it derives `AGENT_ENV` from the project name and never overwrites unrelated MCP servers. Non-interactive: `--hub-url … --token …|--code … --target cursor|opencode|claude|codex|qoder|all --yes` (`--dry-run` previews). Full adapter list, `wake` / `run` / `fleet` / `service` / `upgrade` usage, worktree isolation, and Windows notes: [packages/bridge/README.md](./packages/bridge/README.md).
 
-Run `init` once **per workspace**. The wizard derives `AGENT_ENV` from the project name (`cursor-yikuaomed-erp`) and provisions a scoped token, so multiple Cursor windows show up as separate agents instead of overwriting each other's heartbeat. Cursor can only read the workspace it has open; to work across repositories, use a multi-root workspace or run one agent per repository.
-
-Non-interactive and preview forms:
+### Keep working when the editor is closed
 
 ```bash
-zhunzou-bridge init --hub-url https://hub.example.com --token zz_... --target cursor --yes
-zhunzou-bridge init --hub-url https://hub.example.com --code ABCDE-FGHIJ --yes --global --service
-zhunzou-bridge init --dry-run          # show what would be written, change nothing
+zhunzou-bridge wake                                  # claim dispatched tasks for this repo, any CLI engine
+zhunzou-bridge fleet                                 # one wake loop per project in a single process
+ZHUNZOU_WORKTREES=1 zhunzou-bridge wake              # isolate each run in its own git worktree
+zhunzou-bridge run opencode run "…"                  # wrap a terminal you started yourself;
+                                                     # the hub takes over only when you walk away
 ```
 
-`--target` accepts `cursor` / `opencode` / `claude` / `codex` / `qoder` / `all`, `--global` writes user-level
-instead of project-level config, `--service` registers the login daemon, `--no-agent-token` skips
-token provisioning, `--dir` targets another workspace, and `--skip-check` skips the connectivity
-probe. From a checkout (while the package is not on npm), run `pnpm build` first and call
-`node packages/bridge/bin/cli.js` / `node packages/bridge/bin/mcp.js` instead.
-
-### CLI commands
-
-| Command | Purpose |
-| --- | --- |
-| `init` | Detect editors, write MCP config + rules, provision a scoped token, verify connectivity |
-| `wait --ticket 104 [--interval 15000]` | Block until the ticket is ruled, print the decision to stdout |
-| `wake` | Long-poll dispatched tasks and wake a local agent (`--adapter --command --cwd --args --poll --run-timeout --once`) |
-| `run <engine> [args...]` | Watch an agent CLI you start yourself: register the run as `LOCAL_WRAP` and hand it to the hub when you walk away (`--idle-timeout --title --instruction --cwd --no-takeover`) |
-| `fleet` | One wake loop per project in a single process (`--config --once --refresh-tokens --print-launchd --no-auto-discover`) |
-| `fleet add` · `scan` · `list` · `remove` | Manage the projects in `~/.zhunzou/fleet.json` |
-| `service` (`install` · `uninstall` · `status` · `restart`) | Manage the login-time daemon |
-| `upgrade` (`--check` · `--force` · `--rollback`) | Pull the newest bridge bundle from the hub and flip the version pointer |
-
-`wake` adapters: `auto`, `opencode`, `opencode-run`, `claude`, `codex`, `gemini`, `qoder`, `cursor-agent`, `aider`, `goose`, `amp`, `command` (any template command), `notify` (surface the task without running a CLI). `auto` prefers a live OpenCode service, then looks for `claude` → `codex` → `gemini` → `qoder` → `cursor-agent` → `aider` → `goose` → `amp`, and falls back to `notify`. The `qoder` adapter runs Qoder CLI (`qoder -p`; `qodercli` / `qcode` executables are also detected). Interactive chat sessions need a resume-capable adapter: `opencode`, `opencode-run`, `cursor-agent`, `claude`, `qoder`, or `command`.
-
-`run` wraps every adapter above except `auto`, `command` and `notify`, and only supports print/stream mode (`cursor-agent -p`, `opencode run`, `claude -p`) — a full-screen TUI needs a pty the wrapper deliberately does not open, so use `wake` or the dashboard for those. Wrapper flags come **before** `<engine>`; everything after it reaches the CLI untouched. The wrapper turns the CLI's own output into normalized engine events, ships noise-reduced logs (ANSI escapes dropped, carriage-return progress lines kept as their final frame, repeats folded with a count, errors collected into a signature — see `docs/design/sanitizer-3.1.md`; it reduces noise, it does **not** redact secrets, so keep credentials out of command output), and offers the handover only when you have stopped typing *and* the run is genuinely stuck — at most three times per run, so your local console stays authoritative.
-
-### Headless: keep working when the editor is closed
-
-Cursor CLI runs the same agent without the editor (`agent`, with `cursor-agent` as an alias):
-
-```bash
-curl https://cursor.com/install -fsS | bash
-agent login                     # or export CURSOR_API_KEY=...
-agent -p --force "list TODOs"   # print mode; --force applies edits
-```
-
-Then keep one wake daemon per repository; it dispatches tasks even when Cursor is not running:
-
-```bash
-cd /path/to/project
-AGENT_ENV=cursor-my-project HUB_URL=... HUB_TOKEN=zz_... \
-  zhunzou-bridge wake --adapter cursor-agent --cwd /path/to/project
-```
-
-The daemon runs `cursor-agent -p --force "<task brief>"` and reports `DONE` / `FAILED` from the exit code. If the CLI sandbox blocks the hub, adjust `--sandbox` or allow the hub domain. Without Cursor CLI, `--adapter opencode-run` and `--adapter claude` work the same way.
-
-### One process for every project (fleet)
-
-`fleet` runs one wake loop per repository in a single process, so the hub can dispatch to any project without an editor or a terminal per repo:
-
-```bash
-cp packages/bridge/templates/fleet.example.json ~/.zhunzou/fleet.json
-zhunzou-bridge fleet
-```
-
-The config lists `hubUrl`, an optional `adminToken` (used once to register agents and issue scoped tokens, cached at `~/.zhunzou/fleet-tokens.json` with `0600`), and `projects: [{ env, path, project?, adapter?, token?, args? }]`. Each project appears as its own agent in the dashboard; `--refresh-tokens` rotates tokens and `--once` handles a single cycle.
-
-Start it at login:
-
-```bash
-# macOS
-zhunzou-bridge fleet --print-launchd > ~/Library/LaunchAgents/com.zhunzou.fleet.plist
-launchctl load ~/Library/LaunchAgents/com.zhunzou.fleet.plist
-
-# pm2
-pm2 start "zhunzou-bridge fleet" --name zhunzou-fleet && pm2 save
-```
-
-The **Agents** (接入端) page shows one card per machine from the hub's device registry, so a card reports how many projects that box hosts and how many are online. Two machines that an image left with the same hostname get separate cards.
-
-### Isolate dispatched runs in git worktrees
-
-Two agents sharing one checkout overwrite each other. Set `ZHUNZOU_WORKTREES=1` and each claimed task runs in its own worktree under `.zhunzou/wt/<taskId>` on a throwaway `wip/zz-<taskId>` branch; when it finishes, only one clean, publishable commit leaves the worktree:
-
-```bash
-ZHUNZOU_WORKTREES=1 zhunzou-bridge wake          # or via fleet: projects[].args, same env
-git -C /path/to/project worktree list            # what is currently isolated
-git -C /path/to/project log --oneline wip/zz-118 # the one commit this task produced
-```
-
-Isolation is best effort in the safe direction: if the directory is not a git repo, the worktree is missing, or it still has uncommitted changes, the task falls back to the plain checkout instead of losing work. Every git call is an argv array, never a shell string.
-
-### Keep the daemon and the bridge current
-
-`service` manages the login-time daemon the installer registers; `upgrade` pulls the newest standalone bundle from the hub and flips the local version pointer (`~/.zhunzou/current.json`), so every MCP config keeps pointing at one launcher:
-
-```bash
-zhunzou-bridge service status              # install | uninstall | status | restart
-zhunzou-bridge service restart             # e.g. after `fleet add` changed fleet.json
-zhunzou-bridge upgrade --check             # compare against /api/bridge/latest
-zhunzou-bridge upgrade                     # download + switch, then restart the service
-zhunzou-bridge upgrade --rollback          # back to the previous version
-```
-
-Standalone installs self-update in the background every 6 hours; set `ZHUNZOU_AUTO_UPGRADE=0` to turn that off.
-
-### Reverse connection: device daemon
-
-The MCP bridge above is pull-based. The device daemon gives the hub a persistent
-reverse connection to each machine — presence, capabilities, its node profile,
-and the PTY shells described in the next section:
-
-```bash
-pnpm --filter @zhunzou/device build
-
-# Join a hub as a routable node: reports a profile, and scans roots for checkouts
-node packages/device/bin/device.js join https://hub.example.com \
-  --token zz_xxx \
-  --env home-mac \
-  --role worker \
-  --tags gpu,monorepo \
-  --max-concurrency 2 \
-  --scan-dir ~/code --scan-dir ~/work
-
-# Plain reverse connection (presence + PTY only, no routing profile overrides)
-node packages/device/bin/device.js run \
-  --hub https://hub.example.com \
-  --token zz_xxx \
-  --env home-mac \
-  --project agent-hub \
-  --heartbeat 15000
-
-# Inspect what this machine reports (OS, load, CLI inventory, PTY support)
-node packages/device/bin/device.js capabilities --json     # alias: `print`
-```
-
-`run` is the default command; `join` is `run` plus a node profile (`--role
-worker|portal|hybrid`, `--tags`, `--max-concurrency 1-16`, repeatable
-`--scan-dir`), also readable from `ZHUNZOU_NODE_ROLE` / `ZHUNZOU_NODE_TAGS` /
-`ZHUNZOU_MAX_CONCURRENCY` / `ZHUNZOU_SCAN_DIRS`. A `portal` node is never handed
-work; `worker` and `hybrid` are placed by the scheduler. `--token` falls back to
-`ZHUNZOU_DEVICE_TOKEN` → `HUB_TOKEN` → `HUB_SECRET_TOKEN`, `--hub` to
-`ZHUNZOU_HUB_URL` → `HUB_URL`, and `--env` to `ZHUNZOU_DEVICE_ENV` → `AGENT_ENV`
-(default `device-<hostname>`); `ZHUNZOU_RECONNECT_MIN_MS` /
-`ZHUNZOU_RECONNECT_MAX_MS` tune the backoff.
-
-The daemon opens `wss://<hub>/ws/device`, sends a `hello` with protocol version,
-OS/arch/host/shell, PTY backend, a CLI inventory (`claude`, `cursor-agent`,
-`agent`, `opencode`, `codex`, `gemini`, `qoder`, `qodercli`, `aider`, `goose`,
-`amp`, `git`, `node`, `pnpm`, `docker`, `tmux`, …), its node profile and
-CPU/load/memory/uptime, then heartbeats with fresh stats and free memory every
-15 seconds. The dashboard's **Agents** page shows the realtime badge,
-CPU/load/memory and available tools, and marks the device offline as soon as the
-socket dies. Set `REALTIME_ENABLED=false` to keep using only the legacy HTTP
-heartbeat path. Wire-level details are in
-[docs/REALTIME.md](./docs/REALTIME.md).
-
-`node-pty` is an optional dependency: presence-only devices run fine without
-it, and `capabilities` reports `pty: unavailable` until the native module is
-installed.
-
-### Interactive terminals (PTY)
-
-The device daemon can also host real PTY shells (macOS forkpty, Windows
-ConPTY). Install the optional native module once on each device:
-
-```bash
-pnpm --filter @zhunzou/device add node-pty
-```
-
-Then start the daemon as usual. The dashboard's **Terminal** (终端) tab lists
-live sessions, opens an xterm.js view, and streams input/output over
-`/ws/terminal`. Each session is routed to the device that owns it:
-
-```text
-browser xterm  ──/ws/terminal──▶ hub ──/ws/device──▶ node-pty (ConPTY/forkpty)
-```
-
-Sessions survive a browser refresh (scrollback replay by seq) and a device
-WebSocket reconnect (`pty.attach`). Server restarts rehydrate session metadata
-and ask the device to reattach; if the device process is gone the session is
-marked `LOST`.
-
-Safety limits: `TERMINAL_ENABLED`, `TERMINAL_MAX_SESSIONS`,
-`TERMINAL_MAX_SESSIONS_PER_DEVICE`, `TERMINAL_MAX_VIEWERS`,
-`TERMINAL_IDLE_TIMEOUT_MS`, `TERMINAL_DETACH_TTL_MS`,
-`TERMINAL_SCROLLBACK_BYTES`, `TERMINAL_INPUT_BYTES_PER_SEC` and
-`TERMINAL_ALLOWED_ENVS`. Only one viewer holds the input lease at a time;
-other viewers can click **Take control**. Input, resize, signal, claim and
-close events are written to `terminal_audit`, exposed at
-`/api/terminals/:id/audit`, and downloadable as CSV / JSONL. Each device also
-has a **terminal enabled** toggle in the **Agents** page; disabling it returns
-`TERMINAL_FORBIDDEN` for new sessions.
+`wake` adapters: `auto`, `opencode`, `claude`, `codex`, `gemini`, `qoder`, `cursor-agent`, `aider`, `goose`, `amp`, `command`, `notify`. A device daemon (`packages/device/bin/device.js join --role worker --tags … --scan-dir …`) gives the hub a reverse WebSocket per machine — presence, CPU/memory, CLI inventory, the node profile routing uses, and optional PTY terminals (`node-pty`). Wire-level details: [docs/REALTIME.md](./docs/REALTIME.md).
 
 ### MCP tools
 
@@ -598,293 +278,50 @@ has a **terminal enabled** toggle in the **Agents** page; disabling it returns
 | `agent_hub_next_task` | Claim a task dispatched from the dashboard |
 | `agent_hub_complete_task` | Report `DONE` / `FAILED` |
 | `agent_hub_report_task` | Show the current real task on the dashboard |
-| `agent_hub_report_exchange` | Mirror this turn (the human's question + the agent's conclusion) to the dashboard transcript |
-| `agent_hub_propose_reply` | Draft the human's next chat reply; it stays pending until a human adopts it |
+| `agent_hub_report_exchange` | Mirror this turn (question + conclusion) to the dashboard transcript |
+| `agent_hub_propose_reply` | Draft the human's next reply; stays pending until adopted |
 | `agent_hub_notify_done` | Mark the environment `Idle` |
-
-Environment variables:
-
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `HUB_TOKEN` | yes | — | Same as server `HUB_SECRET_TOKEN`, or a scoped per-agent token |
-| `HUB_URL` | no | `http://127.0.0.1:8787` | Server URL |
-| `AGENT_ENV` | no | `unknown-<hostname>` | Environment label, e.g. `company-cursor`. `init` writes `<client>-<project>` so each workspace stays distinct |
-| `ZHUNZOU_AGENT_KIND` | no | `other` | Client type: `cursor` / `opencode` / `claude-code` / `codex` / `gemini` / `qoder` / `windsurf` / `other`; written by `init` |
-| `ZHUNZOU_PROJECT` | no | auto-detected | Project name reported in heartbeats; falls back from the client's open workspace (Cursor `WORKSPACE_FOLDER_PATHS`, MCP `roots/list`) to the git root / cwd basename |
-| `ZHUNZOU_FALLBACK` | no | `cli` | `cli` or `mcp` after a 40s timeout (legacy alias `AGENT_HUB_FALLBACK`) |
-| `ZHUNZOU_WAIT_TIMEOUT_MS` | no | `40000` | Single long-poll window, clamped 1s–55s (legacy alias `AGENT_HUB_WAIT_TIMEOUT_MS`) |
-| `ZHUNZOU_CLI_COMMAND` | no | `npx zhunzou-bridge` | Command shown in CLI fallback; running `bin/mcp.js` auto-points it at the sibling `cli.js` / `cli.mjs` |
-| `ZHUNZOU_HEARTBEAT_INTERVAL_MS` | no | `30000` | Heartbeat interval, clamped 5s–5min |
-| `ZHUNZOU_TRANSPORT` | no | `auto` | `auto` / `ws` / `http` for task/ticket/chat claims. `auto` uses `/ws/bridge` and falls back to HTTP |
-| `ZHUNZOU_CHAT_SESSION_ID` | no | — | Injected by the session runner so a turn resumes the right chat session |
-| `ZHUNZOU_AUTO_UPGRADE` | no | on | `0` / `false` / `off` / `no` disables background self-update |
-| `ZHUNZOU_AUTO_UPGRADE_INTERVAL_MS` | no | `21600000` | Self-update check interval, minimum 60s |
-| `ZHUNZOU_MCP_BIN` / `ZHUNZOU_CLI_BIN` | no | — | Override the bin paths `init` writes into editor config |
-| `CODEX_HOME` | no | `~/.codex` | Where `init --target codex` reads and writes `config.toml` |
-| `QODER_CONFIG_DIR` | no | `~/.qoder` | Where `init --target qoder` reads and writes `settings.json` |
-
-`wake` and `fleet` daemon defaults (each has a matching CLI flag):
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `ZHUNZOU_WAKE_ADAPTER` | `auto` | Adapter used to run a dispatched task |
-| `ZHUNZOU_WAKE_COMMAND` | — | Template command for the `command` adapter, e.g. `claude -p {prompt}` |
-| `ZHUNZOU_WAKE_ARGS` | — | Extra arguments appended to a CLI adapter (space-separated) |
-| `ZHUNZOU_WAKE_CWD` | cwd | Working directory for one-shot adapters |
-| `ZHUNZOU_WAKE_RUN_TIMEOUT_MS` | `1800000` | Max wall time for one task run |
-| `ZHUNZOU_WAKE_POLL_TIMEOUT_MS` | `40000` | Long-poll window when claiming tasks |
-| `ZHUNZOU_WAKE_NOTIFY_INTERVAL_MS` | `15000` | `notify` adapter re-poll interval |
-| `ZHUNZOU_CHAT_MODEL` | CLI default | Model used for interactive chat sessions |
-| `ZHUNZOU_WORKTREES` | off | `1` / `true` / `yes` / `on` runs each claimed task in its own git worktree on a `wip/zz-<taskId>` branch (env only, no CLI flag) |
-| `ZHUNZOU_WRAP_IDLE_MS` | `300000` | `run` wrapper: no-keystroke window before it offers the hub the handover, clamped 30 s–2 h (`--idle-timeout` wins) |
-
-Templates live in [`packages/bridge/templates`](./packages/bridge/templates): `.cursorrules` and
-`AGENTS.md` (behavior rules copied into the workspace), `cursor-mcp.json.example`,
-`opencode.json.example`, `windows-mcp.json.example`, `fleet.example.json`,
-`launchd.plist.example`, and `WINDOWS.md` (zero-dependency Windows setup). See
-[packages/bridge/README.md](./packages/bridge/README.md) for the bridge-only guide.
 
 ## API
 
-Every response is JSON. Errors use a single shape: `{ "error": { "code", "message", "details?" } }`, with `400` validation, `404` unknown id, and `409` state conflict (a duplicate approval, or a late Meta-Agent verdict that must not overwrite a human decision).
+JSON everywhere; errors are `{ "error": { "code", "message", "details?" } }` with `400` validation, `404` unknown id, and `409` state conflict (a duplicate approval, or a late verdict that must not overwrite a human decision). Wakeups ride an in-process `EventEmitter` — deployment is **single instance** by design; horizontal scaling means swapping that layer for Redis pub/sub.
 
-Three auth tiers, all via `Authorization: Bearer <token>`:
-
-| Tier | Who can call | Notes |
+| Auth tier | Who | Typical calls |
 | --- | --- | --- |
-| `public` | nobody | `/healthz`, `/install.sh`, `/install.ps1`, `/api/enroll`, `/api/bridge/latest`, the signed approval page `/a/:token`, the signed task-release page `/t/:token`, `/releases/bridge/*`, and the static dashboard |
-| `admin` | `HUB_SECRET_TOKEN` only | dashboard-side operations: ruling, dispatching, batch approval, sessions, rules, agents, enrollment, terminals |
-| `agent` | admin token **or** the env's own scoped token | env- or host-pinned: a `zz_…` token only sees its own `env` (or its own host for fleet reporting). The agent-facing calls are `POST /api/tickets`, `/wait`, `/cancel`, `/api/decisions`, task claim + logs, `/api/exchanges`, heartbeat, `/api/resume`, and `/api/fleet/*` reporting |
+| `public` | nobody | `/healthz`, installers, `/api/enroll`, signed approval `/a/:token` and release `/t/:token` pages, release manifests |
+| `admin` | `HUB_SECRET_TOKEN` | ruling, dispatching, batch approval, sessions, rules, agents, enrollment, terminals |
+| `agent` | admin token **or** the env's own scoped `zz_…` token | tickets, waits, decisions, task claim + logs, heartbeat, resume — scoped to its own env |
 
-### Tickets and decisions
-
-| Method | Path | Scope | Description |
-| --- | --- | --- | --- |
-| `POST` | `/api/tickets` | agent | Create a ticket (`201`); permission tickets attached to a parked run are answered from learned rules first, then Meta-Agent review |
-| `GET` | `/api/tickets` | agent | List tickets (`status`, `projectName`, `limit`); agent tokens are auto-scoped to their env |
-| `GET` | `/api/tickets/:id` | agent | Get one ticket |
-| `GET` | `/api/tickets/:id/wait?timeout=40000` | agent | Long-poll for a decision |
-| `POST` | `/api/tickets/:id/resolve` | admin | Human approval (`selectedOption`, `customInstruction?`, `confirmDestructive?`) |
-| `POST` | `/api/tickets/batch-resolve` | admin | Batch approval (`ticketIds`, `selectedOption?`) |
-| `POST` | `/api/tickets/:id/extend` | admin | Snooze the timeout (`minutes?`, default 10) |
-| `POST` | `/api/tickets/:id/cancel` | agent | Cancel a pending ticket (bridge timeout / abort) |
-| `POST` | `/api/decisions` | agent | Hub-side judgment: `{ kind, proposal, context?, risk?, options? }` → `APPROVED` or a `PENDING` ticket |
-| `GET` | `/api/resume?env=...&since=...` | agent | Pending/recent tickets + active tasks |
-| `GET` | `/a/:token` · `POST` | public | Signed mobile approval page and its no-JS submit endpoint |
-| `GET` | `/t/:token` · `POST` | public | Signed task-release page (`/t/:token/release` is its only state-changing endpoint; the destructive checkbox is re-checked server-side) |
-
-### Tasks, live output and the supervisor
-
-Task statuses: `PENDING` → `CLAIMED` → `DONE` / `FAILED`, plus `CANCELLED`, and the two that need a person — `BLOCKED` (the supervisor refused to retry blindly; waits for a release) and `HEALING` (a retry is already underway).
-
-| Method | Path | Scope | Description |
-| --- | --- | --- | --- |
-| `POST` | `/api/tasks` | admin | Dispatch a task to one explicit env |
-| `POST` | `/api/tasks/dispatch` | admin | Route by `{ repoName?, env?, engine?, tags? }`: the hub picks the node and returns `{ task, route }`; no viable node → `NO_ROUTE_TARGET` |
-| `POST` | `/api/tasks/local` | agent | A `run`-wrapped local CLI registers itself as a `LOCAL_WRAP` task (env pinned to the caller) |
-| `GET` | `/api/tasks` | admin | List tasks |
-| `GET` | `/api/nodes` | admin | The fleet as the scheduler sees it, aged on the node heartbeat window |
-| `GET` | `/api/tasks/:id` | agent | Get one task |
-| `GET` | `/api/tasks/next?env=...&timeout=...` | agent | Bridge claims the next task |
-| `POST` | `/api/tasks/:id/complete` | agent | Report `DONE` / `FAILED` |
-| `POST` | `/api/tasks/:id/takeover` | agent | A local watcher hands its own run to the hub supervisor (`reason` required) |
-| `POST` | `/api/tasks/:id/release` | agent \| public | Hand a claimed task back over the API (requeue, or fail when no local agent woke); the signed `/t/:token/release` page is the human path |
-| `POST` | `/api/tasks/:id/retry` | admin | Override the failure circuit breaker: reopen `BLOCKED` with a fresh retry budget |
-| `POST` | `/api/tasks/:id/cancel` | admin | Cancel a task that has not finished |
-| `POST` | `/api/tasks/:id/log` | agent | Append live output (`stdout` / `stderr` / `system`), noise-reduced on the way from the node |
-| `GET` | `/api/tasks/:id/logs?after=&limit=` | agent | Incremental log tail |
-| `POST` | `/api/tasks/:id/events` | agent | Append normalized engine events (`tool_call` / `permission_required` / `session`); accepted only while `CLAIMED` |
-| `GET` | `/api/tasks/:id/events?after=&limit=` | agent | Incremental event tail — what a parked run resumes from |
-| `GET` | `/api/supervisor/inbox` | admin | The decision inbox read-model: tasks that owe a person a look, with the supervisor's own explanation |
-| `GET` / `POST` | `/api/learned-rules` | admin | List L1 allowances / grant one so a matching permission ticket is answered without a model |
-| `PATCH` | `/api/learned-rules/:id` | admin | Enable or disable an allowance (granting is the only write; revoking is the switch) |
-
-### Chat sessions, drafts, mirrored turns
-
-| Method | Path | Scope | Description |
-| --- | --- | --- | --- |
-| `POST` / `GET` | `/api/sessions` | admin | Create / list chat sessions |
-| `GET` | `/api/sessions/:id` | agent | Session with its transcript |
-| `DELETE` | `/api/sessions/:id` | admin | Delete a session with its transcript and output |
-| `POST` | `/api/sessions/:id/close` | admin | Close a session |
-| `POST` | `/api/sessions/:id/messages` | admin | Send a user message |
-| `PATCH` | `/api/sessions/:id/messages/:messageId` | admin | Rewrite a queued user message (`PENDING`, human-authored) |
-| `POST` | `/api/sessions/:id/messages/:messageId/cancel` | admin | Cancel a queued user message; kept as `CANCELLED` for audit |
-| `GET` | `/api/sessions/:id/events` | agent | List streamed chat events |
-| `GET` | `/api/sessions/next?env=...` | agent | Runner claims the next message |
-| `POST` | `/api/sessions/:id/messages/:messageId/events` | agent | Append streamed output |
-| `POST` | `/api/sessions/:id/messages/:messageId/complete` | agent | Finish a turn (content + CLI session id) |
-| `POST` | `/api/sessions/:id/messages/:messageId/retry` | admin | Requeue a failed turn |
-| `POST` | `/api/sessions/proposals` | agent | Agent drafts the next reply (`env`, optional `sessionId`) — stored as `PROPOSED` |
-| `POST` | `/api/sessions/:id/proposals/:messageId/adopt` | admin | Adopt a draft, optionally with edited `content`, and queue it |
-| `POST` | `/api/sessions/:id/proposals/:messageId/discard` | admin | Reject a draft (kept for audit) |
-| `POST` | `/api/exchanges` | agent | Mirror one turn: the human's question + the agent's conclusion |
-| `GET` | `/api/exchanges` | admin | List mirrored exchanges |
-
-### Status, realtime, terminals
-
-| Method | Path | Scope | Description |
-| --- | --- | --- | --- |
-| `POST` | `/api/status/heartbeat` | agent | Bridge heartbeat (`Running` / `Blocked` / `Idle`) |
-| `GET` | `/api/status` | admin | Online environments (a heartbeat within 90s counts as online) |
-| `GET` | `/api/sync` | admin | Legacy dashboard long-poll snapshot (`rev` / `changed`) |
-| `POST` | `/api/realtime/ticket` | admin | Exchange the admin token for a short-lived dashboard WebSocket ticket |
-| `GET` | `/api/realtime/status` | admin | Realtime gateway status (devices / dashboards / bridges) |
-| `POST` / `GET` | `/api/terminals` | admin | Create a PTY terminal on an online device / list sessions (`env`, `status`, `limit`) |
-| `GET` | `/api/terminals/stats` | admin | Terminal metrics (active / viewers / bytes) |
-| `GET` | `/api/terminals/:id` | admin | Get one terminal session |
-| `POST` | `/api/terminals/:id/close` | admin | Close a terminal and terminate its shell |
-| `GET` | `/api/terminals/:id/events?after=` | admin | Bounded scrollback replay |
-| `GET` | `/api/terminals/:id/audit?after=` | admin | Terminal audit trail (input / claim / resize / signal / close) |
-| `GET` | `/api/terminals/:id/audit/export?format=csv` | admin | Download the audit trail as CSV or JSONL |
-
-### Agents, rules, fleet
-
-| Method | Path | Scope | Description |
-| --- | --- | --- | --- |
-| `GET` / `POST` | `/api/agents` | admin | List / register agents |
-| `GET` | `/api/devices` | admin | Machines the hub has seen, each with the envs running on it and the node profile the scheduler routes on |
-| `GET` | `/api/projects` | admin | Project names the hub has work in, with their ticket/task counts and the enrolled envs and machines behind each |
-| `PATCH` / `DELETE` | `/api/agents/:env` | admin | Update (name, status, terminal toggle) / delete an agent (also clears its heartbeat and drops its live socket) |
-| `POST` / `DELETE` | `/api/agents/:env/token` | admin | Issue or rotate a scoped token (plaintext returned once) / revoke it |
-| `POST` | `/api/enrollments` | admin | Mint a one-click enrollment code plus ready-to-paste install commands |
-| `POST` | `/api/enroll` | public | Exchange an enrollment code for a scoped agent token |
-| `GET` | `/install.sh` · `/install.ps1` | public | Server-rendered installers (`?code=ABCDE-FGHIJ`) |
-| `GET` | `/api/bridge/latest` | public | Standalone bridge release manifest |
-| `GET` / `PUT` | `/api/rules` | admin | Read / update `GLOBAL_RULES.md` |
-| `GET` | `/api/rules/candidates` | admin | Distilled rule candidates |
-| `POST` | `/api/rules/candidates/:id/accept` · `/dismiss` | admin | Accept a candidate into the rule file / dismiss it |
-| `GET` / `POST` | `/api/workspace-projects` | admin | Project bindings per env / bind a project |
-| `DELETE` | `/api/workspace-projects/:id` | admin | Unbind |
-| `POST` | `/api/fleet/candidates` | agent | Bridge reports its host's directories (host pinned to the token) |
-| `GET` | `/api/fleet/candidates` | admin | Candidate directories, optional `?host=` |
-| `POST` / `GET` | `/api/fleet/workspaces` | admin | Associate a candidate `{ candidateId }` / list association jobs |
-| `POST` | `/api/fleet/workspaces/:id/retry` | admin | Retry a failed association |
-| `DELETE` | `/api/fleet/workspaces/:id` | admin | Remove an association and its env |
-| `GET` | `/api/fleet/desired` | agent | Bridge polls directories to host (one-time token mint) and pending browse requests |
-| `POST` | `/api/fleet/desired/:id/status` | agent | Bridge reports `APPLIED` / `FAILED` |
-| `POST` | `/api/fleet/browse` | admin | Ask a host to list a directory `{ host, path? }` |
-| `GET` | `/api/fleet/browse/:id` | admin | Read one browse result |
-| `POST` | `/api/fleet/browse/:id/result` | agent | Bridge returns the directory listing |
-
-### WebSocket endpoints
-
-Active only when `REALTIME_ENABLED=true`; the HTTP paths above keep working as the fallback.
-
-| Path | Direction | Purpose and auth |
-| --- | --- | --- |
-| `/ws/device` | device → hub | Reverse connection: `hello` + `heartbeat` (both may carry the node profile; heartbeats also carry free memory), `permission.request` from the node and `supervisor.decision` back, then `pty.*` frames. Admin token (with `?env=`) or the device's scoped token, as a Bearer header or `?token=` |
-| `/ws/bridge` | bridge → hub | Task / ticket / chat claims (`task.claim`, `ticket.wait`, `chat.claim`) for `ZHUNZOU_TRANSPORT=auto`; same auth as `/ws/device` |
-| `/ws/realtime` | hub → browser | Dashboard push (`sync.snapshot` / `sync.changed`) and terminal streams. Requires `?ticket=` from `POST /api/realtime/ticket`, or an admin Bearer token |
-| `/ws/terminal` | browser ↔ hub | One PTY session: `?ticket=&sessionId=&afterSeq=` for scrollback replay; input, resize, claim, and close frames are audited server-side |
-
-Unknown WS paths are rejected with `401` / `404`.
+The full endpoint reference — tickets, tasks, supervisor, sessions, agents, fleet, terminals, WebSocket paths, state machines, and long-poll conventions — is in **[docs/API.md](./docs/API.md)**.
 
 ## Configuration
 
-Copy `.env.example` to `.env` — it is the annotated source of truth for every variable below. Relative paths resolve against the repository root, so starting the server from another directory cannot misplace the database or the rules.
-
-Core:
+`.env.example` is the annotated source of truth; the complete variable reference is **[docs/CONFIGURATION.md](./docs/CONFIGURATION.md)**. The ones that matter first:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `NODE_ENV` | `development` | `production` requires an explicit `HUB_SECRET_TOKEN` and quiets logs |
+| `HUB_SECRET_TOKEN` | `dev-token` in dev | **Must be set in production** (behind HTTPS) |
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | Listen address |
-| `HUB_SECRET_TOKEN` | `dev-token` in development | **Must be set in production** |
-| `DATABASE_PATH` | `./data/zhunzou.db` | SQLite file (`:memory:` for tests) |
-| `GLOBAL_RULES_PATH` | `./GLOBAL_RULES.md` | Rule file |
-| `LOG_LEVEL` | `debug` dev / `info` prod | Pino level |
-| `WAIT_TIMEOUT_MS` | `40000` | Default long-poll window when `?timeout=` is omitted (max 55s) |
-| `SERVE_WEB` / `WEB_DIST_PATH` | `true` / `./packages/web/dist` | Serve the dashboard from the API port |
-| `BRIDGE_RELEASES_PATH` | `./release/bridge` | Standalone bundles, published at `/releases/bridge/` |
+| `OPENAI_API_KEY` | empty | Empty = skip auto-review; everything goes to a human |
+| `META_AGENT_PROVIDER` | `openai` | `openai` (any OpenAI-compatible endpoint) / `http` / `none` |
+| `DECISION_POLICY` | `reply` | `off` always ask / `reply` auto-rule chat replies only / `all` also rule next steps |
+| `NOTIFY_CHANNELS` | none | e.g. `bark,feishu,slack,telegram,webhook,console` |
+| `PUBLIC_BASE_URL` | empty | Origin used in signed approval / release links |
+| `AUTO_RESOLVE_TIMEOUT_MS` | `0` | Timeout SLA; `0` disables |
+| `REALTIME_ENABLED` | `true` | Device + dashboard WebSocket gateway |
 
-Meta-Agent and decision authority:
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `META_AGENT_ENABLED` | `true` | `false` is equivalent to `META_AGENT_PROVIDER=none` |
-| `META_AGENT_PROVIDER` | `openai` | `openai` / `http` / `none` |
-| `OPENAI_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI-compatible endpoint (DeepSeek, OpenAI, Ollama, Moonshot…) |
-| `OPENAI_API_KEY` | empty | Empty = skip auto-review, everything goes to a human |
-| `META_AGENT_MODEL` | `deepseek-chat` | Review model |
-| `META_AGENT_TIMEOUT_MS` | `15000` | LLM request timeout (1s–120s) |
-| `META_AGENT_ENDPOINT` | empty | `provider=http`: `POST { ticket, rules }` → `{ canResolve, selectedOption?, reason }` |
-| `META_AGENT_HEADERS` | `{}` | Extra JSON headers for either provider, e.g. `{"x-api-key":"…"}` |
-| `DECISION_POLICY` | `reply` | Who decides: `off` (always ask), `reply` (hub auto-sends chat replies only), `all` (hub also rules on next steps; destructive always asks) |
-
-Node routing and the supervisor are new enough that their knobs live in code, not `.env`: a parked permission request is only worth answering for `SUPERVISOR_PERMISSION_TIMEOUT_MS` (55 s), the failure breaker gives up at `SUPERVISOR_RETRY_CEILING` (3 attempts) and calls two runs the same failure above `SUPERVISOR_SIGNATURE_SIMILARITY` (0.85 similarity over the normalized error signature), nodes are considered live for `NODE_HEARTBEAT_TIMEOUT_MS` (30 s) and are rejected under `ROUTE_MIN_FREE_MEMORY_MB` (2 GB). Supervisor verdicts are `APPROVE` / `DENY` / `RETRY_WITH_FIX` / `ESCALATE_TO_HUMAN`, attributed to layer `L1` (0 ms, deterministic rules), `L2` (the model) or `HUMAN`; learned allowances come from a human approval, the rule distiller, or a seed.
-
-Notifications and plugins:
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `NOTIFY_CHANNELS` | `webhook` if `WEBHOOK_URL` set, else none | Comma-separated fan-out: `webhook,bark,feishu,wecom,slack,discord,ntfy,telegram,console` |
-| `WEBHOOK_URL` / `WEBHOOK_SECRET` | empty | Generic webhook receiving `{ type, text, ticket \| task, actions }` |
-| `BARK_KEY` / `BARK_URL` | empty | Bark (iOS); the URL derives from the key when omitted |
-| `FEISHU_WEBHOOK_URL` · `WECOM_WEBHOOK_URL` · `SLACK_WEBHOOK_URL` · `DISCORD_WEBHOOK_URL` | empty | Incoming webhooks; Feishu and WeCom render task cards with link buttons |
-| `NTFY_URL` / `NTFY_TOKEN` | empty | ntfy topic |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | empty | Telegram bot |
-| `HUB_PLUGINS` | empty | Comma-separated plugin modules loaded at boot — [docs/PLUGINS.md](./docs/PLUGINS.md) |
-| `PUBLIC_BASE_URL` | empty | Origin used in signed approval links |
-| `APPROVAL_LINK_SECRET` | `HUB_SECRET_TOKEN` | HMAC key for approval links |
-| `APPROVAL_LINK_TTL_MS` | `1800000` | Approval link lifetime (1 min–7 days) |
-
-SLA and recovery:
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `AUTO_RESOLVE_TIMEOUT_MS` | `0` | Timeout SLA; `0` disables. Due tickets resolve with their recommended option |
-| `AUTO_RESOLVE_PROJECTS` | empty | Project allowlist; empty = all |
-| `SWEEP_INTERVAL_MS` | `5000` | Sweeper interval for SLA and stale-task cleanup (10ms–60s) |
-| `TASK_CLAIM_TIMEOUT_MS` | `1800000` | Requeue an offline `CLAIMED` task |
-| `TASK_HARD_TIMEOUT_MS` | `21600000` | Fail a `CLAIMED` task regardless of heartbeat |
-| `TASK_MAX_ATTEMPTS` | `3` | Max claims before failing |
-| `CHAT_MESSAGE_TIMEOUT_MS` | `300000` | Fail a `RUNNING` chat turn whose env went offline; `0` disables recovery |
-
-Realtime and terminals:
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `REALTIME_ENABLED` | `true` | Enable the device/dashboard WebSocket gateway |
-| `REALTIME_TICKET_TTL_MS` | `60000` | Browser WebSocket ticket lifetime |
-| `REALTIME_HEARTBEAT_MS` | `15000` | Device heartbeat interval the server advertises (`NODE_HEARTBEAT_REPORT_MS`); nodes are dropped after 30 s of silence. `.env.example` still ships `30000` — set it explicitly or leave it alone and get 15 s |
-| `REALTIME_HEARTBEAT_TIMEOUT_MS` | `90000` | Close a device socket after silence (the dashboard env status still uses a 90 s heartbeat window) |
-| `TERMINAL_ENABLED` | `true` | Enable interactive PTY terminals |
-| `TERMINAL_MAX_SESSIONS` | `32` | Global active terminal cap |
-| `TERMINAL_MAX_SESSIONS_PER_DEVICE` | `4` | Per-device active terminal cap |
-| `TERMINAL_IDLE_TIMEOUT_MS` | `1800000` | Close an idle terminal |
-| `TERMINAL_DETACH_TTL_MS` | `300000` | Keep a detached session while the device reconnects |
-| `TERMINAL_SCROLLBACK_BYTES` | `1048576` | In-memory replay buffer per terminal |
-| `TERMINAL_MAX_VIEWERS` | `8` | Concurrent browser viewers per terminal |
-| `TERMINAL_INPUT_BYTES_PER_SEC` | `65536` | Per-terminal input rate limit |
-| `TERMINAL_ALLOWED_ENVS` | empty | Device env allowlist; empty = all |
-
-Device node (read by `zhunzou-device join` / `run`, also settable as CLI flags):
-
-| Variable | Flag | Default | Description |
-| --- | --- | --- | --- |
-| `ZHUNZOU_NODE_ROLE` | `--role` | `worker` | `worker` / `portal` / `hybrid`; a `portal` node reports presence but is never dispatched to |
-| `ZHUNZOU_NODE_TAGS` | `--tags` | empty | Comma list, capped at 10 — a dispatch can require every tag it names |
-| `ZHUNZOU_MAX_CONCURRENCY` | `--max-concurrency` | `1` | Tasks this node takes at once, clamped 1–16; at capacity the scheduler skips it |
-| `ZHUNZOU_SCAN_DIRS` | `--scan-dir` (repeatable) | empty | Roots scanned for git checkouts, so `repoName` routing has something to match; empty means route by env only |
-| `ZHUNZOU_HEARTBEAT_INTERVAL_MS` | `--heartbeat` | `15000` | Device report cadence, aligned with the server's node window |
+Node-routing and supervisor knobs (`NODE_HEARTBEAT_TIMEOUT_MS`, `ROUTE_MIN_FREE_MEMORY_MB`, `SUPERVISOR_RETRY_CEILING`, …) currently live as code constants — see the configuration doc.
 
 ## Safety model
 
 - Human decisions always win over late Meta-Agent or timeout verdicts (conditional updates; a duplicate ruling returns `409`).
-- `risk: "destructive"` options require explicit human confirmation and are never auto-approved — not by the Meta-Agent, not by a timeout, not by batch approval, and not by Supervisor L1, whose allowances only ever cover actions a human granted by name.
-- Approval links are HMAC-signed, scoped to one ticket, and expire; the ticket status prevents replay.
-- Enrollment codes expire after 15 minutes, are hash-stored, bind to the first redeeming host, and cap at 10 clients. A dashboard-issued fleet token is kept server-side only until the bridge confirms `APPLIED`.
-- Scoped agent tokens are stored hashed and can only touch their own `env` (or their own host for fleet reporting); rotation and revocation need no hub restart.
-- The Supervisor's L1 layer answers only the two ends of the permission spectrum — irreversible actions and allowances a human granted explicitly — and the gray zone falls through to Meta-Agent and human review, so widening the allowance table cannot invent a new kind of auto-approval.
-- The failure breaker never resolves a ticket in the human's place: it stops a provably repeated failure, and `POST /api/tasks/:id/retry` is the human override that reopens it with a fresh budget.
-- Task-release links are HMAC-signed, scoped to one task, and expire; task tokens live in a separate namespace from approval tokens (never interchangeable), and the destructive checkbox is re-checked server-side.
-- Dispatched work falls back to the plain checkout rather than stalling when a worktree cannot be established, and every git call is an argv array — no shell interpolation of task-supplied text.
-- Routing only ever rejects: a `portal` node takes no work, and a node is skipped when the hub's own records show it offline, out of memory, out of capacity, or missing the repo.
-- Terminals are rate-limited, capped, audited (`terminal_audit`, exportable), and single-writer with explicit takeover.
+- `risk: "destructive"` options are never auto-approved — not by the model, not by a timeout, not by batch approval, not by Supervisor L1, whose allowances only ever cover actions a human granted by name.
+- Approval and task-release links are HMAC-signed, scoped to one ticket/task, expiring, and replay-blocked; the destructive checkbox is re-checked server-side.
+- Enrollment codes expire after 15 minutes, are hash-stored, bind to the first redeeming host, and cap at 10 clients; scoped agent tokens are stored hashed and pinned to their own env.
+- The failure breaker never resolves a ticket in the human's place: it stops repeated failures, and `POST /api/tasks/:id/retry` or the signed release page is the human override.
+- Dispatched work falls back to the plain checkout rather than losing work, and every git call is an argv array — no shell interpolation of task-supplied text.
+- Terminals are rate-limited, capped, audited (exportable), and single-writer with explicit takeover.
 - Notifications and plugins are fire-and-forget: a broken channel never blocks approvals.
-- Long-poll wakeups use an in-process `EventEmitter`, so deployment is **single instance** by design.
-- Production belongs behind HTTPS with a strong random `HUB_SECRET_TOKEN` — see [SECURITY.md](./SECURITY.md).
 
 ## Development
 
@@ -892,71 +329,57 @@ Device node (read by `zhunzou-device join` / `run`, also settable as CLI flags):
 pnpm test          # 1130 tests: 514 server + 389 bridge + 101 shared + 85 web + 41 device
 pnpm typecheck     # tsc + vue-tsc across all packages
 pnpm build         # shared, server, bridge (incl. standalone bundle), web
-pnpm smoke         # real server + HTTP long-poll round trip
+pnpm smoke         # real server + HTTP long-poll round trip (asserts sub-second wake)
 pnpm smoke:bridge  # real server + MCP stdio client + CLI end to end
-pnpm smoke:web     # built dashboard + single-port hosting / SPA fallback / same-origin API
-pnpm deploy        # package, upload, build on the server (deploy/deploy.sh)
-pnpm deploy:https  # Let's Encrypt certificate + HTTPS
-pnpm deploy:pm2    # build and (re)start under pm2
+pnpm smoke:web     # built dashboard + single-port hosting checks
 ```
 
-`pnpm smoke` asserts that a resolve reaches the waiting client in under a second (locally around 9–12ms). CI (`.github/workflows/ci.yml`) runs typecheck, tests, and build on Node 22 for every push and PR.
+CI (`.github/workflows/ci.yml`) runs typecheck, tests, and build on Node 22 for every push and PR.
 
 ## Deployment
 
-`deploy/` contains a systemd + nginx setup ([deploy/README.md](./deploy/README.md)), an HTTPS helper, a maintenance page, and a one-command deploy script. `docker-compose.yml`, `Dockerfile`, and `ecosystem.config.cjs` (pm2) are also included.
-
-Because wakeups are in-process, run **one** server instance. If you need horizontal scaling, replace the `EventEmitter` wakeup layer with Redis pub/sub.
-
-Release process for the bridge bundle and the npm package: [docs/RELEASING.md](./docs/RELEASING.md).
+`deploy/` contains a systemd + nginx setup ([deploy/README.md](./deploy/README.md)), an HTTPS helper, and a one-command deploy script; `docker-compose.yml`, `Dockerfile`, and `ecosystem.config.cjs` (pm2, `instances: 1`) are included. Run **one** server instance — wakeups are in-process. Bridge release process: [docs/RELEASING.md](./docs/RELEASING.md).
 
 ## Design notes
 
-- **No message queue.** Wakeups ride a native `EventEmitter` and SQLite is the only persistent state — enough for a single-process deployment, and the reason the API can stay this small.
-- **No native dependencies on the client.** The bridge is `fetch` + the official MCP SDK, so Windows and macOS run it with plain `node`. MCP `stdout` is reserved for the protocol; all logging goes to `stderr`. The one optional native module in the whole system is `node-pty`, and only the device daemon needs it — for terminals.
-- **No OpenAI SDK.** Node's built-in `fetch` talks to any OpenAI-compatible endpoint, which keeps the client dependency-free and makes DeepSeek / OpenAI / Moonshot interchangeable.
-- **Ticket IDs** are auto-increment integers, returned as numeric strings (`"104"`) and rendered as `#104` — short enough to read, stable enough to route a long poll.
-- **Concurrency** is settled in the database: `resolve` and `markAutoResolved` are conditional updates, so a human answer and a late verdict cannot both win.
-- **Devices are machines, agents are processes.** Each client generates one fingerprint (`~/.zhunzou/machine.json`) and every contact carries it, so a hub can group a Cursor, an OpenCode and a Claude Code session onto one node card — and still tell apart two machines that an image left with the same hostname. A client that reports no fingerprint is grouped by hostname, which is what pre-fingerprint deployments already did.
-- **`env` is allocated by the hub, not by the client.** Two machines that open same-basename repos derive the same label, and `agents.env` is the primary key — so registration renames the newcomer (`cursor-erp` → `cursor-erp-home-mac`) instead of letting it overwrite the incumbent's identity. Clients that already read the response adopt the new label; heartbeats, which cannot be re-labelled, are refused write access to another host's machine metadata and the refusal is logged, because a stale card with no explanation is worse than a noisy warning.
-- **A project is a view, not an entity.** `GET /api/projects` answers "which repositories has work happened in, and on which machines" by grouping the `projectName` that tickets, tasks and workspace bindings already carry, so no client has to report anything new. That name is still the git root basename the bridge inferred, which means two unrelated repositories sharing a basename read as one project.
-- **Pluggability at the edges only**: `META_AGENT_PROVIDER`, `NOTIFY_CHANNELS`, `HUB_PLUGINS`, and a `buildApp({ repo })` storage seam — the protocol stays stable.
-- **Placement is guessed only from what a node reports.** The hub cannot see a machine's filesystem, so routing ranks node-reported facts and treats an unreported one as weak evidence (rank last), never as permission to ignore a rule — with one exception, the checkout, where absence means the task fails on its first command. That is why an unenrolled node is skipped rather than blamed.
-- **A task's output is one commit.** Worktree isolation puts each dispatched run on a throwaway `wip/zz-<taskId>` branch; nothing but the squashed commit is expected to leave it, which keeps a wrong guess cheap to undo and a shared checkout clean.
-- **Shipped logs are noise-reduced, not redacted.** The sanitizer drops escape sequences, folds repeated lines and extracts error signatures so a 10-minute build does not drown the dashboard; string-replacement secret masking is deliberately not part of it. The terminal owner keeps the original bytes and the live PTY mirror streams them untouched.
-- **The supervisor is deterministic first.** Evidence the hub already holds (error signature, retry count, recorded denials) decides before any model is called; an unusable model answer changes nothing, which is what keeps judgment cost and latency off the hot path.
+- **No message queue.** Wakeups ride a native `EventEmitter`; SQLite is the only persistent state — enough for a single process, and the reason the API stays this small.
+- **No native dependencies on the client.** The bridge is `fetch` + the official MCP SDK; MCP `stdout` is reserved for the protocol, logging goes to `stderr`. The one optional native module is `node-pty`, for terminals only.
+- **Deterministic before model.** The supervisor answers from evidence the hub already holds (error signatures, retry counts, recorded allowances) before any model runs; an unusable model answer changes nothing.
+- **Devices are machines, agents are processes.** Each client carries a stable fingerprint, so one node card groups a machine's Cursor, OpenCode, and Claude Code sessions — and two imaged hosts with the same name stay distinct. `env` is allocated by the hub: a colliding newcomer is renamed, never overwriting the incumbent.
+- **Shipped logs are noise-reduced, not redacted.** Escape sequences dropped, repeated lines folded, error signatures extracted; string-replacement secret masking is deliberately not part of it — keep credentials out of command output.
+- **Pluggability at the edges only:** model provider, notification channels, plugin hooks, and a storage seam — the protocol stays stable.
 
 ## Roadmap
 
 Not built yet, in rough order of value:
 
 - Multi-instance scaling: swap the in-process wakeup layer for Redis pub/sub.
-- Project identity: have the bridge report a repository fingerprint (its git remote) so the hub can split the same-named checkouts that today merge into one project.
-- Remaining notification channels (DingTalk, Gotify); WeCom shipped with the task-notification work.
+- Project identity: report a repository fingerprint (git remote) so same-named checkouts stop merging into one project.
+- Remaining notification channels (DingTalk, Gotify).
 - Storage adapters (Postgres / MySQL) and multi-tenant hubs.
 - Ticket analytics: auto-approval rate and mean time to decision, with archiving.
-- Operational polish on the PTY console (recording retention, role-based terminal policy).
+- PTY operations polish (recording retention, role-based terminal policy).
 
 ## Documentation map
 
 | Document | Read it for |
 | --- | --- |
 | [README.zh-CN.md](./README.zh-CN.md) | 中文说明 |
+| [docs/API.md](./docs/API.md) | Full HTTP/WS endpoint reference, auth tiers, state machines |
+| [docs/CONFIGURATION.md](./docs/CONFIGURATION.md) | Every environment variable, server / bridge / device |
 | [GLOBAL_RULES.md](./GLOBAL_RULES.md) | The rules the Meta-Agent rules against (editable from the dashboard) |
 | [SECURITY.md](./SECURITY.md) | Token model, reporting a vulnerability |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Dev setup, change conventions, directory responsibilities |
 | [docs/PLUGINS.md](./docs/PLUGINS.md) | Meta-Agent providers, notification channels, plugin hooks, storage seam |
-| [docs/REALTIME.md](./docs/REALTIME.md) | WebSocket frames: `/ws/device`, `/ws/bridge`, `/ws/realtime`, PTY terminal design |
+| [docs/REALTIME.md](./docs/REALTIME.md) | WebSocket frames: `/ws/device`, `/ws/bridge`, `/ws/realtime`, PTY design |
 | [docs/RELEASING.md](./docs/RELEASING.md) | Bridge versioning, npm publish, the self-update channel |
-| [packages/bridge/README.md](./packages/bridge/README.md) | Bridge-only guide (adapters, Windows bundle) |
-| [PROJECT_PLAN.md](./PROJECT_PLAN.md) | Original design plan and the M1–M13 milestone table |
-| [PLAN.md](./PLAN.md) | The phase 0–4 blueprint these features come from |
-| [docs/design/](./docs/design) | Per-slice briefs: scheduler 1.3, worktree 2.1, adapters 2.2, wrappers 2.3, sanitizer 3.1, supervisor guard 3.2 / healer 3.3, notify 4.2, console 4.1 |
-| [deploy/README.md](./deploy/README.md) | systemd + nginx production setup |
+| [packages/bridge/README.md](./packages/bridge/README.md) | Bridge-only guide (adapters, wake/fleet/run, Windows bundle) |
+| [PROJECT_PLAN.md](./PROJECT_PLAN.md) · [PLAN.md](./PLAN.md) | Milestone table · phase 0–4 blueprint |
+| [docs/design/](./docs/design) | Per-slice briefs: scheduler, adapters, worktrees, sanitizer, supervisor, notify, console |
 
 ## Contributing
 
-MIT licensed. Issues and PRs are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) and [docs/PLUGINS.md](./docs/PLUGINS.md); CI runs typecheck, tests, and build on every push. If you add a model provider, notification channel, or agent adapter, please contribute it as an example under `examples/plugins/`.
+MIT licensed. Issues and PRs are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md); CI runs typecheck, tests, and build on every push. New model providers, notification channels, or agent adapters are best contributed as examples under `examples/plugins/`.
 
 ## License
 
