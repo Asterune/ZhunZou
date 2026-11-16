@@ -102,13 +102,17 @@ function renderChatTemplate(
   });
 }
 
-function buildChatRun(
+export function buildChatRun(
   adapter: WakeAdapterName,
   wake: WakeConfig,
   session: ChatSession,
   message: ChatMessage,
 ): ChatRun {
   const externalId = session.externalId;
+  // A conversation created with an explicit model keeps it across turns.
+  // Without one, fall back to the node default, and only then to whatever the
+  // CLI itself is configured to use.
+  const model = session.model ?? wake.chatModel;
 
   switch (adapter) {
     case 'opencode':
@@ -120,7 +124,7 @@ function buildChatRun(
         args: [
           'run',
           '--auto',
-          ...(wake.chatModel ? ['-m', wake.chatModel] : []),
+          ...(model ? ['-m', model] : []),
           '--session',
           assigned,
           message.content,
@@ -137,7 +141,7 @@ function buildChatRun(
           '--force',
           '--output-format',
           'json',
-          ...(wake.chatModel ? ['--model', wake.chatModel] : []),
+          ...(model ? ['--model', model] : []),
           ...(externalId ? ['--resume', externalId] : []),
           message.content,
         ],
@@ -150,7 +154,7 @@ function buildChatRun(
           '-p',
           '--output-format',
           'json',
-          ...(wake.chatModel ? ['--model', wake.chatModel] : []),
+          ...(model ? ['--model', model] : []),
           ...(externalId ? ['--resume', externalId] : []),
           message.content,
         ],
@@ -162,7 +166,7 @@ function buildChatRun(
           '-p',
           '--output-format',
           'json',
-          ...(wake.chatModel ? ['--model', wake.chatModel] : []),
+          ...(model ? ['--model', model] : []),
           ...(externalId ? ['--resume', externalId] : []),
           message.content,
         ],
@@ -423,7 +427,13 @@ export async function runSessionDaemon(
 
     const session = next.session;
     const message = next.message;
-    log(`会话 #${session.id} 收到消息 #${message.id}`);
+    log(
+      `会话 #${session.id} 收到消息 #${message.id}${
+        session.model ?? wake.chatModel
+          ? ` · model=${session.model ?? wake.chatModel}`
+          : ''
+      }`,
+    );
     state.beginTurn(message.id);
     await options.presence
       ?.beat({

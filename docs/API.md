@@ -114,7 +114,7 @@ CLAIMED 期间还可被 POST /api/tasks/:id/takeover：本地 wrapped run 主动
 
 | 方法 | 路径 | 层 | 说明 |
 | --- | --- | --- | --- |
-| `POST` · `GET` | `/api/sessions` | admin | 新建 `{ env, projectName?, title? }` / 列表（`?env=&limit=`） |
+| `POST` · `GET` | `/api/sessions` | admin | 新建 `{ env, projectName?, title?, model? }` / 列表（`?env=&limit=`）。`model` 为客户端原生模型 ID，省略则用端侧默认（`ZHUNZOU_CHAT_MODEL` / fleet 项目 `model`） |
 | `GET` | `/api/sessions/:id` | agent | 会话详情与消息 |
 | `DELETE` | `/api/sessions/:id` | admin | 删除会话（连带消息与输出记录） |
 | `POST` | `/api/sessions/:id/close` | admin | 关闭会话 |

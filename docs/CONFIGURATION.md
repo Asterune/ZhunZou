@@ -123,7 +123,7 @@ Supervisor 裁决取值为 `APPROVE` / `DENY` / `RETRY_WITH_FIX` / `ESCALATE_TO_
 | `ZHUNZOU_WAKE_RUN_TIMEOUT_MS` | `1800000` | 单次任务运行最长执行时间 |
 | `ZHUNZOU_WAKE_POLL_TIMEOUT_MS` | `40000` | 领取任务的长轮询窗口 |
 | `ZHUNZOU_WAKE_NOTIFY_INTERVAL_MS` | `15000` | `notify` 适配器重复提醒的间隔 |
-| `ZHUNZOU_CHAT_MODEL` | CLI 默认 | 交互式会话使用的模型 |
+| `ZHUNZOU_CHAT_MODEL` | CLI 默认 | 交互式会话使用的模型；看板新建会话时可针对单个会话覆盖 |
 | `ZHUNZOU_WORKTREES` | 关闭 | 取 `1` / `true` / `yes` / `on` 时，每个被领取的任务在 `.zhunzou/wt/<taskId>` 的独立 worktree（`wip/zz-<taskId>` 分支）里运行；仅环境变量，无 CLI flag |
 | `ZHUNZOU_WRAP_IDLE_MS` | `300000` | `run` wrapper：多久没有按键才向 hub 提出移交，钳制 30s–2h（`--idle-timeout` 优先） |
 

@@ -357,6 +357,11 @@ export const chatSessions = sqliteTable(
     status: text('status').$type<ChatSessionStatus>().notNull(),
     /** CLI-native session id (OpenCode --session / Cursor --resume). */
     externalId: text('external_id'),
+    /**
+     * Model chosen when the conversation was created; null inherits the
+     * node default so old sessions keep running on whatever they ran on.
+     */
+    model: text('model'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     lastMessageAt: integer('last_message_at'),

@@ -406,6 +406,8 @@ export function createDatabase(dbPath: string): {
   ensureColumn(sqlite, 'agent_tasks', 'failure_kind', 'TEXT');
   ensureColumn(sqlite, 'chat_messages', 'failure_kind', 'TEXT');
   ensureColumn(sqlite, 'agents', 'model', 'TEXT');
+  // A conversation now names its own model; older ones inherit the node default.
+  ensureColumn(sqlite, 'chat_sessions', 'model', 'TEXT');
   // Indexed only after the column exists: an upgrade from a table that predates
   // it would otherwise abort on the missing column.
   sqlite.exec('CREATE INDEX IF NOT EXISTS idx_agent_tasks_repo ON agent_tasks(repo_name);');

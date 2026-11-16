@@ -15,7 +15,7 @@ import type {
 
 import { HubApiError, type HubApi } from '../src/hub-client.js';
 import { RunnerState } from '../src/runner-state.js';
-import { openCodeSessionId, parseChatOutput, runSessionDaemon, supportsChat } from '../src/session.js';
+import { buildChatRun, openCodeSessionId, parseChatOutput, runSessionDaemon, supportsChat } from '../src/session.js';
 import { loadWakeConfig } from '../src/wake/config.js';
 import { testConfig } from './helpers.js';
 
@@ -127,6 +127,40 @@ describe('supportsChat', () => {
   it('treats qoder as resumable', () => {
     const wake = loadWakeConfig({ ZHUNZOU_WAKE_ADAPTER: 'qoder' }, '/tmp');
     expect(supportsChat(wake)).toBe(true);
+  });
+});
+
+describe('buildChatRun', () => {
+  const wake = loadWakeConfig({ ZHUNZOU_WAKE_ADAPTER: 'opencode-run' }, '/tmp');
+
+  function modelArg(args: string[]): string | undefined {
+    const index = args.indexOf('-m');
+    return index === -1 ? undefined : args[index + 1];
+  }
+
+  it('prefers the model chosen for the conversation', () => {
+    const run = buildChatRun(
+      'opencode-run',
+      { ...wake, chatModel: 'node-default' },
+      { ...session, model: 'picked-model' },
+      message,
+    );
+    expect(modelArg(run.args)).toBe('picked-model');
+  });
+
+  it('falls back to the node default when the conversation has none', () => {
+    const run = buildChatRun(
+      'opencode-run',
+      { ...wake, chatModel: 'node-default' },
+      session,
+      message,
+    );
+    expect(modelArg(run.args)).toBe('node-default');
+  });
+
+  it('omits the flag entirely when neither side names a model', () => {
+    const run = buildChatRun('opencode-run', wake, session, message);
+    expect(modelArg(run.args)).toBeUndefined();
   });
 });
 

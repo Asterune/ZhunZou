@@ -140,6 +140,7 @@ const form = reactive({
   env: '',
   projectName: '',
   title: '',
+  model: '',
 });
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -153,6 +154,13 @@ const formAgent = computed(() =>
 );
 
 const formEnvOnline = computed(() => Boolean(formAgent.value?.online));
+
+/** The model the pinned machine says it runs by default, shown in the box. */
+const formModelPlaceholder = computed(() =>
+  formAgent.value?.model
+    ? t('chat.dialogModelMachineDefault', { model: formAgent.value.model })
+    : t('chat.dialogModelPlaceholder'),
+);
 
 const sessionAgent = computed(() =>
   store.agents.find((agent) => agent.env === session.value?.env),
@@ -403,10 +411,12 @@ async function createSession(): Promise<void> {
       env,
       ...(form.projectName ? { projectName: form.projectName } : {}),
       ...(form.title.trim() ? { title: form.title.trim() } : {}),
+      ...(form.model.trim() ? { model: form.model.trim() } : {}),
     };
     const response = await hubApi.createChatSession(store.token, input);
     formOpen.value = false;
     form.title = '';
+    form.model = '';
     await loadSessions();
     await openSession(response.session.id);
     pushToast(t('chat.created'), 'success');
@@ -768,6 +778,19 @@ onBeforeUnmount(() => {
             />
           </div>
 
+          <label class="mb-3 block text-[12px] text-on-surface-variant">
+            {{ t('chat.dialogModelLabel') }}
+            <input
+              v-model="form.model"
+              maxlength="80"
+              :placeholder="formModelPlaceholder"
+              class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2.5 font-mono text-[13px] text-on-surface outline-none focus:border-primary"
+            />
+            <span class="mt-1 block text-[11px] text-on-surface-variant/70">
+              {{ t('chat.dialogModelHint') }}
+            </span>
+          </label>
+
           <label class="mb-4 block text-[12px] text-on-surface-variant">
             {{ t('chat.dialogTitleLabel') }}
             <input
@@ -906,6 +929,13 @@ onBeforeUnmount(() => {
               </span>
               <span v-if="activeSession.projectName" class="font-mono">
                 {{ activeSession.projectName }}
+              </span>
+              <span
+                v-if="activeSession.model"
+                class="rounded bg-surface-container-high px-1.5 py-0.5 font-mono"
+                :title="t('chat.modelBadge')"
+              >
+                {{ activeSession.model }}
               </span>
               <span v-if="activeSession.status === 'CLOSED'" class="text-primary">
                 · {{ t('chat.closedBadge') }}

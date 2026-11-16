@@ -700,6 +700,12 @@ export const chatSessionSchema = z.object({
   status: z.enum(CHAT_SESSION_STATUSES),
   /** CLI-native session id used to resume the conversation. */
   externalId: z.string().max(128).optional(),
+  /**
+   * Model this conversation runs on. Unset means the node's default
+   * (`ZHUNZOU_CHAT_MODEL` / fleet project `model`), and if that is unset too,
+   * whatever the CLI itself is configured to use.
+   */
+  model: modelNameSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   lastMessageAt: z.number().int().nonnegative().optional(),
@@ -743,6 +749,11 @@ export const createChatSessionSchema = z.object({
   env: envSchema,
   projectName: projectNameSchema.optional(),
   title: z.string().trim().min(1).max(120).optional(),
+  /**
+   * Model to run this conversation on; omit to inherit the node default.
+   * The hub stores it verbatim — only the engine knows which ids it accepts.
+   */
+  model: modelNameSchema.optional(),
 });
 
 export const sendChatMessageSchema = z.object({

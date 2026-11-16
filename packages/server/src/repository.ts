@@ -404,6 +404,7 @@ function toChatSession(
     title: row.title,
     status: row.status,
     ...(row.externalId ? { externalId: row.externalId } : {}),
+    ...(row.model ? { model: row.model } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ...(row.lastMessageAt !== null ? { lastMessageAt: row.lastMessageAt } : {}),
@@ -2293,6 +2294,7 @@ export class TicketRepository implements TicketStore {
         projectName: input.projectName ?? null,
         title,
         status: 'ACTIVE',
+        model: input.model?.trim() || null,
         createdAt: now,
         updatedAt: now,
       })

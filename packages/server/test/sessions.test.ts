@@ -111,6 +111,41 @@ describe('interactive sessions', () => {
     }
   });
 
+  it('remembers the model chosen for a conversation', async () => {
+    const ctx = await createTestContext();
+    try {
+      const created = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/sessions',
+        headers: ctx.auth,
+        payload: {
+          env: ENV,
+          title: '带模型的会话',
+          model: 'opencode-go/deepseek-v4.1-flash',
+        },
+      });
+      expect(created.statusCode).toBe(201);
+      const session = created.json().session as ChatSession;
+      expect(session.model).toBe('opencode-go/deepseek-v4.1-flash');
+
+      // The bridge reads the model off the long-poll claim, so it has to
+      // survive a round trip through the database.
+      const fetched = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}`,
+        headers: ctx.auth,
+      });
+      expect((fetched.json().session as ChatSession).model).toBe(
+        'opencode-go/deepseek-v4.1-flash',
+      );
+
+      const plain = await createSession(ctx);
+      expect(plain.model).toBeUndefined();
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('accepts long messages up to the 32000 character limit', async () => {
     const ctx = await createTestContext();
     try {
