@@ -232,6 +232,31 @@ export type EngineEventKind = (typeof ENGINE_EVENT_KINDS)[number];
 /** Re-exported for task records: an engine is the agent kind that runs it. */
 export const TASK_ENGINES = AGENT_KINDS;
 
+/**
+ * Why a run died before it could do the work, as read off the CLI's own error
+ * text. A node reports one of these instead of leaving the reason inside a
+ * four-kilobyte tail: "Free usage limit reached" and a failing test are both
+ * exit code 1, but only one of them is the code's fault.
+ */
+export const MODEL_FAILURE_KINDS = [
+  'quota_exhausted',
+  'provider_not_configured',
+  'subscription_required',
+  'auth_failed',
+  'rate_limited',
+] as const;
+export type ModelFailureKind = (typeof MODEL_FAILURE_KINDS)[number];
+
+/**
+ * The kinds another model can actually answer. A dead token or a 429 is the
+ * account talking, and switching model only buys the same error twice.
+ */
+export const MODEL_SWITCH_MIGHT_HELP: readonly ModelFailureKind[] = [
+  'quota_exhausted',
+  'provider_not_configured',
+  'subscription_required',
+];
+
 /** Disabled agents keep their history but their tokens stop working. */
 export const AGENT_STATUSES = ['active', 'disabled'] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];

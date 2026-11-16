@@ -16,7 +16,13 @@ import { computed, onMounted, ref } from 'vue';
 
 import type { SupervisorInboxItem } from '@zhunzou/shared';
 
-import { relativeTime, TASK_STATUS_CLASSES, taskStatusLabel } from '../lib/format';
+import {
+  FAILURE_KIND_CLASSES,
+  failureKindLabel,
+  relativeTime,
+  TASK_STATUS_CLASSES,
+  taskStatusLabel,
+} from '../lib/format';
 import { blockedCount, deviceForTask, mergeInfoFor, sortInbox } from '../lib/inbox';
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
@@ -139,6 +145,13 @@ function toggleLogs(taskId: string): void {
                 :class="TASK_STATUS_CLASSES[item.task.status]"
               >
                 {{ taskStatusLabel(item.task.status) }}
+              </span>
+              <span
+                v-if="item.task.failureKind"
+                class="rounded px-2 py-0.5 text-[11px] font-semibold"
+                :class="FAILURE_KIND_CLASSES"
+              >
+                {{ failureKindLabel(item.task.failureKind) }}
               </span>
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-on-surface-variant">

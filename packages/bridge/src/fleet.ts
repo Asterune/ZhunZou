@@ -57,6 +57,10 @@ const fleetProjectSchema = z.object({
   token: z.string().trim().min(1).optional(),
   /** Extra args for preset adapters (e.g. ["--model","gpt-5"]). */
   args: z.array(z.string()).optional(),
+  /** Model this project runs by default; a dispatched task can still override it. */
+  model: z.string().trim().min(1).max(80).optional(),
+  /** Model to try once when the default one refuses to work (spent quota, missing provider). */
+  fallbackModel: z.string().trim().min(1).max(80).optional(),
   /** Shell template for the command adapter. */
   command: z.string().min(1).optional(),
   /** `hub` marks a directory associated from the dashboard. */
@@ -812,8 +816,16 @@ export function buildFleetRuntimes(
     if (project.args?.length) {
       wake.extraArgs = project.args;
     }
+    // A fleet project names its own models; the process-wide env is the
+    // fallback for whoever did not, so one box can mix setups.
+    if (project.model) wake.chatModel = project.model;
+    if (project.fallbackModel) wake.fallbackModel = project.fallbackModel;
 
-    return { project, hub, wake };
+    return {
+      project,
+      hub: wake.chatModel ? { ...hub, chatModel: wake.chatModel } : hub,
+      wake,
+    };
   });
 }
 

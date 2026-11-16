@@ -10,6 +10,7 @@ import type { BridgeConfig } from './config.js';
 import { HubApiError, type HubApi } from './hub-client.js';
 import type { PresenceReporter } from './presence.js';
 import { RunnerState } from './runner-state.js';
+import { classifyModelFailure } from './sanitizer/model-errors.js';
 import { runProcess, shellQuote, whichSync, findPresetBinary, type ProcessResult } from './wake/adapters.js';
 import type { WakeAdapterName, WakeConfig } from './wake/config.js';
 import { createLogSink, type LogStream } from './wake/log-sink.js';
@@ -461,10 +462,12 @@ export async function runSessionDaemon(
         };
       } else {
         const error = tail(result.stderr || result.stdout, 2_000);
+        const failureKind = classifyModelFailure(result.stderr || result.stdout);
         sink.push('system', `\n[zhunzou] 失败：${error}\n`);
         completion = {
           status: 'FAILED',
           error: error || `CLI 退出码 ${result.code}`,
+          ...(failureKind ? { failureKind } : {}),
         };
         logError(`会话 #${session.id} 消息 #${message.id} 失败`);
       }

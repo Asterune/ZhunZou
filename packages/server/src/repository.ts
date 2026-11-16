@@ -313,6 +313,7 @@ function toAgent(
     ...(row.version ? { version: row.version } : {}),
     ...(row.host ? { host: row.host } : {}),
     ...(row.os ? { os: row.os } : {}),
+    ...(row.model ? { model: row.model } : {}),
     ...(row.deviceId ? { deviceId: row.deviceId } : {}),
     ...(row.protocolVersion ? { protocolVersion: row.protocolVersion } : {}),
     ...(row.capabilities ? { capabilities: row.capabilities } : {}),
@@ -348,6 +349,7 @@ function toTask(row: AgentTaskRow): AgentTask {
     attempts: row.attempts ?? 0,
     ...(row.repoName ? { repoName: row.repoName } : {}),
     ...(row.engine ? { engine: row.engine } : {}),
+    ...(row.model ? { model: row.model } : {}),
     origin: row.origin ?? 'HUB_DISPATCH',
     ...(row.sessionId ? { sessionId: row.sessionId } : {}),
     managedBySupervisor: row.managedBySupervisor !== 0,
@@ -360,6 +362,7 @@ function toTask(row: AgentTaskRow): AgentTask {
     ...(row.leaseAt !== null ? { leaseAt: row.leaseAt } : {}),
     ...(row.completedAt !== null ? { completedAt: row.completedAt } : {}),
     ...(row.result ? { result: row.result } : {}),
+    ...(row.failureKind ? { failureKind: row.failureKind } : {}),
   };
 }
 
@@ -420,6 +423,7 @@ function toChatMessage(row: ChatMessageRow): ChatMessage {
     ...(row.rationale ? { rationale: row.rationale } : {}),
     ...(row.decision ? { decision: row.decision } : {}),
     ...(row.error ? { error: row.error } : {}),
+    ...(row.failureKind ? { failureKind: row.failureKind } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -2087,6 +2091,7 @@ export class TicketRepository implements TicketStore {
         kind: meta?.kind ?? 'other',
         status: 'active',
         ...(meta?.version ? { version: meta.version } : {}),
+        ...(meta?.model ? { model: meta.model } : {}),
         ...machine,
         transport: 'http',
         connectedAt: now,
@@ -2102,6 +2107,10 @@ export class TicketRepository implements TicketStore {
           // client would relabel an OpenCode agent as "other" on every beat.
           ...(meta?.kind && meta.kind !== 'other' ? { kind: meta.kind } : {}),
           ...(meta?.version ? { version: meta.version } : {}),
+          // Only a bridge that knows about models can say one; silence keeps the
+          // last report rather than erasing it, so an old client on the same env
+          // does not blank the card.
+          ...(meta?.model ? { model: meta.model } : {}),
           ...machine,
           transport: 'http',
           connectedAt: now,
@@ -2714,6 +2723,7 @@ export class TicketRepository implements TicketStore {
       .set({
         status: input.status,
         error: input.error ?? null,
+        failureKind: input.failureKind ?? null,
         updatedAt: now,
       })
       .where(
@@ -2735,6 +2745,7 @@ export class TicketRepository implements TicketStore {
         .set({
           status: input.status,
           error: input.error ?? null,
+          failureKind: input.failureKind ?? null,
           updatedAt: now,
         })
         .where(
@@ -3310,6 +3321,7 @@ export class TicketRepository implements TicketStore {
         attempts: 0,
         repoName: input.repoName ?? null,
         engine: input.engine ?? null,
+        model: input.model ?? null,
         origin: input.origin ?? 'HUB_DISPATCH',
         managedBySupervisor: input.managedBySupervisor ? 1 : 0,
         retryCount: 0,
@@ -3574,6 +3586,9 @@ export class TicketRepository implements TicketStore {
         status: input.status,
         result: input.result ?? null,
         workspacePath: input.workspacePath ?? null,
+        // Cleared on every report: a run that got as far as the code has no
+        // model fault to keep from the attempt before it.
+        failureKind: input.failureKind ?? null,
         completedAt: now,
         updatedAt: now,
       })

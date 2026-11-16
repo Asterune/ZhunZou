@@ -527,6 +527,10 @@ async function copyEnrollmentCommand(): Promise<void> {
             <dt class="text-on-surface-variant/60">{{ t('agents.os') }}</dt>
             <dd class="truncate text-on-surface">{{ agent.os || '—' }}</dd>
           </div>
+          <div class="min-w-0">
+            <dt class="text-on-surface-variant/60">{{ t('agents.model') }}</dt>
+            <dd class="truncate font-mono text-on-surface">{{ agent.model || '—' }}</dd>
+          </div>
         </dl>
 
         <div

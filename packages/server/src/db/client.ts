@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS agents (
   version TEXT,
   host TEXT,
   os TEXT,
+  model TEXT,
   device_id TEXT,
   protocol_version INTEGER,
   capabilities TEXT,
@@ -147,6 +148,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
   attempts INTEGER NOT NULL DEFAULT 0,
   repo_name TEXT,
   engine TEXT,
+  model TEXT,
   origin TEXT NOT NULL DEFAULT 'HUB_DISPATCH',
   session_id TEXT,
   managed_by_supervisor INTEGER NOT NULL DEFAULT 0,
@@ -158,6 +160,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
   claimed_at INTEGER,
   completed_at INTEGER,
   result TEXT,
+  failure_kind TEXT,
   lease_at INTEGER
 );
 
@@ -218,6 +221,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   rationale TEXT,
   decision TEXT,
   error TEXT,
+  failure_kind TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -396,6 +400,12 @@ export function createDatabase(dbPath: string): {
   ensureColumn(sqlite, 'agent_tasks', 'workspace_path', 'TEXT');
   // The L2 fix prompt waits here until the claim that runs the retry takes it.
   ensureColumn(sqlite, 'agent_tasks', 'fix_prompt', 'TEXT');
+  // Model plumbing. A pre-feature hub has nowhere to put the model a dispatch
+  // asked for, or the reason a CLI refused to think, so both land on upgrade.
+  ensureColumn(sqlite, 'agent_tasks', 'model', 'TEXT');
+  ensureColumn(sqlite, 'agent_tasks', 'failure_kind', 'TEXT');
+  ensureColumn(sqlite, 'chat_messages', 'failure_kind', 'TEXT');
+  ensureColumn(sqlite, 'agents', 'model', 'TEXT');
   // Indexed only after the column exists: an upgrade from a table that predates
   // it would otherwise abort on the missing column.
   sqlite.exec('CREATE INDEX IF NOT EXISTS idx_agent_tasks_repo ON agent_tasks(repo_name);');

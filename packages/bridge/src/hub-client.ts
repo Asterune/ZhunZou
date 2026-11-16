@@ -275,6 +275,7 @@ export class HubClient implements HubApi {
         host: hostname(),
         os: `${platform()}-${arch()}`,
         machineId: machineId(),
+        ...(this.config.chatModel ? { model: this.config.chatModel } : {}),
         ...(input.agent ?? {}),
       },
     });

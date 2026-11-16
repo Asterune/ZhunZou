@@ -551,4 +551,38 @@ describe('L2 healing pass', () => {
       await ctx.close();
     }
   });
+
+  it('H14: a failure the node blamed on the model is parked, not diagnosed', async () => {
+    const healer = stubHealer(RETRY_VERDICT);
+    const ctx = await createCtx(healer);
+    try {
+      const task = await createTask(ctx);
+      await claim(ctx);
+      const response = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/tasks/${task.id}/complete`,
+        headers: ctx.auth,
+        payload: {
+          status: 'FAILED',
+          result: 'Free usage limit reached. Connect a provider or subscribe to OpenCode Go.',
+          failureKind: 'quota_exhausted',
+        },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const blocked = await until(async () => {
+        const current = await getTask(ctx, task.id);
+        return current.status === 'BLOCKED' ? current : null;
+      });
+
+      // No retry, no meta-agent call: the code was never reached, so a
+      // diagnosis of the code is a token spent on the wrong question.
+      expect(healer.asked).toHaveLength(0);
+      expect(blocked.retryCount).toBe(0);
+      expect(blocked.failureKind).toBe('quota_exhausted');
+      expect((await logsOf(ctx, task.id)).at(-1)?.diagnosis).toContain('模型不可用');
+    } finally {
+      await ctx.close();
+    }
+  });
 });

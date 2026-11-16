@@ -6,6 +6,7 @@ import type {
   AgentKind,
   AgentTask,
   EngineEventInput,
+  ModelFailureKind,
   PermissionActionInput,
 } from '@zhunzou/shared';
 import { isArgvSafeSessionId } from '@zhunzou/shared';
@@ -13,6 +14,7 @@ import { isArgvSafeSessionId } from '@zhunzou/shared';
 import type { WakeAdapterName, WakeConfig } from './config.js';
 import { NOTIFY_ADAPTERS } from './config.js';
 import type { LogStream } from './log-sink.js';
+import { classifyModelFailure, modelSwitchMayHelp } from '../sanitizer/model-errors.js';
 import { buildInjectPrompt, buildRunPrompt } from './prompt.js';
 import { createEventPipeline, profileForAdapter } from './events.js';
 
@@ -21,6 +23,11 @@ export type WakeDelivery = 'inject' | 'run' | 'notify';
 export interface WakeCompletion {
   status: 'DONE' | 'FAILED';
   result?: string;
+  /**
+   * The CLI's own complaint about its model, when the run died before doing
+   * any work. Without it a quota error looks like a build error to the hub.
+   */
+  failureKind?: ModelFailureKind;
 }
 
 /** Why a run stopped early: the engine wants a human to approve something. */
@@ -310,9 +317,15 @@ interface Preset {
   args: (prompt: string, extra: string[]) => string[];
   /** How this CLI picks up a previous session, if we know its syntax. */
   resumeArgs?: (sessionId: string) => string[];
+  /** How this CLI takes a model id, if we know its syntax. */
+  modelArgs?: (model: string) => string[];
 }
 
 const RESUME_ARGS = (sessionId: string): string[] => ['--resume', sessionId];
+
+/** The four adapters `session.ts` already runs in production keep the same spelling here. */
+const MODEL_ARGS = (model: string): string[] => ['--model', model];
+const SHORT_MODEL_ARGS = (model: string): string[] => ['-m', model];
 
 const PRESETS: Record<string, Preset> = {
   'opencode-run': {
@@ -321,22 +334,26 @@ const PRESETS: Record<string, Preset> = {
     args: (prompt, extra) => ['run', '--auto', ...extra, prompt],
     // Same shape `session.ts` uses for chat, where it is already in production.
     resumeArgs: (sessionId) => ['--session', sessionId],
+    modelArgs: SHORT_MODEL_ARGS,
   },
   claude: {
     name: 'claude',
     binary: 'claude',
     args: (prompt, extra) => ['-p', ...extra, prompt],
     resumeArgs: RESUME_ARGS,
+    modelArgs: MODEL_ARGS,
   },
   codex: {
     name: 'codex',
     binary: 'codex',
     args: (prompt, extra) => ['exec', ...extra, prompt],
+    modelArgs: SHORT_MODEL_ARGS,
   },
   gemini: {
     name: 'gemini',
     binary: 'gemini',
     args: (prompt, extra) => ['-p', ...extra, prompt],
+    modelArgs: SHORT_MODEL_ARGS,
   },
   qoder: {
     name: 'qoder',
@@ -346,6 +363,7 @@ const PRESETS: Record<string, Preset> = {
     aliases: ['qodercli', 'qcode'],
     args: (prompt, extra) => ['-p', ...extra, prompt],
     resumeArgs: RESUME_ARGS,
+    modelArgs: MODEL_ARGS,
   },
   'cursor-agent': {
     name: 'cursor-agent',
@@ -354,21 +372,25 @@ const PRESETS: Record<string, Preset> = {
     // is expected to actually apply its changes.
     args: (prompt, extra) => ['-p', '--force', ...extra, prompt],
     resumeArgs: RESUME_ARGS,
+    modelArgs: MODEL_ARGS,
   },
   aider: {
     name: 'aider',
     binary: 'aider',
     args: (prompt, extra) => ['--message', ...extra, prompt],
+    modelArgs: MODEL_ARGS,
   },
   goose: {
     name: 'goose',
     binary: 'goose',
     args: (prompt, extra) => ['run', '-t', ...extra, prompt],
+    modelArgs: SHORT_MODEL_ARGS,
   },
   amp: {
     name: 'amp',
     binary: 'amp',
     args: (prompt, extra) => ['-x', ...extra, prompt],
+    modelArgs: MODEL_ARGS,
   },
 };
 
@@ -410,51 +432,91 @@ function createPresetAdapter(preset: Preset): WakeAdapter {
 
       const prompt = buildRunPrompt(task);
       const resume = resumeArgsFor(preset, task, context);
-      context.log(
-        `spawn ${preset.binary} (run mode, cwd=${context.config.cwd})` +
-          (resume.length ? ` resume=${task.sessionId}` : ''),
-      );
-      const watch = createRunWatch(preset.name, context, context.config.cwd);
-      const result = await runProcess(
-        binary,
-        preset.args(prompt, [...context.config.extraArgs, ...resume]),
-        {
-          cwd: context.config.cwd,
-          timeoutMs: context.config.runTimeoutMs,
-          signal: watch.signal,
-          onOutput: watch.push,
-        },
-      );
-      watch.finish();
-
-      const parked = watch.parked();
-      if (parked) {
-        // No completion: the task goes back to the queue with the session id
-        // already stored, so whoever claims it next can resume in place.
-        return { delivery: 'run', parked };
+      // The task's own ask outranks the node's default; neither outranks the
+      // CLI, which decides whether the id means anything to it.
+      const requested = task.model ?? context.config.chatModel;
+      if (requested && !preset.modelArgs) {
+        context.log(
+          `${preset.binary} 无已知模型参数，忽略 model=${requested}（可用 ZHUNZOU_WAKE_ARGS 写明该 CLI 的写法）`,
+        );
       }
 
-      if (result.timedOut) {
+      const attempt = async (model?: string): Promise<WakeOutcome> => {
+        const modelArgv = model ? (preset.modelArgs?.(model) ?? []) : [];
+        context.log(
+          `spawn ${preset.binary} (run mode, cwd=${context.config.cwd})` +
+            (resume.length ? ` resume=${task.sessionId}` : '') +
+            (model ? ` model=${model}` : ''),
+        );
+        const watch = createRunWatch(preset.name, context, context.config.cwd);
+        const result = await runProcess(
+          binary,
+          preset.args(prompt, [...modelArgv, ...context.config.extraArgs, ...resume]),
+          {
+            cwd: context.config.cwd,
+            timeoutMs: context.config.runTimeoutMs,
+            signal: watch.signal,
+            onOutput: watch.push,
+          },
+        );
+        watch.finish();
+
+        const parked = watch.parked();
+        if (parked) {
+          // No completion: the task goes back to the queue with the session id
+          // already stored, so whoever claims it next can resume in place.
+          return { delivery: 'run', parked };
+        }
+
+        if (result.timedOut) {
+          return {
+            delivery: 'run',
+            completion: {
+              status: 'FAILED',
+              result: `端侧 ${preset.binary} 执行超时（${Math.round(
+                context.config.runTimeoutMs / 1000,
+              )}s），已终止`,
+            },
+          };
+        }
+
+        const ok = result.code === 0;
+        const output = ok ? result.stdout : result.stderr || result.stdout;
+        if (ok) {
+          return {
+            delivery: 'run',
+            completion: { status: 'DONE', result: tail(output) || '端侧执行完成' },
+          };
+        }
+
+        const failureKind = classifyModelFailure(output);
         return {
           delivery: 'run',
           completion: {
             status: 'FAILED',
-            result: `端侧 ${preset.binary} 执行超时（${Math.round(
-              context.config.runTimeoutMs / 1000,
-            )}s），已终止`,
+            result: tail(output) || '端侧执行失败（无输出）',
+            ...(failureKind ? { failureKind } : {}),
           },
         };
-      }
-
-      const ok = result.code === 0;
-      const output = ok ? result.stdout : result.stderr || result.stdout;
-      return {
-        delivery: 'run',
-        completion: {
-          status: ok ? 'DONE' : 'FAILED',
-          result: tail(output) || (ok ? '端侧执行完成' : '端侧执行失败（无输出）'),
-        },
       };
+
+      const first = await attempt(requested);
+      const fallback = context.config.fallbackModel;
+      // One retry, only where another model is the actual answer, and never on
+      // the model that just said no: a quota error repeated is a quota error.
+      if (
+        first.completion?.status === 'FAILED' &&
+        modelSwitchMayHelp(first.completion.failureKind) &&
+        preset.modelArgs &&
+        fallback &&
+        fallback !== requested
+      ) {
+        context.log(
+          `模型失败（${first.completion.failureKind}），改用 ${fallback} 重试一次`,
+        );
+        return attempt(fallback);
+      }
+      return first;
     },
   };
 }
@@ -519,11 +581,15 @@ function createCommandAdapter(config: WakeConfig): WakeAdapter {
 
       const ok = result.code === 0;
       const output = ok ? result.stdout : result.stderr || result.stdout;
+      // A template owns its own argv, so Zhunzou can read the fault but cannot
+      // swap the model out from under it.
+      const failureKind = ok ? undefined : classifyModelFailure(output);
       return {
         delivery: 'run',
         completion: {
           status: ok ? 'DONE' : 'FAILED',
           result: tail(output) || (ok ? '唤醒命令执行完成' : '唤醒命令执行失败（无输出）'),
+          ...(failureKind ? { failureKind } : {}),
         },
       };
     },

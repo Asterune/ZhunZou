@@ -17,6 +17,8 @@ import type { AgentTask, CreateTaskInput } from '@zhunzou/shared';
 import {
   relativeTime,
   TASK_STATUS_CLASSES,
+  FAILURE_KIND_CLASSES,
+  failureKindLabel,
   taskStatusLabel,
   TICKET_STATUS_CLASSES,
   ticketStatusLabel,
@@ -258,6 +260,13 @@ async function cancel(taskId: string): Promise<void> {
                 {{ taskStatusLabel(task.status) }}
               </span>
               <span
+                v-if="task.failureKind"
+                class="rounded px-2 py-0.5 text-[11px] font-semibold"
+                :class="FAILURE_KIND_CLASSES"
+              >
+                {{ failureKindLabel(task.failureKind) }}
+              </span>
+              <span
                 v-if="task.attempts > 1"
                 class="rounded bg-tertiary-fixed px-2 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed"
               >
@@ -394,6 +403,13 @@ async function cancel(taskId: string): Promise<void> {
               :class="TASK_STATUS_CLASSES[task.status]"
             >
               {{ taskStatusLabel(task.status) }}
+            </span>
+            <span
+              v-if="task.failureKind"
+              class="rounded px-2 py-0.5 font-semibold"
+              :class="FAILURE_KIND_CLASSES"
+            >
+              {{ failureKindLabel(task.failureKind) }}
             </span>
             <span class="font-mono">{{ task.env }}</span>
             <span class="text-outline-variant">·</span>

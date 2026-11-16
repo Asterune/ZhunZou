@@ -29,8 +29,16 @@ export interface WakeConfig {
   command?: string;
   /** Extra arguments appended to preset CLI adapters. */
   extraArgs: string[];
-  /** Model name passed to the CLI for interactive chat turns, if configured. */
+  /**
+   * Model this node runs by default: interactive chat turns and, unless the
+   * task names one, dispatched task runs.
+   */
   chatModel?: string;
+  /**
+   * Model to try once when a run fails for a reason another model can answer
+   * (quota spent, provider missing). Unset means the failure stays visible.
+   */
+  fallbackModel?: string;
   /** Working directory handed to run adapters. */
   cwd: string;
   /** Run each claimed task in its own git worktree instead of the shared checkout. */
@@ -81,6 +89,7 @@ export function loadWakeConfig(
 ): WakeConfig {
   const command = (env.ZHUNZOU_WAKE_COMMAND ?? '').trim();
   const chatModel = (env.ZHUNZOU_CHAT_MODEL ?? '').trim();
+  const fallbackModel = (env.ZHUNZOU_FALLBACK_MODEL ?? '').trim();
   const extraArgs = (env.ZHUNZOU_WAKE_ARGS ?? '')
     .split(/\s+/)
     .map((part) => part.trim())
@@ -90,6 +99,7 @@ export function loadWakeConfig(
     adapter: readAdapter(env.ZHUNZOU_WAKE_ADAPTER),
     ...(command ? { command } : {}),
     ...(chatModel ? { chatModel } : {}),
+    ...(fallbackModel ? { fallbackModel } : {}),
     extraArgs,
     cwd: resolve((env.ZHUNZOU_WAKE_CWD ?? '').trim() || cwd),
     worktrees: readFlag(env.ZHUNZOU_WORKTREES),

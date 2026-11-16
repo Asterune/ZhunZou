@@ -247,6 +247,35 @@ describe('POST /api/tasks/dispatch', () => {
     }
   });
 
+  it('carries the model a dispatch asked for down to the node that runs it', async () => {
+    const ctx = await createTestContext();
+    const socket = await joinNode(ctx, 'mini-1', profile());
+
+    try {
+      const result = await dispatch(ctx, {
+        env: 'mini-1',
+        title: '换模型再试',
+        instruction: '用另一个模型跑一遍。',
+        model: 'plan-b',
+      });
+
+      expect(result.status).toBe(201);
+      expect(result.body.task).toMatchObject({ env: 'mini-1', model: 'plan-b' });
+
+      const claimed = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/tasks/next?env=mini-1&timeout=20',
+        headers: ctx.auth,
+      });
+      expect((claimed.json() as { task: { model?: string } }).task).toMatchObject({
+        model: 'plan-b',
+      });
+    } finally {
+      socket.close();
+      await ctx.close();
+    }
+  });
+
   it('will not pin a task to an identity the hub has never seen', async () => {
     const ctx = await createTestContext();
     try {

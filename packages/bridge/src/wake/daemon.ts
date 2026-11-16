@@ -315,7 +315,8 @@ async function runClaimLoop(
         const { completion } = outcome;
         sink.push(
           'system',
-          `\n[zhunzou] 任务 #${task.id} → ${completion.status}\n`,
+          `\n[zhunzou] 任务 #${task.id} → ${completion.status}` +
+            `${completion.failureKind ? `（${completion.failureKind}）` : ''}\n`,
         );
         await pushWorkspaceFingerprint(sink, workspace.cwd, logError);
         await sink.close();

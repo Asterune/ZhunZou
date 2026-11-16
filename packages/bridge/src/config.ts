@@ -39,6 +39,12 @@ export interface BridgeConfig {
   /** Local client type shown in the dashboard's agent registry. */
   agentKind: AgentKind;
   /**
+   * Model this node runs by default, reported with every heartbeat so the
+   * dashboard can say what a dispatched task would land on. A CLI's own
+   * default is invisible here: absent means "the client picked".
+   */
+  chatModel?: string;
+  /**
    * Chat session this process is answering, injected by the session daemon.
    * Lets `agent_hub_propose_reply` target the exact conversation instead of
    * guessing from the env.
@@ -194,6 +200,7 @@ export function loadBridgeConfig(
 
   const rawUrl = (env.HUB_URL ?? DEFAULT_HUB_URL).trim().replace(/\/+$/, '');
   const chatSessionId = (env.ZHUNZOU_CHAT_SESSION_ID ?? '').trim();
+  const chatModel = (env.ZHUNZOU_CHAT_MODEL ?? '').trim();
   // The client's own idea of the open folder beats cwd: on Windows a global
   // Cursor install starts the server from a directory that is not the
   // workspace (home, System32), which used to leave the project unknown — or
@@ -242,6 +249,7 @@ export function loadBridgeConfig(
       300_000,
     ),
     agentKind: readAgentKind(env.ZHUNZOU_AGENT_KIND),
+    ...(chatModel ? { chatModel } : {}),
     transport: readTransport(env.ZHUNZOU_TRANSPORT),
     ...(chatSessionId && /^\d+$/.test(chatSessionId)
       ? { chatSessionId }

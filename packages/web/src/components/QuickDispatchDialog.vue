@@ -24,11 +24,25 @@ const form = reactive({
   projectName: '',
   repoName: '',
   engine: '' as AgentKind | '',
+  model: '',
   tags: '',
   title: '',
   instruction: '',
 });
 const submitting = ref(false);
+
+/** The default the pinned machine says it runs, so the box can show it. */
+const machineModel = computed(() => {
+  if (form.mode !== 'target') return '';
+  const env = form.env.trim();
+  return store.agents.find((agent) => agent.env === env)?.model ?? '';
+});
+
+const modelPlaceholder = computed(() =>
+  machineModel.value
+    ? t('dispatch.modelMachineDefault', { model: machineModel.value })
+    : t('dispatch.modelPlaceholder'),
+);
 
 const tagList = computed(() =>
   form.tags
@@ -64,6 +78,7 @@ async function submit(): Promise<void> {
   const common = {
     title: form.title.trim(),
     instruction: form.instruction.trim(),
+    ...(form.model.trim() ? { model: form.model.trim() } : {}),
   };
 
   const ok =
@@ -204,6 +219,18 @@ async function submit(): Promise<void> {
             </label>
           </div>
         </template>
+
+        <label class="block">
+          <span class="text-[11px] font-medium text-on-surface-variant">
+            {{ t('dispatch.modelLabel') }}
+          </span>
+          <input
+            v-model="form.model"
+            maxlength="80"
+            :placeholder="modelPlaceholder"
+            class="mt-1 h-9 w-full rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2.5 font-mono text-[13px] text-on-surface outline-none placeholder:font-sans focus:border-primary"
+          />
+        </label>
 
         <label class="block">
           <span class="text-[11px] font-medium text-on-surface-variant">

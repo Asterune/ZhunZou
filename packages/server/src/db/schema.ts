@@ -17,6 +17,7 @@ import type {
   LearnedRuleAction,
   LearnedRulePatternType,
   LearnedRuleSource,
+  ModelFailureKind,
   NodeRepo,
   NodeRole,
   PermissionAction,
@@ -112,6 +113,8 @@ export const agents = sqliteTable(
     version: text('version'),
     host: text('host'),
     os: text('os'),
+    /** Model this env last said it runs; null means the CLI picked its own. */
+    model: text('model'),
     /** Machine this agent runs on; see `devices`. Null only for legacy rows. */
     deviceId: text('device_id'),
 
@@ -267,6 +270,8 @@ export const agentTasks = sqliteTable(  'agent_tasks',
     repoName: text('repo_name'),
     /** Which local CLI runs it. */
     engine: text('engine').$type<TaskEngine>(),
+    /** Model the dispatch asked that CLI to run on. */
+    model: text('model'),
     origin: text('origin').$type<TaskOrigin>().notNull().default('HUB_DISPATCH'),
     /** Engine-native session id, so a resumed task continues in place. */
     sessionId: text('session_id'),
@@ -288,6 +293,8 @@ export const agentTasks = sqliteTable(  'agent_tasks',
     leaseAt: integer('lease_at'),
     completedAt: integer('completed_at'),
     result: text('result'),
+    /** The node's reading of its own CLI's complaint, when it could name one. */
+    failureKind: text('failure_kind').$type<ModelFailureKind>(),
   },
   (table) => [
     index('idx_agent_tasks_status').on(table.status),
@@ -376,6 +383,8 @@ export const chatMessages = sqliteTable(
     /** `AUTO` when the hub adopted it, `HUMAN` when a person did. */
     decision: text('decision').$type<ChatMessageDecision>(),
     error: text('error'),
+    /** Set when the turn died because the CLI's model refused, not the agent. */
+    failureKind: text('failure_kind').$type<ModelFailureKind>(),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },

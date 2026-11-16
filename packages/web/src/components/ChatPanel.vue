@@ -33,6 +33,7 @@ import type {
 
 import { hubApi } from '../lib/api';
 import { queuedUserMessages, ticketsForSession } from '../lib/chat';
+import { failureKindLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
@@ -1078,7 +1079,12 @@ onBeforeUnmount(() => {
                 v-if="message.role === 'user' && message.status === 'FAILED'"
                 class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-[#ffd5d0]"
               >
-                <span>{{ t('chat.failed') }}{{ message.error ? `: ${message.error}` : '' }}</span>
+                <span>
+                  {{ t('chat.failed')
+                  }}{{
+                    message.failureKind ? ` · ${failureKindLabel(message.failureKind)}` : ''
+                  }}{{ message.error ? `: ${message.error}` : '' }}
+                </span>
                 <button
                   type="button"
                   class="rounded bg-white/15 px-1.5 py-0.5 text-[10px] font-medium text-white transition hover:bg-white/25 disabled:opacity-50"

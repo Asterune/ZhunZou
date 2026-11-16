@@ -4,6 +4,7 @@ import type {
   DecisionTicket,
   EnvHeartbeat,
   EnvStatus,
+  ModelFailureKind,
   TaskStatus,
   TicketStatus,
 } from '@zhunzou/shared';
@@ -46,6 +47,18 @@ export const TASK_STATUS_CLASSES: Record<TaskStatus, string> = {
   CANCELLED:
     'bg-surface-container text-on-surface-variant ring-1 ring-inset ring-outline-variant/60',
 };
+
+/**
+ * A run that never reached the code. The kind comes from the CLI's own
+ * complaint, so the board can say "quota" instead of "失败" and stop the human
+ * from rephrasing an instruction that was never read.
+ */
+export function failureKindLabel(kind: ModelFailureKind): string {
+  return t(`failureKind.${kind}`);
+}
+
+export const FAILURE_KIND_CLASSES =
+  'bg-error-container/60 text-on-error-container ring-1 ring-inset ring-error/20';
 
 export function isActiveTask(task: AgentTask): boolean {
   return (

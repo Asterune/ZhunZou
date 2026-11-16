@@ -21,6 +21,7 @@ import { detectWorkspaceProject } from '../config.js';
 import { HubApiError, type HubApi } from '../hub-client.js';
 import { createPresenceReporter } from '../presence.js';
 import { stripAnsi } from '../sanitizer/ansi.js';
+import { classifyModelFailure } from '../sanitizer/model-errors.js';
 import { createLogSanitizer } from '../sanitizer/log-sanitizer.js';
 import { agentKindForAdapter, findPresetBinary } from '../wake/adapters.js';
 import type { WakeAdapterName } from '../wake/config.js';
@@ -446,11 +447,13 @@ export async function runWrapped(options: RunWrappedOptions): Promise<number> {
     const plain = truncate(stripAnsi(tail.trim()), RESULT_CHARS);
     const result = (ok ? plain : sanitizer.summarize() || plain) ||
       (ok ? '本地伴随执行完成' : '本地伴随执行失败（无输出）');
+    const failureKind = ok ? undefined : classifyModelFailure(stripAnsi(tail));
     try {
       await options.client.completeTask(registered.id, {
         status: ok ? 'DONE' : 'FAILED',
         result,
         workspacePath: options.cwd,
+        ...(failureKind ? { failureKind } : {}),
       });
     } catch (error) {
       log(`完成回报失败：${messageOf(error)}`);

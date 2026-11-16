@@ -15,6 +15,7 @@ import {
   CHAT_SESSION_STATUSES,
   DECISION_KINDS,
   DECISION_VERDICTS,
+  MODEL_FAILURE_KINDS,
   TASK_LOG_STREAMS,
   TASK_ORIGINS,
   TASK_STATUSES,
@@ -47,6 +48,16 @@ const workspacePathSchema = z
   .min(2)
   .max(1024)
   .regex(/^([/\\]|[A-Za-z]:[\\/])/, 'workspacePath must be an absolute path');
+
+/**
+ * A CLI-native model id (`iceman-free`, `claude-sonnet-4`). The hub stores and
+ * forwards it verbatim and never checks it against a catalog: only the node
+ * knows which CLI it is about to hand it to.
+ */
+const modelNameSchema = z.string().trim().min(1).max(80);
+
+/** Why a run died before doing the work, as read off the CLI's own error text. */
+export const modelFailureKindSchema = z.enum(MODEL_FAILURE_KINDS);
 
 /* ------------------------------------------------------------------ */
 /* Ticket                                                              */
@@ -189,6 +200,12 @@ export const agentMetaSchema = z.object({
   host: z.string().trim().max(120).optional(),
   os: z.string().trim().max(60).optional(),
   machineId: z.string().trim().min(8).max(64).optional(),
+  /**
+   * The model this node was configured to run, not the one it ended up on:
+   * a CLI's own default is invisible to the hub, so an absent value means
+   * "the client picked", which is exactly what the dashboard should say.
+   */
+  model: modelNameSchema.optional(),
 });
 
 export const heartbeatSchema = z.object({
@@ -229,6 +246,8 @@ export const agentSchema = z.object({
   version: z.string().max(40).optional(),
   host: z.string().max(120).optional(),
   os: z.string().max(60).optional(),
+  /** Model this env last reported, so the card shows what work would run on. */
+  model: modelNameSchema.optional(),
   /** Device this agent runs on; resolved from the reported machine fingerprint. */
   deviceId: z.string().max(64).optional(),
   /** Realtime device protocol version, present once a WS device connects. */
@@ -437,6 +456,12 @@ export const agentTaskSchema = z.object({
   repoName: z.string().trim().min(1).max(128).optional(),
   /** Which local CLI runs it. */
   engine: taskEngineSchema.optional(),
+  /**
+   * Model this task asks that CLI to run on. Beats the node's own default and
+   * loses to nothing: the node still decides whether the id means anything to
+   * its CLI, because the hub never sees the catalog.
+   */
+  model: modelNameSchema.optional(),
   origin: z.enum(TASK_ORIGINS).default('HUB_DISPATCH'),
   /** Engine-native session id, kept so a blocked task resumes in place. */
   sessionId: z.string().trim().min(1).max(128).optional(),
@@ -464,6 +489,11 @@ export const agentTaskSchema = z.object({
   leaseAt: z.number().int().nonnegative().optional(),
   completedAt: z.number().int().nonnegative().optional(),
   result: z.string().trim().max(4000).optional(),
+  /**
+   * Set on a FAILED run the node could name: the work never started, so the
+   * result text describes the CLI's complaint rather than a broken build.
+   */
+  failureKind: modelFailureKindSchema.optional(),
 });
 
 /** Payload accepted by POST /api/tasks (dashboard dispatch). */
@@ -474,6 +504,7 @@ export const createTaskSchema = z.object({
   instruction: longTextSchema,
   repoName: z.string().trim().min(1).max(128).optional(),
   engine: taskEngineSchema.optional(),
+  model: modelNameSchema.optional(),
   /** A locally wrapped terminal registers itself with LOCAL_WRAP. */
   origin: z.enum(TASK_ORIGINS).optional(),
   managedBySupervisor: z.boolean().optional(),
@@ -510,6 +541,7 @@ export const dispatchTaskSchema = z
     title: z.string().trim().min(1).max(200),
     instruction: longTextSchema,
     engine: taskEngineSchema.optional(),
+    model: modelNameSchema.optional(),
     /** Only nodes carrying every one of these tags are considered. */
     tags: z.array(z.string().trim().min(1).max(40)).max(10).default([]),
     managedBySupervisor: z.boolean().optional(),
@@ -545,6 +577,12 @@ export const completeTaskSchema = z.object({
   result: z.string().trim().max(4000).optional(),
   /** Where the edge actually ran it, so the dashboard can link back to it. */
   workspacePath: workspacePathSchema.optional(),
+  /**
+   * How the node read its own CLI's failure. Optional because an older bridge
+   * cannot know the field exists, and a run that got as far as real work has
+   * no model fault to name.
+   */
+  failureKind: modelFailureKindSchema.optional(),
 });
 
 /**
@@ -686,6 +724,8 @@ export const chatMessageSchema = z.object({
   /** Why the agent proposed this reply; shown next to the draft. */
   rationale: z.string().max(2_000).optional(),
   error: z.string().max(2_000).optional(),
+  /** Names a CLI complaint the reader cannot fix by rephrasing the ask. */
+  failureKind: modelFailureKindSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -781,6 +821,8 @@ export const completeChatMessageSchema = z.object({
   content: z.string().max(20_000).optional(),
   externalId: z.string().max(128).optional(),
   error: z.string().max(2_000).optional(),
+  /** Names a CLI complaint the reader cannot fix by rephrasing the ask. */
+  failureKind: modelFailureKindSchema.optional(),
   /**
    * Accept a turn the hub already gave up on (interrupted by a restart) so a
    * journaled result can still be recorded instead of being dropped.

@@ -998,6 +998,31 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       repo.listTaskLogs(taskId, { after: 0, limit: 500 }).logs,
     );
 
+    // The node read the CLI's own complaint: no code was reached, so no
+    // diagnosis of the code can help. Parking here spends zero retries and
+    // zero tokens on a run that would fail the same way.
+    if (task.failureKind) {
+      const reason = `模型不可用（${task.failureKind}）：任务里的代码没有被执行，重跑只会得到同一句报错`;
+      const blocked = repo.blockTask(taskId);
+      if (!blocked) return;
+      writeHealRow(taskId, evidence, reason);
+      taskBus.publish(blocked);
+      app.log.warn(
+        {
+          task: formatTicketId(blocked.id),
+          env: blocked.env,
+          failureKind: task.failureKind,
+          ...(task.model ? { model: task.model } : {}),
+        },
+        'L2 skipped a model-unavailable failure',
+      );
+      announceBlocked(blocked, {
+        diagnosis: reason,
+        ...(evidence.lastSignature ? { errorSignature: evidence.lastSignature } : {}),
+      });
+      return;
+    }
+
     const breakerReason = evaluateBreaker(evidence);
     if (breakerReason) {
       const blocked = repo.blockTask(taskId);
@@ -2070,6 +2095,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
             instruction: input.instruction,
             ...(input.repoName ? { repoName: input.repoName } : {}),
             ...(input.engine ? { engine: input.engine } : {}),
+            ...(input.model ? { model: input.model } : {}),
             ...(input.managedBySupervisor === undefined
               ? {}
               : { managedBySupervisor: input.managedBySupervisor }),
