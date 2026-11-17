@@ -38,6 +38,7 @@ import type {
   CreateTerminalInput,
   CreateEnrollmentInput,
   CreateTicketInput,
+  DecisionCategory,
   DecisionTicket,
   Device,
   DeviceCapabilities,
@@ -105,6 +106,7 @@ import {
   chatEvents,
   chatMessages,
   chatSessions,
+  decisionDemotions,
   devices,
   enrollmentCodes,
   envHeartbeats,
@@ -247,6 +249,13 @@ function toTicket(row: TicketRow): DecisionTicket {
     ...(row.customInstruction ? { customInstruction: row.customInstruction } : {}),
     ...(row.resolvedBy ? { resolvedBy: row.resolvedBy } : {}),
     ...(row.resolutionReason ? { resolutionReason: row.resolutionReason } : {}),
+    ...(row.category ? { category: row.category } : {}),
+    ...(row.confidence !== null ? { confidence: row.confidence } : {}),
+    ...(row.reviewCount !== null ? { reviewCount: row.reviewCount } : {}),
+    ...(row.auditRequired ? { auditRequired: true } : {}),
+    ...(row.auditVerdict ? { auditVerdict: row.auditVerdict } : {}),
+    ...(row.auditReason ? { auditReason: row.auditReason } : {}),
+    ...(row.auditedAt !== null ? { auditedAt: row.auditedAt } : {}),
     ...(row.expiresAt !== null ? { expiresAt: row.expiresAt } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -605,6 +614,28 @@ export interface RepositoryHooks {
   onIdentityConflict?: (conflict: IdentityConflict) => void;
 }
 
+/** L2 judgment metadata written beside a ticket resolution. */
+export interface TicketResolutionMeta {
+  category?: DecisionCategory;
+  confidence?: number;
+  reviewCount?: number;
+  auditRequired?: boolean;
+}
+
+export interface TicketAuditInput {
+  verdict: 'OK' | 'REVERSED';
+  /** Option a human would have chosen; required when overturning. */
+  selectedOption?: string;
+  reason?: string;
+}
+
+export interface DecisionDemotion {
+  projectName: string;
+  category: DecisionCategory;
+  reason?: string;
+  until: number;
+}
+
 export interface TicketStore {
   create(
     input: CreateTicketInput,
@@ -624,8 +655,40 @@ export interface TicketStore {
     selectedOption: string,
     reason: string,
     now?: number,
+    meta?: TicketResolutionMeta,
   ): DecisionTicket | null;
-  markPendingHuman(id: number, reason: string, now?: number): DecisionTicket | null;
+  markPendingHuman(
+    id: number,
+    reason: string,
+    now?: number,
+    meta?: TicketResolutionMeta,
+  ): DecisionTicket | null;
+  /**
+   * Human audit of a sampled auto-approval. `REVERSED` rewrites the ticket as
+   * a human decision; the caller then demotes its category separately.
+   */
+  recordAudit(
+    id: number,
+    input: TicketAuditInput,
+    now?: number,
+  ): DecisionTicket | null;
+  /** Stop auto-approving this category for a project until `until`. */
+  demoteCategory(
+    projectName: string,
+    category: DecisionCategory,
+    until: number,
+    reason: string,
+    now?: number,
+  ): DecisionDemotion | null;
+  /** Active demotion timestamp for a category, or null when it is free. */
+  demotedUntil(
+    projectName: string,
+    category: string,
+    now?: number,
+  ): number | null;
+  /** Auto-approvals this project spent since `since` (rolling quota). */
+  countAutoResolvedSince(projectName: string, since: number): number;
+  listActiveDemotions(now?: number): DecisionDemotion[];
   cancel(id: number, now?: number): DecisionTicket | null;
   /** Pending tickets whose SLA deadline has passed. */
   findDueTickets(now?: number, limit?: number): DecisionTicket[];
@@ -1178,6 +1241,7 @@ export class TicketRepository implements TicketStore {
     selectedOption: string,
     reason: string,
     now = Date.now(),
+    meta: TicketResolutionMeta = {},
   ): DecisionTicket | null {
     const row = this.db
       .update(tickets)
@@ -1186,6 +1250,11 @@ export class TicketRepository implements TicketStore {
         selectedOption,
         resolvedBy: 'META_AGENT',
         resolutionReason: reason,
+        category: meta.category ?? null,
+        confidence: meta.confidence ?? null,
+        reviewCount: meta.reviewCount ?? null,
+        auditRequired: meta.auditRequired ? 1 : 0,
+        auditVerdict: meta.auditRequired ? 'PENDING' : null,
         updatedAt: now,
       })
       .where(and(eq(tickets.id, id), inArray(tickets.status, AWAITING)))
@@ -1195,12 +1264,20 @@ export class TicketRepository implements TicketStore {
     return row ? toTicket(row) : null;
   }
 
-  markPendingHuman(id: number, reason: string, now = Date.now()): DecisionTicket | null {
+  markPendingHuman(
+    id: number,
+    reason: string,
+    now = Date.now(),
+    meta: TicketResolutionMeta = {},
+  ): DecisionTicket | null {
     const row = this.db
       .update(tickets)
       .set({
         status: 'PENDING_HUMAN',
         resolutionReason: reason,
+        category: meta.category ?? null,
+        confidence: meta.confidence ?? null,
+        reviewCount: meta.reviewCount ?? null,
         updatedAt: now,
       })
       .where(and(eq(tickets.id, id), eq(tickets.status, 'PENDING_META')))
@@ -1208,6 +1285,135 @@ export class TicketRepository implements TicketStore {
       .get();
 
     return row ? toTicket(row) : null;
+  }
+
+  recordAudit(
+    id: number,
+    input: TicketAuditInput,
+    now = Date.now(),
+  ): DecisionTicket | null {
+    const current = this.db
+      .select()
+      .from(tickets)
+      .where(eq(tickets.id, id))
+      .get();
+    if (!current || current.status !== 'AUTO_RESOLVED') return null;
+
+    const reversed = input.verdict === 'REVERSED';
+    const row = this.db
+      .update(tickets)
+      .set(
+        reversed
+          ? {
+              status: 'HUMAN_RESOLVED',
+              selectedOption: input.selectedOption ?? current.selectedOption,
+              customInstruction: input.reason ?? null,
+              resolvedBy: 'HUMAN',
+              resolutionReason: input.reason
+                ? `人工推翻自动裁决：${input.reason}`
+                : '人工推翻自动裁决',
+              auditVerdict: 'REVERSED',
+              auditReason: input.reason ?? null,
+              auditedAt: now,
+              updatedAt: now,
+            }
+          : {
+              auditVerdict: 'OK',
+              auditReason: input.reason ?? null,
+              auditedAt: now,
+              updatedAt: now,
+            },
+      )
+      .where(
+        and(eq(tickets.id, id), eq(tickets.status, 'AUTO_RESOLVED')),
+      )
+      .returning()
+      .get();
+
+    return row ? toTicket(row) : null;
+  }
+
+  demoteCategory(
+    projectName: string,
+    category: DecisionCategory,
+    until: number,
+    reason: string,
+    now = Date.now(),
+  ): DecisionDemotion | null {
+    const row = this.db
+      .insert(decisionDemotions)
+      .values({
+        projectName,
+        category,
+        reason,
+        until,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [decisionDemotions.projectName, decisionDemotions.category],
+        set: { reason, until, updatedAt: now },
+      })
+      .returning()
+      .get();
+
+    return row
+      ? {
+          projectName: row.projectName,
+          category: row.category,
+          ...(row.reason ? { reason: row.reason } : {}),
+          until: row.until,
+        }
+      : null;
+  }
+
+  demotedUntil(
+    projectName: string,
+    category: string,
+    now = Date.now(),
+  ): number | null {
+    const row = this.db
+      .select({ until: decisionDemotions.until })
+      .from(decisionDemotions)
+      .where(
+        and(
+          eq(decisionDemotions.projectName, projectName),
+          eq(decisionDemotions.category, category as DecisionCategory),
+          gt(decisionDemotions.until, now),
+        ),
+      )
+      .get();
+    return row?.until ?? null;
+  }
+
+  countAutoResolvedSince(projectName: string, since: number): number {
+    const row = this.db
+      .select({ value: count() })
+      .from(tickets)
+      .where(
+        and(
+          eq(tickets.projectName, projectName),
+          eq(tickets.status, 'AUTO_RESOLVED'),
+          gt(tickets.updatedAt, since),
+        ),
+      )
+      .get();
+    return row?.value ?? 0;
+  }
+
+  listActiveDemotions(now = Date.now()): DecisionDemotion[] {
+    return this.db
+      .select()
+      .from(decisionDemotions)
+      .where(gt(decisionDemotions.until, now))
+      .orderBy(asc(decisionDemotions.until))
+      .all()
+      .map((row) => ({
+        projectName: row.projectName,
+        category: row.category,
+        ...(row.reason ? { reason: row.reason } : {}),
+        until: row.until,
+      }));
   }
 
   cancel(id: number, now = Date.now()): DecisionTicket | null {

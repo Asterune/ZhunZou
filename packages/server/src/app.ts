@@ -17,6 +17,7 @@ import type {
   FleetBrowseEntry,
   FleetBrowseStatus,
   FleetWorkspace,
+  OptionRisk,
   RuleCandidate,
   SyncState,
 } from '@zhunzou/shared';
@@ -24,6 +25,7 @@ import {
   appendChatEventSchema,
   appendTaskLogSchema,
   adoptChatProposalSchema,
+  auditTicketSchema,
   batchResolveTicketsSchema,
   bindWorkspaceProjectSchema,
   bridgeReleaseManifestSchema,
@@ -103,6 +105,7 @@ import {
   verifyTaskApprovalToken,
   type TaskApprovalFacts,
 } from './approval-link.js';
+import { adjudicate } from './adjudication.js';
 import { createAuthHook, hashToken, requireAdmin, requireEnvAccess } from './auth.js';
 import type { ServerConfig } from './config.js';
 import { createDatabase } from './db/client.js';
@@ -223,6 +226,10 @@ export interface BuildAppOptions {
   /** Optional storage adapter; defaults to SQLite via TicketRepository. */
   repo?: TicketStore;
   metaAgent?: MetaAgent;
+  /** Adversarial second reviewer; defaults to the judge's provider/model. */
+  challenger?: MetaAgent;
+  /** Injectable randomness for the audit sampler; tests pin it. */
+  random?: () => number;
   ruleDistiller?: RuleDistiller;
   /** L2 diagnosis client; defaults to the same provider as the judge. */
   healer?: SupervisorHealer;
@@ -392,6 +399,17 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const rulesStore = new RulesStore(config.rulesPath);
   const metaAgent =
     options.metaAgent ?? createMetaAgent(config.metaAgent, fetch);
+  // The challenger differs by prompt first and model second: even a single
+  // provider can give the high-risk path an independent second reading.
+  const challengerAgent =
+    options.challenger ??
+    createMetaAgent(
+      {
+        ...config.metaAgent,
+        model: config.metaAgent.secondModel || config.metaAgent.model,
+      },
+      fetch,
+    );
   const ruleDistiller =
     options.ruleDistiller ??
     createRuleDistiller(config.metaAgent, fetch, app.log);
@@ -637,6 +655,42 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     return true;
   };
 
+  /**
+   * The one gate every auto-approval passes through. Both a ticket created by
+   * `agent_hub_escalate` and a synthetic ticket from `agent_hub_decide` land
+   * here, so quota, dual review and demotion cannot be bypassed by picking a
+   * different entry point.
+   */
+  const adjudicateTicket = (
+    ticket: DecisionTicket,
+    risk?: OptionRisk,
+    applyQuota = true,
+  ) =>
+    adjudicate(
+      ticket,
+      {
+        rules: rulesStore.read().content,
+        precedents: repo.findSimilarTickets({
+          projectName: ticket.projectName,
+          blockerQuestion: ticket.blockerQuestion,
+          excludeId: Number(ticket.id),
+          limit: 5,
+        }),
+        ...(risk ? { risk } : {}),
+        applyQuota,
+      },
+      {
+        judge: metaAgent,
+        challenger: challengerAgent,
+        config: config.decisions,
+        quotaUsed: (projectName, since) =>
+          repo.countAutoResolvedSince(projectName, since),
+        demotedUntil: (projectName, category, now) =>
+          repo.demotedUntil(projectName, category, now),
+        ...(options.random ? { random: options.random } : {}),
+      },
+    );
+
   const runMetaReview = async (ticketId: number): Promise<void> => {
     if (closing) return;
     const ticket = repo.get(ticketId);
@@ -645,15 +699,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     if (rulePermission(ticket)) return;
 
     try {
-      const { content: rules } = rulesStore.read();
       const precedents = repo.findSimilarTickets({
         projectName: ticket.projectName,
         blockerQuestion: ticket.blockerQuestion,
         excludeId: Number(ticket.id),
         limit: 5,
       });
-      const review = await metaAgent.review(ticket, rules, precedents);
-
       if (precedents.length > 0) {
         app.log.info(
           {
@@ -664,47 +715,48 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         );
       }
 
-      if (review.canResolve && review.selectedOption) {
-        const selected = ticket.options.find(
-          (option) => option.key === review.selectedOption,
-        );
-        if (selected?.risk === 'destructive') {
-          const escalated = repo.markPendingHuman(
-            ticketId,
-            `选项 ${review.selectedOption} 标记为 destructive，必须人工确认`,
-          );
-          if (escalated) {
-            notifyTicketPendingHuman(
-              notifiers,
-              escalated,
-              app.log,
-              approvalUrlFor(escalated),
-            );
-            emitPluginEvent(plugins, 'onTicketPendingHuman', escalated, app.log);
-          }
-          return;
-        }
+      const outcome = await adjudicateTicket(ticket);
 
+      if (outcome.verdict === 'APPROVED' && outcome.selectedOption) {
         const updated = repo.markAutoResolved(
           ticketId,
-          review.selectedOption,
-          review.reason,
+          outcome.selectedOption,
+          outcome.reason,
+          Date.now(),
+          outcome.meta,
         );
         if (updated) {
           bus.publish(updated);
           emitPluginEvent(plugins, 'onTicketResolved', updated, app.log);
           app.log.info(
-            { ticket: formatTicketId(updated.id), option: review.selectedOption },
+            {
+              ticket: formatTicketId(updated.id),
+              option: outcome.selectedOption,
+              category: outcome.meta.category,
+              confidence: outcome.meta.confidence,
+              reviewCount: outcome.meta.reviewCount,
+              auditRequired: outcome.meta.auditRequired,
+            },
             'meta-agent auto-resolved ticket',
           );
         }
         return;
       }
 
-      const updated = repo.markPendingHuman(ticketId, review.reason);
+      const updated = repo.markPendingHuman(
+        ticketId,
+        outcome.reason,
+        Date.now(),
+        outcome.meta,
+      );
       if (updated) {
         app.log.info(
-          { ticket: formatTicketId(updated.id), reason: review.reason },
+          {
+            ticket: formatTicketId(updated.id),
+            reason: outcome.reason,
+            category: outcome.meta.category,
+            confidence: outcome.meta.confidence,
+          },
           'meta-agent escalated ticket to human',
         );
         notifyTicketPendingHuman(
@@ -1961,6 +2013,100 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return { ticket };
       });
 
+      // Sample audit: a human confirms or overturns an auto-approval the hub
+      // made on its own. Reversing it turns the ticket into a human decision
+      // and demotes its category, so the same mistake is not repeated.
+      api.post('/tickets/:id/audit', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const input = auditTicketSchema.parse(request.body);
+        const ticketId = parseTicketId(id);
+        const current = repo.get(ticketId);
+        if (!current) {
+          throw new NotFoundError(`ticket ${formatTicketId(id)} not found`);
+        }
+        if (current.status !== 'AUTO_RESOLVED') {
+          throw new ConflictError(
+            `ticket ${formatTicketId(id)} is ${current.status}`,
+            'NOT_AUTO_RESOLVED',
+          );
+        }
+
+        if (input.verdict === 'REVERSED') {
+          const optionKey = input.selectedOption ?? current.selectedOption;
+          if (!optionKey) {
+            throw new BadRequestError(
+              'overturning an auto-approval requires selectedOption',
+              'SELECTED_OPTION_REQUIRED',
+            );
+          }
+          const option = current.options.find((item) => item.key === optionKey);
+          if (!option) {
+            throw new BadRequestError(
+              `option "${optionKey}" does not exist on ticket #${id}`,
+              'INVALID_OPTION',
+            );
+          }
+          if (
+            option.risk === 'destructive' &&
+            input.confirmDestructive !== true
+          ) {
+            throw new ConflictError(
+              `option "${optionKey}" is destructive and requires confirmation`,
+              'DESTRUCTIVE_OPTION_REQUIRES_CONFIRMATION',
+            );
+          }
+        }
+
+        const ticket = repo.recordAudit(ticketId, input);
+        if (!ticket) {
+          throw new ConflictError(
+            `ticket ${formatTicketId(id)} changed while auditing`,
+            'RACE_LOST',
+          );
+        }
+
+        let demotedUntil: number | null = null;
+        if (input.verdict === 'REVERSED') {
+          demotedUntil =
+            Date.now() + config.decisions.demotionMinutes * 60_000;
+          repo.demoteCategory(
+            current.projectName,
+            current.category ?? 'other',
+            demotedUntil,
+            input.reason ?? '人工推翻了该自动裁决',
+          );
+        }
+
+        bus.publish(ticket);
+        // A confirmation only annotates the record; a reversal is a new human
+        // decision and is the one that plugin consumers should see.
+        if (input.verdict === 'REVERSED') {
+          emitPluginEvent(plugins, 'onTicketResolved', ticket, app.log);
+          void distillRule(ticket);
+        }
+        app.log.info(
+          {
+            ticket: formatTicketId(ticket.id),
+            verdict: input.verdict,
+            category: current.category,
+            demotedUntil,
+          },
+          'auto-resolved ticket audited',
+        );
+        return {
+          ticket,
+          ...(demotedUntil !== null ? { demotedUntil } : {}),
+        };
+      });
+
+      // Active category demotions, so the dashboard can explain why a safe
+      // decision suddenly needs a human.
+      api.get('/decision-demotions', async (request) => {
+        requireAdmin(request);
+        return { demotions: repo.listActiveDemotions() };
+      });
+
       // Snooze the timeout SLA. Useful when the human is away but does not
       // want the recommended option to be applied automatically yet.
       api.post('/tickets/:id/extend', async (request) => {
@@ -2288,16 +2434,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
         const outcome = await evaluateDecision(input, {
           mode: config.decisionPolicy,
-          metaAgent,
-          readRules: () => rulesStore.read().content,
-          precedentsFor: (req) => {
-            const ticket = syntheticTicket(req);
-            return repo.findSimilarTickets({
-              projectName: req.projectName,
-              blockerQuestion: ticket.blockerQuestion,
-              limit: 5,
-            });
-          },
+          adjudicate: (req, ticket) =>
+            adjudicateTicket(ticket, req.risk, req.kind !== 'reply'),
         });
 
         if (outcome.verdict === 'APPROVED') {
@@ -2314,6 +2452,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
                 Number(created.id),
                 outcome.selectedOption ?? created.recommendedOption,
                 outcome.reason,
+                now,
+                outcome.meta,
               ) ?? created;
             bus.publish(resolved);
             emitPluginEvent(plugins, 'onTicketResolved', resolved, app.log);
@@ -2373,7 +2513,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         emitPluginEvent(plugins, 'onTicketCreated', created, app.log);
 
         const pending =
-          repo.markPendingHuman(Number(created.id), outcome.reason) ?? created;
+          repo.markPendingHuman(
+            Number(created.id),
+            outcome.reason,
+            now,
+            outcome.meta,
+          ) ?? created;
         bus.publish(pending);
         notifyTicketPendingHuman(
           notifiers,

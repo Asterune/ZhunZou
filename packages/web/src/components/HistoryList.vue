@@ -9,10 +9,12 @@ import {
   RotateCcw,
   ScrollText,
   Search,
+  ShieldCheck,
   User,
   X,
+  XCircle,
 } from 'lucide-vue-next';
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 
 import type { DecisionTicket, RuleCandidate } from '@zhunzou/shared';
 
@@ -79,8 +81,41 @@ function reset(): void {
 function watermark(ticket: DecisionTicket): string {
   if (ticket.status === 'CANCELLED') return t('history.watermark.cancelled');
   if (ticket.resolvedBy === 'TIMEOUT') return t('history.watermark.timeout');
+  if (ticket.auditVerdict === 'REVERSED') return t('history.watermark.reversed');
   if (ticket.resolvedBy === 'META_AGENT') return t('history.watermark.meta');
   return t('history.watermark.human');
+}
+
+/** One replacement-option choice and reason per audited ticket. */
+const auditChoices = reactive<Record<string, string>>({});
+const auditReasons = reactive<Record<string, string>>({});
+
+function pendingAudit(ticket: DecisionTicket): boolean {
+  return ticket.auditVerdict === 'PENDING';
+}
+
+watch(
+  items,
+  (list) => {
+    for (const ticket of list) {
+      if (pendingAudit(ticket) && !auditChoices[ticket.id]) {
+        auditChoices[ticket.id] = ticket.selectedOption ?? ticket.recommendedOption;
+      }
+    }
+  },
+  { immediate: true },
+);
+
+async function audit(
+  ticket: DecisionTicket,
+  verdict: 'OK' | 'REVERSED',
+): Promise<void> {
+  await store.auditTicket(
+    ticket.id,
+    verdict,
+    verdict === 'REVERSED' ? auditChoices[ticket.id] : undefined,
+    auditReasons[ticket.id]?.trim() || undefined,
+  );
 }
 </script>
 
@@ -249,6 +284,38 @@ function watermark(ticket: DecisionTicket): string {
             <Ban :size="12" />
             {{ t('history.cancelledByAgent') }}
           </span>
+          <span
+            v-if="ticket.category"
+            class="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[10px] text-on-surface-variant"
+          >
+            {{ t(`history.category.${ticket.category}`) }}
+          </span>
+          <span
+            v-if="ticket.confidence !== undefined"
+            class="font-mono text-[10px] text-on-surface-variant"
+            :title="t('history.confidenceTitle')"
+          >
+            {{ t('history.confidence', { value: Math.round(ticket.confidence * 100) }) }}
+          </span>
+          <span
+            v-if="pendingAudit(ticket)"
+            class="flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary"
+          >
+            <ShieldCheck :size="11" />
+            {{ t('history.audit.badge') }}
+          </span>
+          <span
+            v-else-if="ticket.auditVerdict === 'OK'"
+            class="text-[10px] text-on-surface-variant"
+          >
+            {{ t('history.audit.confirmed') }}
+          </span>
+          <span
+            v-else-if="ticket.auditVerdict === 'REVERSED'"
+            class="text-[10px] font-semibold text-primary"
+          >
+            {{ t('history.audit.reversed') }}
+          </span>
         </div>
 
         <div class="mt-2.5 rounded-lg bg-surface-container-low px-3 py-2">
@@ -297,6 +364,59 @@ function watermark(ticket: DecisionTicket): string {
           <p class="text-xs leading-5 text-on-surface-variant">
             {{ ticket.customInstruction || ticket.resolutionReason }}
           </p>
+        </div>
+        <div
+          v-if="pendingAudit(ticket)"
+          class="mt-2.5 rounded-lg border border-primary/20 bg-primary/[0.04] px-2.5 py-2"
+        >
+          <div class="flex flex-wrap items-center gap-2">
+            <ShieldCheck :size="14" class="shrink-0 text-primary" />
+            <p class="min-w-0 flex-1 text-[11px] leading-5 text-on-surface-variant">
+              {{ t('history.audit.prompt') }}
+            </p>
+          </div>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <select
+              v-model="auditChoices[ticket.id]"
+              class="h-7 rounded border border-outline-variant/50 bg-surface-container-lowest px-1.5 text-[11px] text-on-surface outline-none"
+              :aria-label="t('history.audit.optionLabel')"
+            >
+              <option
+                v-for="option in ticket.options"
+                :key="option.key"
+                :value="option.key"
+              >
+                {{ option.key }} · {{ option.label }}
+              </option>
+            </select>
+            <input
+              v-model="auditReasons[ticket.id]"
+              type="text"
+              :placeholder="t('history.audit.reasonPlaceholder')"
+              class="h-7 min-w-0 flex-1 rounded border border-outline-variant/50 bg-surface-container-lowest px-2 text-[11px] text-on-surface outline-none placeholder:text-on-surface-variant/50"
+            />
+            <button
+              type="button"
+              class="inline-flex shrink-0 items-center gap-1 rounded-md bg-surface-container px-2.5 py-1 text-[11px] font-medium text-on-surface transition hover:bg-surface-container-high disabled:opacity-50"
+              :disabled="store.auditingTicketId === ticket.id"
+              @click="audit(ticket, 'OK')"
+            >
+              <CheckCircle2 :size="12" />
+              {{ t('history.audit.confirm') }}
+            </button>
+            <button
+              type="button"
+              class="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-on-primary transition hover:bg-primary-container disabled:opacity-50"
+              :disabled="
+                store.auditingTicketId === ticket.id ||
+                !auditChoices[ticket.id]
+              "
+              @click="audit(ticket, 'REVERSED')"
+            >
+              <XCircle :size="12" />
+              {{ t('history.audit.reverse') }}
+            </button>
+          </div>
         </div>
       </article>
     </div>

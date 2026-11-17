@@ -305,6 +305,11 @@ zhunzou-bridge run opencode run "…"                  # 包裹你自己起的�
 | `OPENAI_API_KEY` | 空 | 为空跳过自动预审，全部转人工 |
 | `META_AGENT_PROVIDER` | `openai` | `openai`（任意兼容端点）/ `http` / `none` |
 | `DECISION_POLICY` | `reply` | `off` 全部问人 / `reply` 只自动裁决会话回复 / `all` 连下一步动作也裁决 |
+| `DECISION_MIN_CONFIDENCE` | `0.7` | 裁判自报置信度低于此值就转人工 |
+| `DECISION_DUAL_REVIEW` | `high` | `off` / `high` / `all`；高风险类目由反方审计独立复核并需选中同一选项 |
+| `DECISION_DAILY_QUOTA` | `0` | 每项目每 24h 自动放行上限；`0` 不限额 |
+| `DECISION_AUDIT_RATE` | `0.1` | 自动放行后抽样送人工复核的比例 |
+| `DECISION_DEMOTION_MINUTES` | `1440` | 被人工推翻的类目暂停自动放行的时长 |
 | `NOTIFY_CHANNELS` | 空 | 如 `bark,feishu,slack,telegram,webhook,console` |
 | `PUBLIC_BASE_URL` | 空 | 签名批复 / 放行链接的公开地址 |
 | `AUTO_RESOLVE_TIMEOUT_MS` | `0` | 超时默认裁决；`0` 关闭 |
@@ -316,6 +321,7 @@ zhunzou-bridge run opencode run "…"                  # 包裹你自己起的�
 
 - 人工决定永远优先：迟到的总管或超时结果不会覆盖已完成的审批（条件更新；重复批复返回 `409`）。
 - `risk: "destructive"` 的选项永不自动通过——模型、超时、批量、Supervisor L1 都不行；L1 的放行规则只覆盖人明确批过的动作。
+- 自动放行要过四道闸：置信度下限、高风险类目双审一致、项目日配额、被推翻类目冷静期；抽中的自动裁决仍会留在历史里等人工复核。
 - 批复与放行链接 HMAC 签名、绑定单张工单/任务、会过期、防重放；destructive 勾选在服务端复核。
 - 接入码 15 分钟过期、哈希存储、绑定首台主机、限 10 个客户端；专属 Token 哈希存储、锁定自己的 env。
 - 失败熔断永远不替人解开工单：它只拦可证明的重复失败，出口是 `POST /api/tasks/:id/retry` 或签名放行页。

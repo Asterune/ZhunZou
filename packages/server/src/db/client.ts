@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS tickets (
   custom_instruction TEXT,
   resolved_by TEXT,
   resolution_reason TEXT,
+  category TEXT,
+  confidence REAL,
+  review_count INTEGER,
+  audit_required INTEGER NOT NULL DEFAULT 0,
+  audit_verdict TEXT,
+  audit_reason TEXT,
+  audited_at INTEGER,
   expires_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -348,6 +355,19 @@ CREATE TABLE IF NOT EXISTS rule_candidates (
 CREATE INDEX IF NOT EXISTS idx_rule_candidates_status ON rule_candidates(status);
 CREATE INDEX IF NOT EXISTS idx_rule_candidates_ticket ON rule_candidates(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_rule_candidates_created ON rule_candidates(created_at);
+
+CREATE TABLE IF NOT EXISTS decision_demotions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  reason TEXT,
+  until INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (project_name, category)
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_demotions_until ON decision_demotions(until);
 `;
 
 export type SqliteDatabase = InstanceType<typeof Database>;
@@ -387,6 +407,15 @@ export function createDatabase(dbPath: string): {
 
   ensureColumn(sqlite, 'tickets', 'expires_at', 'INTEGER');
   ensureColumn(sqlite, 'tickets', 'task_id', 'INTEGER');
+  // L2 adjudication metadata: what the judge thought, how sure it was, and
+  // whether a human still has to audit the sampled auto-approval.
+  ensureColumn(sqlite, 'tickets', 'category', 'TEXT');
+  ensureColumn(sqlite, 'tickets', 'confidence', 'REAL');
+  ensureColumn(sqlite, 'tickets', 'review_count', 'INTEGER');
+  ensureColumn(sqlite, 'tickets', 'audit_required', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(sqlite, 'tickets', 'audit_verdict', 'TEXT');
+  ensureColumn(sqlite, 'tickets', 'audit_reason', 'TEXT');
+  ensureColumn(sqlite, 'tickets', 'audited_at', 'INTEGER');
   sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tickets_task ON tickets(task_id);');
   // The runner's directory is where a conversation will actually execute.
   ensureColumn(sqlite, 'env_heartbeats', 'workspace_path', 'TEXT');

@@ -305,6 +305,11 @@ The full endpoint reference — tickets, tasks, supervisor, sessions, agents, fl
 | `OPENAI_API_KEY` | empty | Empty = skip auto-review; everything goes to a human |
 | `META_AGENT_PROVIDER` | `openai` | `openai` (any OpenAI-compatible endpoint) / `http` / `none` |
 | `DECISION_POLICY` | `reply` | `off` always ask / `reply` auto-rule chat replies only / `all` also rule next steps |
+| `DECISION_MIN_CONFIDENCE` | `0.7` | Below this self-reported confidence the ticket goes to a human |
+| `DECISION_DUAL_REVIEW` | `high` | `off` / `high` / `all`; risky categories need an independent challenger to pick the same option |
+| `DECISION_DAILY_QUOTA` | `0` | Auto-approvals per project per 24h; `0` = uncapped |
+| `DECISION_AUDIT_RATE` | `0.1` | Fraction of auto-approvals sampled for a human audit |
+| `DECISION_DEMOTION_MINUTES` | `1440` | How long an overturned category stays out of auto-approval |
 | `NOTIFY_CHANNELS` | none | e.g. `bark,feishu,slack,telegram,webhook,console` |
 | `PUBLIC_BASE_URL` | empty | Origin used in signed approval / release links |
 | `AUTO_RESOLVE_TIMEOUT_MS` | `0` | Timeout SLA; `0` disables |
@@ -316,6 +321,7 @@ Node-routing and supervisor knobs (`NODE_HEARTBEAT_TIMEOUT_MS`, `ROUTE_MIN_FREE_
 
 - Human decisions always win over late Meta-Agent or timeout verdicts (conditional updates; a duplicate ruling returns `409`).
 - `risk: "destructive"` options are never auto-approved — not by the model, not by a timeout, not by batch approval, not by Supervisor L1, whose allowances only ever cover actions a human granted by name.
+- An auto-approval must clear four gates: the confidence floor, an independent challenger on risky categories, the per-project daily quota, and the cooldown on a category a human overturned. Sampled approvals stay in history for a human audit.
 - Approval and task-release links are HMAC-signed, scoped to one ticket/task, expiring, and replay-blocked; the destructive checkbox is re-checked server-side.
 - Enrollment codes expire after 15 minutes, are hash-stored, bind to the first redeeming host, and cap at 10 clients; scoped agent tokens are stored hashed and pinned to their own env.
 - The failure breaker never resolves a ticket in the human's place: it stops repeated failures, and `POST /api/tasks/:id/retry` or the signed release page is the human override.

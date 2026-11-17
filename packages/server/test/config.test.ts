@@ -154,6 +154,60 @@ describe('loadConfig', () => {
     });
   });
 
+  it('parses L2 adjudication limits', () => {
+    expect(loadConfig({}).decisions).toEqual({
+      minConfidence: 0.7,
+      dualReview: 'high',
+      highRiskCategories: [
+        'dependency',
+        'api-contract',
+        'schema',
+        'product',
+        'deploy',
+        'security',
+      ],
+      dailyQuota: 0,
+      auditRate: 0.1,
+      demotionMinutes: 1_440,
+    });
+
+    expect(
+      loadConfig({
+        DECISION_MIN_CONFIDENCE: '0.9',
+        DECISION_DUAL_REVIEW: 'all',
+        DECISION_HIGH_RISK_CATEGORIES: 'schema, deploy',
+        DECISION_DAILY_QUOTA: '25',
+        DECISION_AUDIT_RATE: '0',
+        DECISION_DEMOTION_MINUTES: '120',
+        META_AGENT_SECOND_MODEL: 'deepseek-reasoner',
+      }),
+    ).toMatchObject({
+      decisions: {
+        minConfidence: 0.9,
+        dualReview: 'all',
+        highRiskCategories: ['schema', 'deploy'],
+        dailyQuota: 25,
+        auditRate: 0,
+        demotionMinutes: 120,
+      },
+      metaAgent: { secondModel: 'deepseek-reasoner' },
+    });
+  });
+
+  it('clamps L2 numbers and defaults an unknown dual-review mode to high', () => {
+    expect(
+      loadConfig({
+        DECISION_MIN_CONFIDENCE: '9',
+        DECISION_AUDIT_RATE: '-1',
+        DECISION_DUAL_REVIEW: 'sometimes',
+      }).decisions,
+    ).toMatchObject({
+      minConfidence: 1,
+      auditRate: 0,
+      dualReview: 'high',
+    });
+  });
+
   it('parses public approval-link settings', () => {
     expect(
       loadConfig({

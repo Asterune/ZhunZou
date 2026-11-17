@@ -27,10 +27,36 @@
 | `OPENAI_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI 兼容接口（DeepSeek / OpenAI / Ollama / Moonshot…） |
 | `OPENAI_API_KEY` | 空 | 为空时跳过自动预审，全部转人工 |
 | `META_AGENT_MODEL` | `deepseek-chat` | 预审模型 |
+| `META_AGENT_SECOND_MODEL` | 空 | 反方审计专用模型；空表示复用 `META_AGENT_MODEL`（提示词仍不同，两次调用相互独立） |
 | `META_AGENT_TIMEOUT_MS` | `15000` | LLM 请求超时（1s–120s） |
-| `META_AGENT_ENDPOINT` | 空 | `provider=http`：`POST { ticket, rules }` → `{ canResolve, selectedOption?, reason }` |
+| `META_AGENT_ENDPOINT` | 空 | `provider=http`：`POST { ticket, rules, mode }` → `{ canResolve, selectedOption?, confidence?, category?, reason }` |
 | `META_AGENT_HEADERS` | `{}` | 两种 provider 都可用的额外 JSON 请求头，如 `{"x-api-key":"…"}` |
 | `DECISION_POLICY` | `reply` | 裁决权归属：`off` 全部问人 / `reply` 只自动裁决会话回复 / `all` 连下一步动作也由 hub 裁决（destructive 永远问人） |
+
+## L2 裁决限额
+
+自动放行不是空白支票。每一张自动通过的工单都要过完这四道闸，任意一道不满足就转人工：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DECISION_MIN_CONFIDENCE` | `0.7` | 裁判自报置信度下限；模型不返回 `confidence` 时按 1 处理（兼容旧的 HTTP provider） |
+| `DECISION_DUAL_REVIEW` | `high` | `off` / `high` / `all`。`high` 只对高风险类目启用反方审计；`all` 全部双审 |
+| `DECISION_HIGH_RISK_CATEGORIES` | `dependency,api-contract,schema,product,deploy,security` | 必须双审一致的类目 |
+| `DECISION_DAILY_QUOTA` | `0` | 每个项目每滚动 24h 的自动放行上限；`0` 不限额 |
+| `DECISION_AUDIT_RATE` | `0.1` | 自动放行后抽样送人工复核的概率；命中后工单标记「待审计」，不影响放行 |
+| `DECISION_DEMOTION_MINUTES` | `1440` | 人工推翻某个类目的自动裁决后，该类目暂停自动放行的时长 |
+
+流程细节：
+
+1. **正审**按 `GLOBAL_RULES.md` + 相似判例给出 `canResolve` / `selectedOption` / `confidence` / `category`；
+2. 置信度低于阈值 → 转人工，工单上仍保留总管的建议与理由；
+3. 高风险类目进入**反方审计**：默认立场是拒绝，且看不到正审的结论；两边必须选中同一个选项；
+4. **配额**按项目滚动 24h 统计 `AUTO_RESOLVED`；
+5. **抽样审计**只打标记，人在历史里点「确认无误」或「推翻」；推翻会把该类目降级一段时间。
+
+类目枚举：`refactor` / `docs` / `test` / `dependency` / `api-contract` / `schema` / `product` / `deploy` / `security` / `other`。
+
+`provider=http` 会收到 `mode: "judge" | "challenger"`。自定义服务应据此切换立场；若两种模式返回同一份答案，双审就退化成一次调用。
 
 ## Supervisor 与节点路由
 

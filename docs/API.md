@@ -41,6 +41,8 @@
 | `POST` | `/api/tickets/batch-resolve` | admin | 批量审批 `{ ticketIds, selectedOption?, confirmDestructive? }` |
 | `POST` | `/api/tickets/:id/extend` | admin | 暂缓自动裁决 `{ minutes? }`，默认 10 分钟 |
 | `POST` | `/api/tickets/:id/cancel` | agent | 取消仍在等待的工单（bridge 超时 / 中断） |
+| `POST` | `/api/tickets/:id/audit` | admin | 复核抽样自动裁决 `{ verdict: "OK" \| "REVERSED", selectedOption?, reason?, confirmDestructive? }`；`REVERSED` 会改写为人工决定并降级该类目 |
+| `GET` | `/api/decision-demotions` | admin | 当前生效的类目降级列表 `{ demotions }` |
 | `POST` | `/api/decisions` | agent | 统一裁决入口：`{ kind, proposal, context?, risk?, options? }` → `APPROVED` 或 `PENDING` 工单 |
 | `GET` | `/api/resume?env=...&since=...` | agent | 端侧重启恢复：未决/近期工单 + 活跃任务 |
 

@@ -5,8 +5,8 @@ import type {
   TicketOption,
 } from '@zhunzou/shared';
 
+import type { AdjudicationMeta, AdjudicationResult } from './adjudication.js';
 import type { DecisionMode } from './config.js';
-import type { MetaAgent } from './meta-agent.js';
 
 /**
  * The hub's judgment layer.
@@ -14,21 +14,28 @@ import type { MetaAgent } from './meta-agent.js';
  * Under the "hub decides" model an agent never picks between acting and
  * asking. It submits the exact thing it wants to do, plus the facts, and this
  * module answers `APPROVED` (go ahead) or `PENDING` (a human must rule). The
- * same rules, precedents and destructive guardrails back tickets and replies,
- * so there is exactly one policy in the system.
+ * same gates back tickets and replies, so there is exactly one policy in the
+ * system.
  */
 export interface DecisionOutcome {
   verdict: DecisionVerdict;
   reason: string;
   /** Set when the hub picked one of the submitted options. */
   selectedOption?: string;
+  /** Judge metadata persisted on the ticket for audit and demotion. */
+  meta: AdjudicationMeta;
 }
 
 export interface DecisionContext {
   mode: DecisionMode;
-  metaAgent: MetaAgent;
-  readRules: () => string;
-  precedentsFor: (input: DecisionRequest) => DecisionTicket[];
+  /**
+   * The L2 adjudicator. It receives the same synthetic ticket the dashboard
+   * would see, so a decision and an escalated ticket are judged identically.
+   */
+  adjudicate: (
+    input: DecisionInput,
+    ticket: DecisionTicket,
+  ) => Promise<AdjudicationResult>;
 }
 
 /** The least the policy needs from the request; keeps tests cheap. */
@@ -68,7 +75,7 @@ function optionsFor(input: DecisionInput): TicketOption[] {
   ];
 }
 
-/** Build the ticket shape the existing Meta-Agent already knows how to judge. */
+/** Build the ticket shape the adjudicator knows how to judge. */
 export function syntheticTicket(input: DecisionInput): DecisionTicket {
   const options = optionsFor(input);
   const now = Date.now();
@@ -102,6 +109,7 @@ export async function evaluateDecision(
     return {
       verdict: 'PENDING',
       reason: '提交标记为 destructive，必须人工确认',
+      meta: {},
     };
   }
   if (
@@ -112,6 +120,7 @@ export async function evaluateDecision(
     return {
       verdict: 'PENDING',
       reason: '推荐方案标记为 destructive，必须人工确认',
+      meta: {},
     };
   }
 
@@ -122,48 +131,20 @@ export async function evaluateDecision(
         ctx.mode === 'off'
           ? '裁决权已关闭（DECISION_POLICY=off）'
           : `当前策略只自动裁决会话回复（DECISION_POLICY=${ctx.mode}）`,
+      meta: {},
     };
   }
 
   const ticket = syntheticTicket(input);
   try {
-    const review = await ctx.metaAgent.review(
-      ticket,
-      ctx.readRules(),
-      ctx.precedentsFor(input),
-    );
-
-    if (!review.canResolve || !review.selectedOption) {
-      return { verdict: 'PENDING', reason: review.reason || '规范未覆盖，转人工' };
-    }
-
-    const selected = ticket.options.find(
-      (item) => item.key === review.selectedOption,
-    );
-    if (!selected) {
-      return {
-        verdict: 'PENDING',
-        reason: `裁决结果 ${review.selectedOption} 不在候选项中，转人工`,
-      };
-    }
-    if (selected.risk === 'destructive') {
-      return {
-        verdict: 'PENDING',
-        reason: `选项 ${selected.key} 标记为 destructive，必须人工确认`,
-      };
-    }
-
-    return {
-      verdict: 'APPROVED',
-      reason: review.reason || '符合规范，hub 自动放行',
-      selectedOption: selected.key,
-    };
+    return await ctx.adjudicate(input, ticket);
   } catch (error) {
     return {
       verdict: 'PENDING',
       reason: `裁决失败，转人工：${
         error instanceof Error ? error.message : String(error)
       }`,
+      meta: {},
     };
   }
 }

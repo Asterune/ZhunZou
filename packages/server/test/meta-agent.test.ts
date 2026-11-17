@@ -73,6 +73,28 @@ describe('parseMetaReview', () => {
     expect(review.reason).toContain('destructive');
   });
 
+  it('parses confidence and category for the L2 gates', () => {
+    const review = parseMetaReview(
+      '{"canResolve": true, "selectedOption": "A", "confidence": 0.82, "category": "refactor", "reason": "等价重构"}',
+      ticket,
+    );
+    expect(review).toMatchObject({
+      canResolve: true,
+      selectedOption: 'A',
+      confidence: 0.82,
+      category: 'refactor',
+    });
+  });
+
+  it('maps an unknown category to other and clamps confidence', () => {
+    const review = parseMetaReview(
+      '{"canResolve": false, "confidence": 3, "category": "marketing", "reason": "需要人类"}',
+      ticket,
+    );
+    expect(review.category).toBe('other');
+    expect(review.confidence).toBe(1);
+  });
+
   it('throws on malformed output', () => {
     expect(() => parseMetaReview('not json at all', ticket)).toThrow(MetaAgentError);
   });
@@ -225,6 +247,42 @@ describe('createMetaAgent', () => {
     expect(body.response_format).toEqual({ type: 'json_object' });
   });
 
+  it('switches to the adversarial prompt for the challenger seat', async () => {
+    let system = '';
+
+    const agent = createMetaAgent(
+      {
+        enabled: true,
+        provider: 'openai',
+        endpoint: '',
+        headers: {},
+        baseUrl: 'https://example.invalid/v1',
+        apiKey: 'sk-test',
+        model: 'test',
+        secondModel: '',
+        timeoutMs: 1000,
+      },
+      (async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as {
+          messages: Array<{ role: string; content: string }>;
+        };
+        system = body.messages[0]?.content ?? '';
+        return new Response(
+          JSON.stringify({
+            choices: [
+              { message: { content: '{"canResolve": false, "reason": "需要人工"}' } },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }) as unknown as typeof fetch,
+    );
+
+    await agent.review(ticket, '', [], 'challenger');
+    expect(system).toContain('反方审计');
+    expect(system).toContain('默认立场');
+  });
+
   it('supports the generic HTTP provider with custom headers', async () => {
     let captured: { url: string; headers: Headers; body: Record<string, unknown> } | null =
       null;
@@ -262,6 +320,7 @@ describe('createMetaAgent', () => {
     expect(captured!.body).toEqual({
       ticket,
       rules: '规则：优先推荐方案',
+      mode: 'judge',
     });
   });
 

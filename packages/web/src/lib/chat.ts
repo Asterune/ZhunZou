@@ -31,6 +31,18 @@ export function queuedUserMessages(
   );
 }
 
+/**
+ * Keys that send a chat turn: Shift+Enter.
+ *
+ * Bare Enter must stay a newline — it is also what confirms an IME candidate,
+ * so treating it as "send" fired half-finished Chinese sentences.
+ */
+export function isSendShortcut(
+  event: Pick<KeyboardEvent, 'key' | 'shiftKey' | 'isComposing'>,
+): boolean {
+  return event.key === 'Enter' && !event.isComposing && event.shiftKey;
+}
+
 /** The parts of a fleet workspace a conversation needs to describe itself. */
 export interface WorkspaceDirectory {
   env: string;

@@ -286,18 +286,21 @@ Agent 卡住
 - 标题（可选）：最多 120 字，占位「例如：重构登录页」
 - 「取消 / 创建」
 
-### 7.3 会话列表（桌面左侧 280px，手机在对话上方）
+### 7.3 会话列表（桌面左侧 280px，手机是一级页面）
 
 - 「全部会话」+ 刷新按钮
-- 每项：标题、`已关闭` 徽标、env 标签、项目名、「N 条消息 · 3 分钟前 / 刚创建」
+- 每项：会话头像（首字）、标题、待批奏折徽标、`已关闭` 徽标、env 标签、项目名、消息条数、右侧紧凑时间（`14:32` / `昨天` / `周三`）与待处理角标
 - 选中项高亮
-- 每项右上角有删除按钮（手机常显，桌面悬停显示），二次确认后永久删除会话及其消息与输出记录
-- 列表高度与右侧对话区一致（`clamp(420px, 100dvh - 14rem, 760px)`），超出内部滚动；手机上限 45dvh
+- 每项右下角有删除按钮（手机常显，桌面悬停显示），二次确认后永久删除会话及其消息与输出记录
+- 桌面：列表与右侧对话区同高（`clamp(420px, 100dvh - 14rem, 760px)`），超出内部滚动
+- 手机：会话页首屏就是会话列表（微信形态），点一项进入**独立的二级对话页**；二级页顶部左侧是返回箭头，右侧是关闭会话
+- 手机进入二级对话页后隐藏底部一级导航与页面标题，对话占满屏幕；返回后回到列表，底部导航恢复
 - 空状态：「还没有会话。点「新建会话」选一个在线 Agent 开始。」
 
 ### 7.4 对话区
 
 - 头部：会话标题、env、项目、状态（「在线」绿点 / 「端侧离线」红点 / 「已关闭」）、「关闭」按钮（仅 ACTIVE 会话）
+- 本会话同环境（有项目时同项目）的**待批奏折直接内联在消息流末尾**，用紧凑工单卡就地裁决；头部有「待批奏折 N」徽标可滚动定位
 - 消息流：用户消息靠右（主色气泡），助手 / 系统消息靠左（浅色气泡）
 - 用户消息状态：
   - 待领取：「等待端侧领取…」；离线时「等待端侧领取…（该环境当前离线）」
@@ -305,11 +308,13 @@ Agent 卡住
 - 正在执行的那一轮下方内嵌**实时输出面板**（同上，终端风格、增量、自动滚动）
 - 空对话：「发送第一条消息开始对话。」
 - 输入区：
-  - textarea 2 行，最多 32000 字，Enter 发送 / Shift+Enter 换行
+  - textarea 2 行，最多 32000 字，Enter 换行 / Shift+Enter 发送
   - 发送按钮圆形箭头
+  - 左侧**键盘 / 语音切换**：语音模式为「按住 说话」，松开后把识别文字放进输入框，确认后再发送（微信式，但不会误发）
+  - 语音转写使用浏览器 Web Speech API（中文 `zh-CN` / 英文 `en-US`）；不支持的浏览器提示改用键盘
   - 底部提示「会话由端侧 runner 执行；本机需要常驻 `wake` 或 `fleet`，否则消息会停在待领取。」
 - 会话关闭后输入框禁用，不能再发消息。
-- 桌面为左右两栏；手机上下堆叠。对话区高度自适应视口（约 420~760px）。
+- 桌面为左右两栏；手机为「列表页 → 二级对话页」。对话高度用 `visualViewport` 计算，软键盘弹出时输入区仍可见。
 
 ---
 
@@ -506,7 +511,7 @@ Cursor / OpenCode / Claude Code / Codex / Gemini / Windsurf / 其他。
 - **网络中断**：顶部横幅 + 保留旧数据 + 重试；不要整页错误页。
 - **页面隐藏**：会话列表与对话的定时轮询在页面隐藏时跳过拉取，回到前台立即刷新；主看板长轮询继续由浏览器调度。
 - **深链接**：`?tab=pending|tasks|chat|agents|history|rules` 可直接打开指定页签；切换页签会写回 URL 并滚到顶部。
-- **键盘**：聊天 Enter 发送 / Shift+Enter 换行；更新弹窗 Enter 确认、Esc 延后。
+- **键盘**：聊天 Enter 换行 / Shift+Enter 发送；更新弹窗 Enter 确认、Esc 延后。
 - **确认框**：删除接入端、吊销 Token、关闭会话目前用浏览器原生 `confirm`——重设计时建议换成统一的应用内确认对话框。
 - **加载 / 空 / 错误 / 禁用**：每个列表、每个按钮、每个异步动作都要有这四态。
 
@@ -576,7 +581,7 @@ Cursor / OpenCode / Claude Code / Codex / Gemini / Windsurf / 其他。
 | 导航 | 底部固定 4~6 项 + 安全区 | 顶部页签 | 顶部页签 |
 | 接入端状态栏 | 横向滚动卡片，可折叠 | 横向滚动 / 网格 | 自动网格 |
 | 待批卡片 | 单列，方案纵向堆叠 | 单列 | 1~2 列 |
-| 会话 | 列表与对话上下堆叠 | 左右两栏 | 左 280px + 右自适应 |
+| 会话 | 会话列表页 → 二级对话页（隐藏底部导航） | 同手机（<1024px） | 左 280px + 右自适应 |
 | 规则编辑器 | 编辑器在上、提示在下 | 上下 | 编辑器 + 右侧提示栏 |
 | 对话框 | 底部抽屉 / 全宽 | 居中模态 | 居中模态 |
 | Toast | 底部居中，避开导航 | 右下 | 右下 |
@@ -719,7 +724,7 @@ Desktop and mobile.
 ### 20.5 会话（Chat）
 
 ```text
-Design the "会话" (chat) screen for "Zhunzou" (准奏), where a developer talks to an AI coding agent in a specific project. Simplified Chinese. Desktop: 280px session sidebar + flexible transcript. Mobile: stacked, safe areas.
+Design the "会话" (chat) screen for "Zhunzou" (准奏), where a developer talks to an AI coding agent in a specific project. Simplified Chinese. Desktop: 280px session sidebar + flexible transcript. Mobile: WeChat-shaped — the tab first shows the conversation list as a page; tapping a row opens a separate second-level chat page with a back arrow, no bottom tab bar, and the same inline pending-petition cards.
 
 Header: "会话", subtitle "与任意项目的 Agent 多轮对话", primary "新建会话".
 
@@ -733,7 +738,7 @@ Transcript:
 - Pending user message shows "等待端侧领取…"; offline variant adds "（该环境当前离线）".
 - Failed message shows the error and a "重试" button.
 - While a turn runs, an inline live terminal output panel appears under the last user message.
-- Input: 2-row textarea, Enter to send / Shift+Enter newline, circular send button, hint "会话由端侧 runner 执行；本机需要常驻 wake 或 fleet，否则消息会停在待领取。"
+- Input: 2-row textarea, Enter for a new line / Shift+Enter to send, circular send button, and a keyboard ⇄ voice toggle. Voice mode shows a large "按住 说话" bar; releasing transcribes into the textarea for review before sending. Hint "会话由端侧 runner 执行；本机需要常驻 wake 或 fleet，否则消息会停在待领取。"
 - Closed session: input disabled.
 
 Show empty, running, failed, offline-agent and closed states, on desktop and mobile.

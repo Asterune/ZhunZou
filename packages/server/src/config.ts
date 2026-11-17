@@ -11,6 +11,28 @@ export type MetaAgentProvider = 'openai' | 'http' | 'none';
 /** Kept in sync with `DECISION_MODES` in @zhunzou/shared. */
 export type DecisionMode = 'off' | 'reply' | 'all';
 
+/** Which auto-approvals need a second, adversarial reviewer. */
+export type DualReviewMode = 'off' | 'high' | 'all';
+
+/**
+ * L2 adjudication limits. Judgement is not a blank cheque: each auto-approval
+ * costs quota, can be sampled for audit, and a category a human overturned
+ * stops being auto-approved for a while.
+ */
+export interface DecisionConfig {
+  /** Minimum judge confidence; requires the model to return `confidence`. */
+  minConfidence: number;
+  dualReview: DualReviewMode;
+  /** Categories that always need the challenger to agree. */
+  highRiskCategories: string[];
+  /** Auto-approvals per project per rolling 24h; 0 disables the cap. */
+  dailyQuota: number;
+  /** Probability that an auto-approval is flagged for a human audit. */
+  auditRate: number;
+  /** How long an overturned category stays demoted. */
+  demotionMinutes: number;
+}
+
 export interface MetaAgentConfig {
   provider: MetaAgentProvider;
   /** Derived: provider !== 'none'. Kept for logs/backward compatibility. */
@@ -18,6 +40,11 @@ export interface MetaAgentConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /**
+   * Second model for the adversarial review. Empty means reuse `model`; the
+   * challenger prompt still differs, so the two calls are independent.
+   */
+  secondModel: string;
   timeoutMs: number;
   /** Generic HTTP provider: receives { ticket, rules }, returns a MetaReview. */
   endpoint: string;
@@ -63,6 +90,8 @@ export interface ServerConfig {
    * `reply` auto-adopts chat replies only, `all` also rules on next steps.
    */
   decisionPolicy: DecisionMode;
+  /** L2 adjudication limits (confidence, dual review, quota, sampling). */
+  decisions: DecisionConfig;
   notifications: NotificationChannelConfig[];
   /** Optional JS modules loaded at boot; see docs/PLUGINS.md. */
   plugins: string[];
@@ -150,6 +179,51 @@ function readDecisionPolicy(raw: string | undefined): DecisionMode {
   return 'reply';
 }
 
+function readFloat(
+  raw: string | undefined,
+  fallback: number,
+  { min, max }: { min: number; max: number },
+): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function readDualReview(raw: string | undefined): DualReviewMode {
+  const value = (raw ?? '').trim().toLowerCase();
+  if (value === 'off' || value === 'all') return value;
+  return 'high';
+}
+
+function parseDecisions(env: NodeJS.ProcessEnv): DecisionConfig {
+  const highRiskCategories = readList(env.DECISION_HIGH_RISK_CATEGORIES);
+  return {
+    minConfidence: readFloat(env.DECISION_MIN_CONFIDENCE, 0.7, {
+      min: 0,
+      max: 1,
+    }),
+    dualReview: readDualReview(env.DECISION_DUAL_REVIEW),
+    highRiskCategories:
+      highRiskCategories.length > 0
+        ? highRiskCategories
+        : [
+            'dependency',
+            'api-contract',
+            'schema',
+            'product',
+            'deploy',
+            'security',
+          ],
+    dailyQuota: readInt(env.DECISION_DAILY_QUOTA, 0, { min: 0, max: 10_000 }),
+    auditRate: readFloat(env.DECISION_AUDIT_RATE, 0.1, { min: 0, max: 1 }),
+    demotionMinutes: readInt(env.DECISION_DEMOTION_MINUTES, 1_440, {
+      min: 0,
+      max: 30 * 24 * 60,
+    }),
+  };
+}
+
 function resolvePath(value: string): string {
   return isAbsolute(value) ? value : resolve(REPO_ROOT, value);
 }
@@ -192,6 +266,7 @@ function parseMetaAgent(env: NodeJS.ProcessEnv): MetaAgentConfig {
     baseUrl: (env.OPENAI_BASE_URL ?? 'https://api.deepseek.com/v1').replace(/\/+$/, ''),
     apiKey: env.OPENAI_API_KEY ?? '',
     model: env.META_AGENT_MODEL ?? 'deepseek-chat',
+    secondModel: (env.META_AGENT_SECOND_MODEL ?? '').trim(),
     timeoutMs: readInt(env.META_AGENT_TIMEOUT_MS, 15_000, { min: 1_000, max: 120_000 }),
     endpoint: (env.META_AGENT_ENDPOINT ?? '').trim(),
     headers: parseHeaders(env.META_AGENT_HEADERS),
@@ -332,6 +407,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     ),
     metaAgent: parseMetaAgent(env),
     decisionPolicy: readDecisionPolicy(env.DECISION_POLICY),
+    decisions: parseDecisions(env),
     notifications: parseNotificationChannels(env),
     plugins: readList(env.HUB_PLUGINS),
     autoResolveTimeoutMs: readInt(env.AUTO_RESOLVE_TIMEOUT_MS, 0, {

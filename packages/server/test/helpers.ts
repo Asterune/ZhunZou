@@ -24,6 +24,7 @@ export async function createTestContext(
   metaAgent?: MetaAgent,
   plugins?: HubPlugin[],
   env: NodeJS.ProcessEnv = {},
+  extra: { challenger?: MetaAgent; random?: () => number } = {},
 ): Promise<TestContext> {
   const dir = mkdtempSync(join(tmpdir(), 'zhunzou-test-'));
   const config = loadConfig({
@@ -42,6 +43,8 @@ export async function createTestContext(
     config,
     logger: false,
     ...(metaAgent ? { metaAgent } : {}),
+    ...(extra.challenger ? { challenger: extra.challenger } : {}),
+    ...(extra.random ? { random: extra.random } : {}),
     ...(plugins ? { plugins } : {}),
   });
 

@@ -4,6 +4,7 @@ import type { ChatMessage, DecisionTicket } from '@zhunzou/shared';
 
 import {
   dirName,
+  isSendShortcut,
   queuedUserMessages,
   sessionProjectMismatch,
   ticketsForSession,
@@ -156,5 +157,34 @@ describe('dirName', () => {
     expect(dirName('/Users/qiliu/FitAI-')).toBe('FitAI-');
     expect(dirName('C:\\work\\erp\\')).toBe('erp');
     expect(dirName('')).toBe('');
+  });
+});
+
+describe('isSendShortcut', () => {
+  const key = (overrides: Record<string, unknown>) => ({
+    key: 'Enter',
+    shiftKey: false,
+    isComposing: false,
+    ...overrides,
+  });
+
+  it('sends on Shift+Enter', () => {
+    expect(isSendShortcut(key({ shiftKey: true }))).toBe(true);
+  });
+
+  it('leaves bare Enter (and ⌘/Ctrl+Enter) for a newline', () => {
+    expect(isSendShortcut(key({}))).toBe(false);
+    expect(isSendShortcut(key({ metaKey: true }))).toBe(false);
+    expect(isSendShortcut(key({ ctrlKey: true }))).toBe(false);
+  });
+
+  it('never sends while an IME is composing', () => {
+    expect(isSendShortcut(key({ shiftKey: true, isComposing: true }))).toBe(
+      false,
+    );
+  });
+
+  it('ignores other keys even with a modifier', () => {
+    expect(isSendShortcut(key({ key: 'k', shiftKey: true }))).toBe(false);
   });
 });

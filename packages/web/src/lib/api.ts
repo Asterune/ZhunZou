@@ -4,6 +4,7 @@ import type {
   AgentResponse,
   AgentTask,
   AgentTokenResponse,
+  AuditTicketInput,
   BatchResolveResponse,
   BatchResolveTicketsInput,
   BindWorkspaceProjectInput,
@@ -136,6 +137,11 @@ export interface HubApi {
     input: ExtendTicketInput,
   ): Promise<TicketResponse>;
   cancelTicket(token: string, ticketId: string): Promise<TicketResponse>;
+  auditTicket(
+    token: string,
+    ticketId: string,
+    input: AuditTicketInput,
+  ): Promise<TicketResponse & { demotedUntil?: number }>;
   getRules(token: string): Promise<RulesResponse>;
   saveRules(token: string, content: string): Promise<RulesResponse>;
   listRuleCandidates(
@@ -429,6 +435,16 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
       request<TicketResponse>(token, `/api/tickets/${ticketId}/cancel`, {
         method: 'POST',
       }),
+
+    auditTicket: (token, ticketId, input: AuditTicketInput) =>
+      request<TicketResponse & { demotedUntil?: number }>(
+        token,
+        `/api/tickets/${ticketId}/audit`,
+        {
+          method: 'POST',
+          body: JSON.stringify(input),
+        },
+      ),
 
     getRules: (token) => request<RulesResponse>(token, '/api/rules'),
 

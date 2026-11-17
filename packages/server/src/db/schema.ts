@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 import type {
   AgentKind,
@@ -8,6 +8,8 @@ import type {
   ChatMessageDecision,
   ChatRole,
   ChatSessionStatus,
+  DecisionAuditVerdict,
+  DecisionCategory,
   DeviceCapabilities,
   DeviceStats,
   DeviceTransport,
@@ -56,6 +58,18 @@ export const tickets = sqliteTable(
     resolvedBy: text('resolved_by').$type<'META_AGENT' | 'HUMAN' | 'TIMEOUT'>(),
     resolutionReason: text('resolution_reason'),
 
+    /** What the judge thought this decision would change. */
+    category: text('category').$type<DecisionCategory>(),
+    /** Judge's self-reported confidence (0..1). */
+    confidence: real('confidence'),
+    /** 1 = single judge, 2 = challenger also agreed. */
+    reviewCount: integer('review_count'),
+    /** Auto-approved and sampled for a human audit. */
+    auditRequired: integer('audit_required').notNull().default(0),
+    auditVerdict: text('audit_verdict').$type<DecisionAuditVerdict>(),
+    auditReason: text('audit_reason'),
+    auditedAt: integer('audited_at'),
+
     /** Auto-resolve deadline; null/undefined disables the SLA. */
     expiresAt: integer('expires_at'),
 
@@ -68,6 +82,33 @@ export const tickets = sqliteTable(
     index('idx_tickets_created').on(table.createdAt),
     index('idx_tickets_updated').on(table.updatedAt),
     index('idx_tickets_task').on(table.taskId),
+  ],
+);
+
+/**
+ * A category the hub may no longer auto-approve for a project, after a human
+ * overturned an auto-approved decision in it.
+ *
+ * Keyed by project + category so a bad call in one repository does not freeze
+ * judgment everywhere. The row expires on its own (`until`).
+ */
+export const decisionDemotions = sqliteTable(
+  'decision_demotions',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    projectName: text('project_name').notNull(),
+    category: text('category').$type<DecisionCategory>().notNull(),
+    reason: text('reason'),
+    until: integer('until').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_decision_demotions_key').on(
+      table.projectName,
+      table.category,
+    ),
+    index('idx_decision_demotions_until').on(table.until),
   ],
 );
 

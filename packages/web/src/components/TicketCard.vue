@@ -285,6 +285,20 @@ async function submit(key: string, confirmDestructive: boolean): Promise<void> {
         <p class="mt-1 text-xs leading-5 text-on-tertiary-fixed/85">
           {{ ticket.resolutionReason }}
         </p>
+        <div
+          v-if="ticket.category || ticket.confidence !== undefined"
+          class="mt-1.5 flex flex-wrap items-center gap-2 text-[10px] text-on-tertiary-fixed/70"
+        >
+          <span v-if="ticket.category" class="rounded bg-surface-container/70 px-1.5 py-0.5 font-mono">
+            {{ t(`history.category.${ticket.category}`) }}
+          </span>
+          <span v-if="ticket.confidence !== undefined" class="font-mono">
+            {{ t('history.confidence', { value: Math.round(ticket.confidence * 100) }) }}
+          </span>
+          <span v-if="ticket.reviewCount === 2">
+            {{ t('ticket.dualReviewed') }}
+          </span>
+        </div>
       </div>
 
       <div

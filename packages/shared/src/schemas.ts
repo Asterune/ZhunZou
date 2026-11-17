@@ -13,6 +13,8 @@ import {
   CHAT_MESSAGE_STATUSES,
   CHAT_ROLES,
   CHAT_SESSION_STATUSES,
+  DECISION_AUDIT_VERDICTS,
+  DECISION_CATEGORIES,
   DECISION_KINDS,
   DECISION_VERDICTS,
   MODEL_FAILURE_KINDS,
@@ -101,6 +103,22 @@ export const decisionTicketSchema = z.object({
   resolvedBy: z.enum(['META_AGENT', 'HUMAN', 'TIMEOUT']).optional(),
   resolutionReason: z.string().trim().max(2000).optional(),
 
+  /**
+   * What the judge thought this decision would change. Set on every reviewed
+   * ticket; `other` when the model did not name a category.
+   */
+  category: z.enum(DECISION_CATEGORIES).optional(),
+  /** Judge's self-reported confidence (0..1); absent for legacy providers. */
+  confidence: z.number().min(0).max(1).optional(),
+  /** 1 for a single review, 2 when the challenger also had to agree. */
+  reviewCount: z.number().int().min(1).max(2).optional(),
+  /** Sampled for a human audit after the hub approved it on its own. */
+  auditRequired: z.boolean().optional(),
+  auditVerdict: z.enum(DECISION_AUDIT_VERDICTS).optional(),
+  /** Why the reviewer confirmed or overturned the sampled ruling. */
+  auditReason: z.string().trim().max(2000).optional(),
+  auditedAt: z.number().int().nonnegative().optional(),
+
   /** When set, the ticket is auto-resolved with the recommended option at this time. */
   expiresAt: z.number().int().nonnegative().optional(),
 
@@ -155,6 +173,17 @@ export const resolveTicketSchema = z.object({
    * the judge reads; it does not create an L1 pattern.
    */
   rememberRule: z.boolean().optional(),
+});
+
+/** Payload accepted by POST /api/tickets/:id/audit. */
+export const auditTicketSchema = z.object({
+  /** `OK` confirms the sampled ruling; `REVERSED` overturns it. */
+  verdict: z.enum(['OK', 'REVERSED']),
+  /** Required with REVERSED: the option a human would have chosen instead. */
+  selectedOption: z.string().trim().min(1).max(8).optional(),
+  reason: z.string().trim().max(2000).optional(),
+  /** Required when the replacement option is marked `destructive`. */
+  confirmDestructive: z.boolean().optional(),
 });
 
 /** Payload accepted by POST /api/tickets/:id/extend. */
@@ -1372,6 +1401,7 @@ export type DecisionTicket = z.infer<typeof decisionTicketSchema>;
 export type TicketOption = z.infer<typeof ticketOptionSchema>;
 export type CreateTicketInput = z.infer<typeof createTicketSchema>;
 export type ResolveTicketInput = z.infer<typeof resolveTicketSchema>;
+export type AuditTicketInput = z.infer<typeof auditTicketSchema>;
 export type ExtendTicketInput = z.infer<typeof extendTicketSchema>;
 export type BatchResolveTicketsInput = z.infer<
   typeof batchResolveTicketsSchema

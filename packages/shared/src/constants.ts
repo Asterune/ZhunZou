@@ -141,6 +141,31 @@ export type DecisionVerdict = (typeof DECISION_VERDICTS)[number];
 export const DECISION_MODES = ['off', 'reply', 'all'] as const;
 export type DecisionMode = (typeof DECISION_MODES)[number];
 
+/**
+ * What kind of change an auto-approved decision would make.
+ *
+ * The judge tags every ruling with one category so the hub can apply a daily
+ * auto-approval quota per category, and stop auto-approving a category after a
+ * human overturns one of its rulings.
+ */
+export const DECISION_CATEGORIES = [
+  'refactor',
+  'docs',
+  'test',
+  'dependency',
+  'api-contract',
+  'schema',
+  'product',
+  'deploy',
+  'security',
+  'other',
+] as const;
+export type DecisionCategory = (typeof DECISION_CATEGORIES)[number];
+
+/** Audit lifecycle of a sampled auto-approved decision. */
+export const DECISION_AUDIT_VERDICTS = ['PENDING', 'OK', 'REVERSED'] as const;
+export type DecisionAuditVerdict = (typeof DECISION_AUDIT_VERDICTS)[number];
+
 export const CHAT_SESSION_STATUSES = ['ACTIVE', 'CLOSED'] as const;
 export type ChatSessionStatus = (typeof CHAT_SESSION_STATUSES)[number];
 

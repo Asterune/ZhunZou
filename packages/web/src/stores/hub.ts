@@ -167,6 +167,7 @@ export function createHubStore(api: HubApi = hubApi) {
   const ruleCandidatesLoading = ref(false);
   const ruleCandidateActionId = ref('');
   const batchResolving = ref(false);
+  const auditingTicketId = ref('');
   const bindingProject = ref(false);
   const unbindingProjectId = ref('');
   const fleetActionId = ref('');
@@ -845,6 +846,44 @@ export function createHubStore(api: HubApi = hubApi) {
     }
   }
 
+  /**
+   * Confirm or overturn a sampled auto-approval. A reversal also demotes the
+   * category on the server, which is why the toast names the consequence
+   * instead of pretending the ticket was simply approved.
+   */
+  async function auditTicket(
+    ticketId: string,
+    verdict: 'OK' | 'REVERSED',
+    selectedOption?: string,
+    reason?: string,
+  ): Promise<boolean> {
+    if (auditingTicketId.value) return false;
+    auditingTicketId.value = ticketId;
+    try {
+      const response = await api.auditTicket(token.value, ticketId, {
+        verdict,
+        ...(selectedOption ? { selectedOption } : {}),
+        ...(reason ? { reason } : {}),
+      });
+      tickets.value = tickets.value.map((ticket) =>
+        ticket.id === ticketId ? response.ticket : ticket,
+      );
+      pushToast(
+        verdict === 'OK'
+          ? t('store.auditConfirmed', { id: ticketId })
+          : t('store.auditReversed', { id: ticketId }),
+        verdict === 'OK' ? 'success' : 'info',
+      );
+      void refresh();
+      return true;
+    } catch (error) {
+      fail(error, t('store.auditFailed'));
+      return false;
+    } finally {
+      auditingTicketId.value = '';
+    }
+  }
+
   async function createTask(input: CreateTaskInput): Promise<boolean> {
     try {
       const response = await api.createTask(token.value, input);
@@ -1426,6 +1465,8 @@ export function createHubStore(api: HubApi = hubApi) {
     batchResolveTickets,
     extendTicket,
     cancelTicket,
+    auditTicket,
+    auditingTicketId,
     createTask,
     dispatchTask,
     cancelTask,
