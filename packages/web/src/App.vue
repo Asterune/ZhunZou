@@ -294,6 +294,7 @@ onBeforeUnmount(() => {
     "
   >
     <header
+      v-if="!mobileChatDetailOpen"
       class="sticky top-0 z-40 border-b border-outline-variant/35 bg-surface pt-[env(safe-area-inset-top)] shadow-[0_1px_8px_rgba(30,27,25,0.04)]"
     >
       <div class="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4 sm:px-6">

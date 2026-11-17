@@ -282,7 +282,7 @@ const chatCardStyle = computed(() => {
     return { height: 'clamp(340px, calc(100dvh - 13rem), 760px)' };
   }
   if (mobileChatHeight.value) return { height: `${mobileChatHeight.value}px` };
-  return { height: 'calc(100dvh - 6rem)' };
+  return { height: '100dvh' };
 });
 
 function syncChatHeight(): void {
@@ -912,7 +912,13 @@ watch(voiceState, (state) => {
 
 // The bottom tab bar belongs to the first-level page only.
 watch(
-  [isDesktop, mobileDetail, viewportHeight, () => Boolean(activeSession.value)],
+  [
+    isDesktop,
+    mobileDetail,
+    viewportHeight,
+    () => Boolean(activeSession.value),
+    () => store.connection,
+  ],
   () => {
     mobileChatDetailOpen.value = !isDesktop.value && mobileDetail.value;
     if (!isDesktop.value && mobileDetail.value) {
@@ -1154,21 +1160,15 @@ onBeforeUnmount(() => {
         :class="
           isDesktop
             ? 'rounded-xl border border-outline-variant/35 shadow-sm'
-            : 'border-y border-outline-variant/35'
+            : ''
         "
         :style="chatCardStyle"
       >
-        <header class="flex shrink-0 items-center gap-2 border-b border-outline-variant/30 px-2 py-2.5 sm:px-4 sm:py-3">
-          <button
-            v-if="!isDesktop"
-            type="button"
-            class="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface"
-            :aria-label="t('chat.backToList')"
-            :title="t('chat.backToList')"
-            @click="backToList"
-          >
-            <ArrowLeft :size="19" />
-          </button>
+        <!-- Desktop header -->
+        <header
+          v-if="isDesktop"
+          class="flex shrink-0 items-center gap-2 border-b border-outline-variant/30 px-2 py-2.5 sm:px-4 sm:py-3"
+        >
           <div class="min-w-0 flex-1">
             <h3 class="truncate text-sm font-semibold text-on-surface">
               {{ activeSession.title }}
@@ -1229,6 +1229,94 @@ onBeforeUnmount(() => {
             <XCircle :size="13" />
             <span class="hidden sm:inline">{{ t('chat.close') }}</span>
           </button>
+        </header>
+
+        <!-- Phone: the second-level page owns its top bar. -->
+        <header
+          v-else
+          class="shrink-0 border-b border-outline-variant/30 bg-surface/95 px-1.5 pb-2 pt-[calc(0.4rem_+_env(safe-area-inset-top))] backdrop-blur-xl"
+        >
+          <div class="flex items-center gap-1">
+            <button
+              type="button"
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-full text-on-surface-variant transition active:bg-surface-container"
+              :aria-label="t('chat.backToList')"
+              :title="t('chat.backToList')"
+              @click="backToList"
+            >
+              <ArrowLeft :size="20" />
+            </button>
+            <div class="min-w-0 flex-1 px-1 text-center">
+              <h3 class="truncate text-[15px] font-semibold leading-5 text-on-surface">
+                {{ activeSession.title }}
+              </h3>
+              <p class="mt-0.5 flex min-w-0 items-center justify-center gap-1 text-[10px] text-on-surface-variant">
+                <span class="shrink-0 font-mono">{{ activeSession.env }}</span>
+                <template v-if="activeSession.projectName">
+                  <span class="shrink-0">·</span>
+                  <span class="truncate font-mono">{{ activeSession.projectName }}</span>
+                </template>
+                <span
+                  v-if="activeSession.status === 'CLOSED'"
+                  class="shrink-0 text-primary"
+                >
+                  · {{ t('chat.closedBadge') }}
+                </span>
+                <span
+                  v-else-if="sessionOnline"
+                  class="flex shrink-0 items-center gap-1 text-secondary"
+                >
+                  <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-secondary" />
+                  {{ t('chat.online') }}
+                </span>
+                <span v-else class="flex shrink-0 items-center gap-1 text-error">
+                  <span class="h-1.5 w-1.5 rounded-full bg-error" />
+                  {{ t('chat.agentOffline') }}
+                </span>
+              </p>
+            </div>
+            <button
+              v-if="activeSession.status === 'ACTIVE'"
+              type="button"
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-full text-on-surface-variant transition active:bg-error-container active:text-on-error-container disabled:opacity-50"
+              :aria-label="t('chat.close')"
+              :title="t('chat.close')"
+              :disabled="closing"
+              @click="closeSession"
+            >
+              <XCircle :size="19" />
+            </button>
+            <span v-else class="h-10 w-10 shrink-0" />
+          </div>
+
+          <div
+            v-if="sessionCwd || sessionTickets.length"
+            class="mt-1 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 px-2"
+          >
+            <span
+              v-if="sessionCwd"
+              class="flex min-w-0 items-center gap-1 font-mono text-[10px]"
+              :class="
+                sessionDirMismatch
+                  ? 'text-error'
+                  : 'text-on-surface-variant/70'
+              "
+              :title="t('chat.execDirTitle', { dir: sessionCwd })"
+            >
+              <FolderGit2 :size="10" class="shrink-0" />
+              <span class="max-w-[62vw] truncate">{{ sessionCwd }}</span>
+            </span>
+            <button
+              v-if="sessionTickets.length"
+              type="button"
+              class="flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary transition active:bg-primary/15"
+              :title="t('chat.pendingTicketsHint')"
+              @click="scrollToTickets"
+            >
+              <Gavel :size="10" />
+              {{ t('chat.pendingTicketsTitle') }} {{ sessionTickets.length }}
+            </button>
+          </div>
         </header>
 
         <div
@@ -1734,7 +1822,7 @@ onBeforeUnmount(() => {
 
       <div
         v-else-if="!isDesktop && mobileDetail"
-        class="flex min-h-[40vh] items-center justify-center border-y border-outline-variant/35 bg-surface-container-lowest px-6 text-center text-[12px] text-on-surface-variant"
+        class="flex min-h-[60vh] items-start justify-center bg-surface-container-lowest px-6 pt-[calc(2rem_+_env(safe-area-inset-top))] text-center text-[12px] text-on-surface-variant"
       >
         <div>
           <RefreshCw
