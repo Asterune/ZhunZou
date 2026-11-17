@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   session_id INTEGER NOT NULL,
   role TEXT NOT NULL,
   content TEXT NOT NULL,
+  attachments TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL,
   origin TEXT NOT NULL DEFAULT 'human',
   rationale TEXT,
@@ -437,6 +438,8 @@ export function createDatabase(dbPath: string): {
   ensureColumn(sqlite, 'agent_tasks', 'model', 'TEXT');
   ensureColumn(sqlite, 'agent_tasks', 'failure_kind', 'TEXT');
   ensureColumn(sqlite, 'chat_messages', 'failure_kind', 'TEXT');
+  // Images live on disk; the message row only carries their metadata.
+  ensureColumn(sqlite, 'chat_messages', 'attachments', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(sqlite, 'agents', 'model', 'TEXT');
   // A conversation now names its own model; older ones inherit the node default.
   ensureColumn(sqlite, 'chat_sessions', 'model', 'TEXT');

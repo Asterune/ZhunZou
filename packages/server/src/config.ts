@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { NODE_HEARTBEAT_REPORT_MS } from '@zhunzou/shared';
@@ -74,6 +74,8 @@ export interface ServerConfig {
   host: string;
   token: string;
   dbPath: string;
+  /** Where chat images are stored; defaults to a sibling of the database. */
+  chatUploadsPath: string;
   rulesPath: string;
   waitTimeoutMs: number;
   logLevel: string;
@@ -387,16 +389,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     throw new Error('HUB_SECRET_TOKEN is required when NODE_ENV=production');
   }
 
+  const dbPath =
+    env.DATABASE_PATH === ':memory:'
+      ? ':memory:'
+      : resolvePath(env.DATABASE_PATH ?? './data/zhunzou.db');
+
   return {
     nodeEnv,
     isProduction,
     port: readInt(env.PORT, 8787, { min: 1, max: 65_535 }),
     host: env.HOST ?? '0.0.0.0',
     token: token || 'dev-token',
-    dbPath:
-      env.DATABASE_PATH === ':memory:'
-        ? ':memory:'
-        : resolvePath(env.DATABASE_PATH ?? './data/zhunzou.db'),
+    dbPath,
+    chatUploadsPath: resolvePath(
+      env.CHAT_UPLOAD_DIR ??
+        (dbPath === ':memory:'
+          ? './data/chat-uploads'
+          : join(dirname(dbPath), 'chat-uploads')),
+    ),
     rulesPath: resolvePath(env.GLOBAL_RULES_PATH ?? './GLOBAL_RULES.md'),
     waitTimeoutMs: readInt(env.WAIT_TIMEOUT_MS, 40_000, { min: 0, max: 55_000 }),
     logLevel: env.LOG_LEVEL ?? (isProduction ? 'info' : 'debug'),

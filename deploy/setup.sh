@@ -274,6 +274,17 @@ if [ "$INSTALL_NGINX" = "1" ]; then
     log "nginx 配置已存在，保留：${NGINX_CONF}"
   fi
 
+  # Chat images travel as base64 JSON, up to four 8 MB files. Keep nginx from
+  # rejecting them before Fastify sees the request, on both fresh and existing
+  # (certbot-rewritten) configs.
+  if grep -qE '^[[:space:]]*client_max_body_size[[:space:]]' "$NGINX_CONF"; then
+    sed -i 's#^[[:space:]]*client_max_body_size[[:space:]].*#    client_max_body_size 48m;#' "$NGINX_CONF"
+    log "已调整上传体积上限：48m"
+  else
+    sed -i '/server_name .*;/a\    client_max_body_size 48m;' "$NGINX_CONF"
+    log "已补充上传体积上限：48m"
+  fi
+
   # Certbot rewrites this file, so setup.sh cannot replace it wholesale.
   # Add the WebSocket upgrade headers and their map in place when missing.
   if ! grep -q 'proxy_set_header Upgrade' "$NGINX_CONF"; then

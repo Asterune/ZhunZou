@@ -6,6 +6,10 @@ import { createTestContext } from './helpers.js';
 
 const ENV = 'chat-env';
 
+/** A 1×1 transparent PNG. */
+const PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+
 type Ctx = Awaited<ReturnType<typeof createTestContext>>;
 
 async function createSession(ctx: Ctx, env = ENV): Promise<ChatSession> {
@@ -808,6 +812,134 @@ describe('interactive sessions', () => {
         headers: agentAuth,
       });
       expect(next.json().timedOut).toBe(true);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('stores an image-only message and serves the bytes with env scope', async () => {
+    const ctx = await createTestContext();
+    try {
+      const session = await createSession(ctx);
+      const bytes = Buffer.from(PNG_BASE64, 'base64');
+
+      const send = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: {
+          content: '',
+          images: [{ name: 'shot.png', mime: 'image/png', data: PNG_BASE64 }],
+        },
+      });
+      expect(send.statusCode).toBe(201);
+      const message = send.json().message as ChatMessage;
+      expect(message.content).toBe('');
+      expect(message.attachments).toHaveLength(1);
+      const attachment = message.attachments?.[0];
+      expect(attachment).toMatchObject({
+        name: 'shot.png',
+        mime: 'image/png',
+        size: bytes.length,
+      });
+
+      const fetched = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}/messages/${message.id}/attachments/${attachment?.id}`,
+        headers: ctx.auth,
+      });
+      expect(fetched.statusCode).toBe(200);
+      expect(fetched.headers['content-type']).toBe('image/png');
+      expect(fetched.rawPayload.equals(bytes)).toBe(true);
+
+      const agentAuth = await issueAgentToken(ctx);
+      const byAgent = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}/messages/${message.id}/attachments/${attachment?.id}`,
+        headers: agentAuth,
+      });
+      expect(byAgent.statusCode).toBe(200);
+
+      const claim = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10`,
+        headers: agentAuth,
+      });
+      expect(claim.statusCode).toBe(200);
+      expect(claim.json().message.id).toBe(message.id);
+
+      // An old bridge omits attachmentsHandled. The hub must not trust DONE
+      // and must keep the files so the human can upgrade and retry.
+      const oldBridge = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages/${message.id}/complete`,
+        headers: agentAuth,
+        payload: { status: 'DONE', content: '看到了' },
+      });
+      expect(oldBridge.statusCode).toBe(200);
+      expect(oldBridge.json().message.status).toBe('FAILED');
+      expect(oldBridge.json().message.error).toContain('图片');
+
+      const stillThere = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}/messages/${message.id}/attachments/${attachment?.id}`,
+        headers: ctx.auth,
+      });
+      expect(stillThere.statusCode).toBe(200);
+
+      const retry = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages/${message.id}/retry`,
+        headers: ctx.auth,
+      });
+      expect(retry.statusCode).toBe(200);
+      const claimAgain = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/next?env=${ENV}&timeout=10`,
+        headers: agentAuth,
+      });
+      expect(claimAgain.json().message.id).toBe(message.id);
+
+      const complete = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages/${message.id}/complete`,
+        headers: agentAuth,
+        payload: {
+          status: 'DONE',
+          content: '看到了',
+          attachmentsHandled: true,
+        },
+      });
+      expect(complete.statusCode).toBe(200);
+
+      const afterComplete = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}/messages/${message.id}/attachments/${attachment?.id}`,
+        headers: ctx.auth,
+      });
+      expect(afterComplete.statusCode).toBe(404);
+
+      const reloaded = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${session.id}`,
+        headers: ctx.auth,
+      });
+      const reloadedMessage = (reloaded.json().messages as ChatMessage[]).find(
+        (item) => item.id === message.id,
+      );
+      expect(reloadedMessage?.attachments?.[0]?.expired).toBe(true);
+
+      const bad = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/messages`,
+        headers: ctx.auth,
+        payload: {
+          content: '',
+          images: [{ name: 'bad.png', mime: 'image/png', data: 'bm90IGFuIGltYWdl' }],
+        },
+      });
+      expect(bad.statusCode).toBe(400);
+      expect(bad.json().error.code).toBe('INVALID_IMAGE');
     } finally {
       await ctx.close();
     }

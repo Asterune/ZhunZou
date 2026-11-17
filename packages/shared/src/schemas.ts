@@ -13,6 +13,9 @@ import {
   CHAT_MESSAGE_STATUSES,
   CHAT_ROLES,
   CHAT_SESSION_STATUSES,
+  CHAT_IMAGE_MIMES,
+  CHAT_MAX_ATTACHMENTS,
+  CHAT_MAX_IMAGE_BYTES,
   DECISION_AUDIT_VERDICTS,
   DECISION_CATEGORIES,
   DECISION_KINDS,
@@ -756,11 +759,25 @@ export const chatSessionSchema = z.object({
   pendingCount: z.number().int().nonnegative().optional(),
 });
 
+/**
+ * One image stored beside a chat message. The binary lives on the hub's disk;
+ * the transcript only carries enough metadata to address and render it.
+ */
+export const chatAttachmentSchema = z.object({
+  id: z.string().min(1).max(64),
+  name: z.string().trim().min(1).max(200),
+  mime: z.enum(CHAT_IMAGE_MIMES),
+  size: z.number().int().positive(),
+  /** The hub dropped the bytes after the turn used them. */
+  expired: z.boolean().optional(),
+});
+
 export const chatMessageSchema = z.object({
   id: ticketIdSchema,
   sessionId: ticketIdSchema,
   role: z.enum(CHAT_ROLES),
   content: z.string().max(32_000),
+  attachments: z.array(chatAttachmentSchema).max(CHAT_MAX_ATTACHMENTS).optional(),
   status: z.enum(CHAT_MESSAGE_STATUSES),
   /** `agent` when this is a draft the hub wrote for the human to adopt. */
   origin: z.enum(CHAT_MESSAGE_ORIGINS),
@@ -795,9 +812,22 @@ export const createChatSessionSchema = z.object({
   model: modelNameSchema.optional(),
 });
 
-export const sendChatMessageSchema = z.object({
-  content: z.string().trim().min(1).max(32_000),
+/** Raw image upload, base64 encoded without the `data:` prefix. */
+export const chatImageUploadSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  mime: z.enum(CHAT_IMAGE_MIMES),
+  data: z.string().min(1),
 });
+
+export const sendChatMessageSchema = z
+  .object({
+    content: z.string().trim().max(32_000).default(''),
+    images: z.array(chatImageUploadSchema).max(CHAT_MAX_ATTACHMENTS).optional(),
+  })
+  .refine(
+    (value) => value.content.length > 0 || (value.images?.length ?? 0) > 0,
+    { message: 'a message needs text or at least one image', path: ['content'] },
+  );
 
 /** Rewrite a queued message before the runner claims it. */
 export const editChatMessageSchema = z.object({
@@ -873,6 +903,12 @@ export const completeChatMessageSchema = z.object({
   error: z.string().max(2_000).optional(),
   /** Names a CLI complaint the reader cannot fix by rephrasing the ask. */
   failureKind: modelFailureKindSchema.optional(),
+  /**
+   * The runner consumed the message's attached images (downloaded them and
+   * put their paths in the prompt). An older bridge omits this; the hub then
+   * refuses to mark the turn DONE so the images are not silently dropped.
+   */
+  attachmentsHandled: z.boolean().optional(),
   /**
    * Accept a turn the hub already gave up on (interrupted by a restart) so a
    * journaled result can still be recorded instead of being dropped.
@@ -1447,6 +1483,8 @@ export type TaskLogListResponse = z.infer<typeof taskLogListResponseSchema>;
 
 export type ChatSession = z.infer<typeof chatSessionSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
+export type ChatAttachment = z.infer<typeof chatAttachmentSchema>;
+export type ChatImageUpload = z.infer<typeof chatImageUploadSchema>;
 export type ChatEvent = z.infer<typeof chatEventSchema>;
 export type CreateChatSessionInput = z.infer<typeof createChatSessionSchema>;
 export type SendChatMessageInput = z.infer<typeof sendChatMessageSchema>;

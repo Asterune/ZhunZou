@@ -2,12 +2,14 @@ import type {
   AgentTask,
   ChatMessage,
   ChatSession,
+  CompleteChatMessageInput,
   DecisionTicket,
   RealtimeClientFrame,
   RealtimeServerFrame,
 } from '@zhunzou/shared';
 import { isTerminalStatus } from '@zhunzou/shared';
 
+import { removeChatImages } from '../chat-uploads.js';
 import type { ServerConfig } from '../config.js';
 import type {
   SessionEventBus,
@@ -329,10 +331,10 @@ export function attachDeviceRouter(
     ack(env);
   };
 
-  const handleChatComplete = (
+  const handleChatComplete = async (
     env: string,
     frame: Extract<RealtimeClientFrame, { type: 'chat.complete' }>,
-  ): void => {
+  ): Promise<void> => {
     const session = repo.getChatSession(Number(frame.sessionId));
     if (!session) {
       fail(env, 'SESSION_NOT_FOUND', `session #${frame.sessionId} not found`);
@@ -342,16 +344,38 @@ export function attachDeviceRouter(
       fail(env, 'ENV_FORBIDDEN', 'session belongs to a different env');
       return;
     }
+    const message = repo.getChatMessage(Number(frame.messageId));
+    const hasImages =
+      message?.sessionId === session.id &&
+      (message.attachments ?? []).some((attachment) => !attachment.expired);
+    const input: CompleteChatMessageInput =
+      hasImages && frame.status === 'DONE' && frame.attachmentsHandled !== true
+        ? {
+            status: 'FAILED',
+            error:
+              '端侧 bridge 未读取图片（attached images were not handled）；请升级到 0.1.20 或更高版本后重试',
+          }
+        : {
+            status: frame.status,
+            ...(frame.content ? { content: frame.content } : {}),
+            ...(frame.externalId ? { externalId: frame.externalId } : {}),
+            ...(frame.error ? { error: frame.error } : {}),
+            ...(frame.attachmentsHandled ? { attachmentsHandled: true } : {}),
+          };
     const result = repo.completeChatMessage(
       Number(session.id),
       Number(frame.messageId),
-      {
-        status: frame.status,
-        ...(frame.content ? { content: frame.content } : {}),
-        ...(frame.externalId ? { externalId: frame.externalId } : {}),
-        ...(frame.error ? { error: frame.error } : {}),
-      },
+      input,
     );
+    if (input.status === 'DONE') {
+      const used = repo.expireChatMessageAttachments(
+        Number(session.id),
+        Number(frame.messageId),
+      );
+      if (used.length > 0) {
+        await removeChatImages(config.chatUploadsPath, Number(session.id), used);
+      }
+    }
     send(env, {
       type: 'chat.completed',
       ...(frame.requestId ? { requestId: frame.requestId } : {}),
@@ -398,7 +422,7 @@ export function attachDeviceRouter(
         handleChatEvent(env, frame);
         break;
       case 'chat.complete':
-        handleChatComplete(env, frame);
+        void handleChatComplete(env, frame);
         break;
       default:
         break;

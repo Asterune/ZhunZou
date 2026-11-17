@@ -6,6 +6,7 @@ import type {
   ChatMessageStatus,
   ChatMessageOrigin,
   ChatMessageDecision,
+  ChatImageMime,
   ChatRole,
   ChatSessionStatus,
   DecisionAuditVerdict,
@@ -34,6 +35,18 @@ import type {
   TicketOption,
   TicketStatus,
 } from '@zhunzou/shared';
+
+/** Images stored beside a chat message: metadata in SQLite, bytes on disk. */
+export interface StoredChatAttachment {
+  id: string;
+  name: string;
+  mime: ChatImageMime;
+  size: number;
+  /** File name inside the session's upload directory (never user supplied). */
+  file: string;
+  /** Bytes were removed after the turn used them; the row stays as a marker. */
+  expired?: boolean;
+}
 
 export const tickets = sqliteTable(
   'tickets',
@@ -423,6 +436,11 @@ export const chatMessages = sqliteTable(
     sessionId: integer('session_id').notNull(),
     role: text('role').$type<ChatRole>().notNull(),
     content: text('content').notNull(),
+    /** Images stored on disk; the transcript keeps only their metadata. */
+    attachments: text('attachments', { mode: 'json' })
+      .$type<StoredChatAttachment[]>()
+      .notNull()
+      .default([]),
     status: text('status').$type<ChatMessageStatus>().notNull(),
     /** `human` for typed messages, `agent` for hub-drafted proposals. */
     origin: text('origin').$type<ChatMessageOrigin>().notNull().default('human'),

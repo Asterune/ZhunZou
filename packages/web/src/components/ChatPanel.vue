@@ -5,6 +5,7 @@ import {
   ArrowUp,
   FolderGit2,
   Gavel,
+  ImagePlus,
   Keyboard,
   ListOrdered,
   Loader2,
@@ -31,12 +32,19 @@ import {
 } from 'vue';
 
 import type {
+  ChatImageUpload,
   ChatMessage,
   ChatSession,
   CreateChatSessionInput,
 } from '@zhunzou/shared';
+import {
+  CHAT_IMAGE_MIMES,
+  CHAT_MAX_ATTACHMENTS,
+  CHAT_MAX_IMAGE_BYTES,
+} from '@zhunzou/shared';
 
 import { hubApi } from '../lib/api';
+import { readImageUpload } from '../lib/chat-images';
 import {
   isSendShortcut,
   queuedUserMessages,
@@ -62,6 +70,7 @@ import {
 import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
 import ChatSessionList from './ChatSessionList.vue';
+import ChatImages from './ChatImages.vue';
 import SessionOutput from './SessionOutput.vue';
 import SingleTaskList from './SingleTaskList.vue';
 import TargetPicker from './TargetPicker.vue';
@@ -108,6 +117,13 @@ const activeId = ref(loadActiveSessionId());
 const session = ref<ChatSession | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const draft = ref('');
+interface PendingImage {
+  preview: string;
+  upload: ChatImageUpload;
+}
+const pendingImages = ref<PendingImage[]>([]);
+const imageInput = ref<HTMLInputElement | null>(null);
+const imageBusy = ref(false);
 const loadingList = ref(false);
 const listLoaded = ref(false);
 const loadingSession = ref(false);
@@ -462,7 +478,8 @@ const canSend = computed(
   () =>
     Boolean(session.value) &&
     session.value?.status === 'ACTIVE' &&
-    draft.value.trim().length > 0 &&
+    (draft.value.trim().length > 0 || pendingImages.value.length > 0) &&
+    !imageBusy.value &&
     // A mislabelled session would run the turn in someone else's repo; the
     // banner above the composer explains what to fix first.
     !sessionDirMismatch.value &&
@@ -471,6 +488,100 @@ const canSend = computed(
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : t('chat.operationFailed');
+}
+
+function queuedLabel(message: ChatMessage): string {
+  if (message.content) {
+    return message.attachments?.length
+      ? `${message.content} · ${t('chat.imagesCount', { count: message.attachments.length })}`
+      : message.content;
+  }
+  return message.attachments?.length
+    ? t('chat.imagesCount', { count: message.attachments.length })
+    : '';
+}
+
+function clearPendingImages(): void {
+  for (const image of pendingImages.value) {
+    URL.revokeObjectURL(image.preview);
+  }
+  pendingImages.value = [];
+}
+
+function removePendingImage(index: number): void {
+  const [removed] = pendingImages.value.splice(index, 1);
+  if (removed) URL.revokeObjectURL(removed.preview);
+}
+
+function pickImages(): void {
+  if (session.value?.status !== 'ACTIVE' || sending.value) return;
+  imageInput.value?.click();
+}
+
+async function addImages(files: File[]): Promise<void> {
+  if (files.length === 0 || sending.value || imageBusy.value) return;
+  const room = CHAT_MAX_ATTACHMENTS - pendingImages.value.length;
+  if (room <= 0) {
+    pushToast(t('chat.imageTooMany', { count: CHAT_MAX_ATTACHMENTS }), 'error');
+    return;
+  }
+
+  imageBusy.value = true;
+  try {
+    for (const file of files.slice(0, room)) {
+      if (!(CHAT_IMAGE_MIMES as readonly string[]).includes(file.type)) {
+        pushToast(t('chat.imageUnsupported'), 'error');
+        continue;
+      }
+      if (file.size > CHAT_MAX_IMAGE_BYTES) {
+        pushToast(
+          t('chat.imageTooLarge', {
+            mb: Math.round(CHAT_MAX_IMAGE_BYTES / 1024 / 1024),
+          }),
+          'error',
+        );
+        continue;
+      }
+      try {
+        const upload = await readImageUpload(file);
+        pendingImages.value.push({
+          preview: URL.createObjectURL(file),
+          upload,
+        });
+      } catch {
+        pushToast(t('chat.imageReadFailed'), 'error');
+      }
+    }
+    if (files.length > room) {
+      pushToast(t('chat.imageTooMany', { count: CHAT_MAX_ATTACHMENTS }), 'error');
+    }
+  } finally {
+    imageBusy.value = false;
+  }
+}
+
+function onImageInputChange(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  void addImages(files);
+}
+
+function onComposerPaste(event: ClipboardEvent): void {
+  const data = event.clipboardData;
+  const files = Array.from(data?.files ?? []);
+  if (files.length === 0 && data) {
+    // Safari exposes a pasted screenshot as an item, not a file.
+    for (const item of Array.from(data.items ?? [])) {
+      if (item.kind !== 'file') continue;
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  const images = files.filter((file) => file.type.startsWith('image/'));
+  if (images.length === 0) return;
+  event.preventDefault();
+  void addImages(images);
 }
 
 /**
@@ -553,6 +664,7 @@ async function openSession(id: string): Promise<void> {
   messages.value = [];
   cancelEditProposal();
   cancelEditQueued();
+  clearPendingImages();
   if (!isDesktop.value) {
     clearDetailTimers();
     mobileDetail.value = true;
@@ -868,12 +980,17 @@ async function send(): Promise<void> {
   }
   if (!canSend.value) return;
   const content = draft.value.trim();
-  if (!content) return;
+  const images = pendingImages.value.map((image) => image.upload);
+  if (!content && images.length === 0) return;
 
   sending.value = true;
   try {
-    await hubApi.sendChatMessage(store.token, session.value.id, content);
+    await hubApi.sendChatMessage(store.token, session.value.id, {
+      content,
+      ...(images.length > 0 ? { images } : {}),
+    });
     draft.value = '';
+    clearPendingImages();
     await refreshSession();
     await loadSessions();
     stickToBottom = true;
@@ -1213,6 +1330,7 @@ onBeforeUnmount(() => {
   cancelVoice();
   removeDragListeners();
   clearDetailTimers();
+  clearPendingImages();
   mobileChatDetailOpen.value = false;
   mobileChatShift.value = 0;
   mobileChatAnimating.value = false;
@@ -1720,6 +1838,13 @@ onBeforeUnmount(() => {
               >
                 {{ message.content }}
               </p>
+              <ChatImages
+                v-if="message.attachments?.length"
+                :session-id="activeSession.id"
+                :message-id="message.id"
+                :attachments="message.attachments"
+                tone="muted"
+              />
             </div>
 
             <div
@@ -1733,7 +1858,15 @@ onBeforeUnmount(() => {
                     : 'bg-surface-container text-on-surface'
               "
             >
-              <p class="whitespace-pre-wrap break-words">{{ message.content }}</p>
+              <p v-if="message.content" class="whitespace-pre-wrap break-words">
+                {{ message.content }}
+              </p>
+              <ChatImages
+                v-if="message.attachments?.length"
+                :session-id="activeSession.id"
+                :message-id="message.id"
+                :attachments="message.attachments"
+              />
               <p
                 v-if="message.role === 'user' && message.status === 'FAILED'"
                 class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-[#ffd5d0]"
@@ -1890,21 +2023,21 @@ onBeforeUnmount(() => {
                     v-if="message.origin === 'human'"
                     type="button"
                     class="min-w-0 flex-1 truncate text-left text-[12px] leading-5 text-on-surface transition hover:text-primary disabled:opacity-60"
-                    :title="message.content"
+                    :title="queuedLabel(message)"
                     :disabled="
                       queuedBusy === message.id ||
                       activeSession.status !== 'ACTIVE'
                     "
                     @click="startEditQueued(message)"
                   >
-                    {{ message.content }}
+                    {{ queuedLabel(message) }}
                   </button>
                   <p
                     v-else
                     class="min-w-0 flex-1 truncate text-[12px] leading-5 text-on-surface"
-                    :title="message.content"
+                    :title="queuedLabel(message)"
                   >
-                    {{ message.content }}
+                    {{ queuedLabel(message) }}
                   </p>
                   <span
                     v-if="message.origin === 'agent'"
@@ -1991,7 +2124,52 @@ onBeforeUnmount(() => {
             <p class="max-h-20 overflow-y-auto whitespace-pre-wrap break-words">{{ voicePreview }}</p>
           </div>
 
+          <div v-if="pendingImages.length" class="mb-2 flex flex-wrap gap-1.5">
+            <div
+              v-for="(image, index) in pendingImages"
+              :key="image.preview"
+              class="relative"
+            >
+              <img
+                :src="image.preview"
+                :alt="image.upload.name"
+                class="h-16 w-16 rounded-lg border border-outline-variant/50 object-cover"
+              />
+              <button
+                type="button"
+                class="absolute -right-1.5 -top-1.5 grid h-5 w-5 place-items-center rounded-full bg-on-surface text-surface shadow"
+                :aria-label="t('chat.removeImage')"
+                :title="t('chat.removeImage')"
+                @click="removePendingImage(index)"
+              >
+                <X :size="12" />
+              </button>
+            </div>
+          </div>
+          <input
+            ref="imageInput"
+            type="file"
+            :accept="CHAT_IMAGE_MIMES.join(',')"
+            multiple
+            class="hidden"
+            @change="onImageInputChange"
+          />
+
           <div v-if="!voiceMode" class="flex items-end gap-2">
+            <button
+              type="button"
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-primary disabled:opacity-40"
+              :disabled="
+                activeSession.status !== 'ACTIVE' ||
+                sending ||
+                pendingImages.length >= CHAT_MAX_ATTACHMENTS
+              "
+              :aria-label="t('chat.attachImage')"
+              :title="t('chat.attachImage')"
+              @click="pickImages"
+            >
+              <ImagePlus :size="17" />
+            </button>
             <button
               type="button"
               class="grid h-10 w-10 shrink-0 place-items-center rounded-lg transition disabled:opacity-40"
@@ -2016,8 +2194,9 @@ onBeforeUnmount(() => {
               maxlength="32000"
               :disabled="activeSession.status !== 'ACTIVE' || sending"
               :placeholder="t('chat.inputPlaceholder')"
-              class="min-h-[52px] flex-1 resize-none rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-3 py-2 text-[13px] leading-5 text-on-surface outline-none focus:border-primary disabled:opacity-60"
+              class="min-h-[52px] min-w-0 flex-1 resize-none rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-3 py-2 text-[13px] leading-5 text-on-surface outline-none focus:border-primary disabled:opacity-60"
               @keydown="onComposerKeydown"
+              @paste="onComposerPaste"
             />
             <button
               type="button"

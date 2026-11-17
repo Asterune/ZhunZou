@@ -125,6 +125,25 @@ export type ChatMessageOrigin = (typeof CHAT_MESSAGE_ORIGINS)[number];
 export const CHAT_MESSAGE_DECISIONS = ['AUTO', 'HUMAN'] as const;
 export type ChatMessageDecision = (typeof CHAT_MESSAGE_DECISIONS)[number];
 
+/**
+ * Image types a chat message may carry. SVG is deliberately excluded: it can
+ * execute script when opened directly, and these files are served inline.
+ */
+export const CHAT_IMAGE_MIMES = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+] as const;
+export type ChatImageMime = (typeof CHAT_IMAGE_MIMES)[number];
+
+/** How many images one message may carry. */
+export const CHAT_MAX_ATTACHMENTS = 4;
+
+/** Decoded size limit for one image; base64 bodies are larger on the wire. */
+export const CHAT_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+
 /* ------------------------------------------------------------------ */
 /* Hub-side judgment                                                   */
 /* ------------------------------------------------------------------ */

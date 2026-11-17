@@ -74,7 +74,6 @@ import type {
   ReportExchangeInput,
   ResolveTicketInput,
   RuleCandidate,
-  SendChatMessageInput,
   SupervisorInboxItem,
   TaskEvent,
   TaskEventListResponse,
@@ -130,6 +129,7 @@ import {
   type LearnedRuleRow,
   type ChatMessageRow,
   type ChatSessionRow,
+  type StoredChatAttachment,
   type DeviceRow,
   type EnrollmentRow,
   type ExchangeRow,
@@ -429,6 +429,17 @@ function toChatMessage(row: ChatMessageRow): ChatMessage {
     sessionId: String(row.sessionId),
     role: row.role,
     content: row.content,
+    ...(row.attachments.length > 0
+      ? {
+          attachments: row.attachments.map((item) => ({
+            id: item.id,
+            name: item.name,
+            mime: item.mime,
+            size: item.size,
+            ...(item.expired ? { expired: true } : {}),
+          })),
+        }
+      : {}),
     status: row.status,
     origin: row.origin,
     ...(row.rationale ? { rationale: row.rationale } : {}),
@@ -851,10 +862,22 @@ export interface TicketStore {
   listChatSessions(query: ListChatSessionsQuery, now?: number): ChatSession[];
   getChatSession(id: number, now?: number): ChatSession | null;
   getChatMessage(id: number): ChatMessage | null;
+  getChatAttachment(
+    sessionId: number,
+    messageId: number,
+    attachmentId: string,
+  ): StoredChatAttachment | null;
+  /** Mark a message's attachments used and return the files to delete. */
+  expireChatMessageAttachments(
+    sessionId: number,
+    messageId: number,
+  ): StoredChatAttachment[];
+  /** Same as above for every message in a conversation. */
+  expireSessionChatAttachments(sessionId: number): StoredChatAttachment[];
   listChatMessages(sessionId: number, limit?: number): ChatMessage[];
   sendChatMessage(
     sessionId: number,
-    input: SendChatMessageInput,
+    input: { content: string; attachments?: StoredChatAttachment[] },
     now?: number,
   ): ChatMessage;
   findLatestActiveChatSession(env: string): ChatSession | null;
@@ -2610,6 +2633,81 @@ export class TicketRepository implements TicketStore {
     return row ? toChatMessage(row) : null;
   }
 
+  getChatAttachment(
+    sessionId: number,
+    messageId: number,
+    attachmentId: string,
+  ): StoredChatAttachment | null {
+    const row = this.db
+      .select({ attachments: chatMessages.attachments })
+      .from(chatMessages)
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.sessionId, sessionId),
+        ),
+      )
+      .get();
+    return (
+      row?.attachments.find((item) => item.id === attachmentId) ?? null
+    );
+  }
+
+  expireChatMessageAttachments(
+    sessionId: number,
+    messageId: number,
+  ): StoredChatAttachment[] {
+    const row = this.db
+      .select({ attachments: chatMessages.attachments })
+      .from(chatMessages)
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.sessionId, sessionId),
+        ),
+      )
+      .get();
+    if (!row) return [];
+
+    const used = row.attachments.filter((item) => !item.expired);
+    if (used.length === 0) return [];
+    this.db
+      .update(chatMessages)
+      .set({
+        attachments: row.attachments.map((item) =>
+          item.expired ? item : { ...item, expired: true },
+        ),
+      })
+      .where(eq(chatMessages.id, messageId))
+      .run();
+    return used;
+  }
+
+  expireSessionChatAttachments(sessionId: number): StoredChatAttachment[] {
+    const rows = this.db
+      .select({ id: chatMessages.id, attachments: chatMessages.attachments })
+      .from(chatMessages)
+      .where(eq(chatMessages.sessionId, sessionId))
+      .all();
+
+    const used: StoredChatAttachment[] = [];
+    for (const row of rows) {
+      const pending = row.attachments.filter((item) => !item.expired);
+      if (pending.length === 0) continue;
+      used.push(...pending);
+      this.db
+        .update(chatMessages)
+        .set({
+          attachments: row.attachments.map((item) =>
+            item.expired ? item : { ...item, expired: true },
+          ),
+        })
+        .where(eq(chatMessages.id, row.id))
+        .run();
+    }
+    return used;
+  }
+
   listChatMessages(sessionId: number, limit = 200): ChatMessage[] {
     const rows = this.db
       .select()
@@ -2623,7 +2721,7 @@ export class TicketRepository implements TicketStore {
 
   sendChatMessage(
     sessionId: number,
-    input: SendChatMessageInput,
+    input: { content: string; attachments?: StoredChatAttachment[] },
     now = Date.now(),
   ): ChatMessage {
     const row = this.db
@@ -2632,6 +2730,7 @@ export class TicketRepository implements TicketStore {
         sessionId,
         role: 'user',
         content: input.content,
+        attachments: input.attachments ?? [],
         status: 'PENDING',
         origin: 'human',
         createdAt: now,

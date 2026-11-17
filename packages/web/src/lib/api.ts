@@ -35,6 +35,7 @@ import type {
   RuleCandidateStatus,
   RulesResponse,
   RealtimeTicketResponse,
+  SendChatMessageInput,
   SupervisorInboxResponse,
   SyncResponse,
   TaskListResponse,
@@ -212,8 +213,14 @@ export interface HubApi {
   sendChatMessage(
     token: string,
     sessionId: string,
-    content: string,
+    input: SendChatMessageInput,
   ): Promise<ChatSessionResponse>;
+  getChatAttachmentBlob(
+    token: string,
+    sessionId: string,
+    messageId: string,
+    attachmentId: string,
+  ): Promise<Blob>;
   closeChatSession(
     token: string,
     sessionId: string,
@@ -356,6 +363,29 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
     }
 
     return body as T;
+  }
+
+  /** Binary endpoints (chat images) cannot go through the JSON parser. */
+  async function requestBlob(token: string, path: string): Promise<Blob> {
+    let response: Response;
+    try {
+      response = await fetchImpl(path, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+    } catch (error) {
+      throw new ApiError(0, 'NETWORK_ERROR', (error as Error).message);
+    }
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as
+        | ApiErrorBody
+        | null;
+      throw new ApiError(
+        response.status,
+        body?.error?.code ?? `HTTP_${response.status}`,
+        body?.error?.message ?? t('api.requestFailed', { status: response.status }),
+      );
+    }
+    return response.blob();
   }
 
   return {
@@ -575,11 +605,17 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
     getChatSession: (token, sessionId) =>
       request<ChatSessionResponse>(token, `/api/sessions/${sessionId}`),
 
-    sendChatMessage: (token, sessionId, content) =>
+    sendChatMessage: (token, sessionId, input) =>
       request<ChatSessionResponse>(
         token,
         `/api/sessions/${sessionId}/messages`,
-        { method: 'POST', body: JSON.stringify({ content }) },
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+
+    getChatAttachmentBlob: (token, sessionId, messageId, attachmentId) =>
+      requestBlob(
+        token,
+        `/api/sessions/${sessionId}/messages/${messageId}/attachments/${encodeURIComponent(attachmentId)}`,
       ),
 
     closeChatSession: (token, sessionId) =>

@@ -12,6 +12,7 @@ import { z, ZodError } from 'zod';
 
 import type {
   AgentTask,
+  CompleteChatMessageInput,
   DecisionTicket,
   FleetBrowseCurrent,
   FleetBrowseEntry,
@@ -107,6 +108,13 @@ import {
 } from './approval-link.js';
 import { adjudicate } from './adjudication.js';
 import { createAuthHook, hashToken, requireAdmin, requireEnvAccess } from './auth.js';
+import {
+  ChatImageError,
+  readChatImage,
+  removeChatImages,
+  removeSessionChatImages,
+  saveChatImages,
+} from './chat-uploads.js';
 import type { ServerConfig } from './config.js';
 import { createDatabase } from './db/client.js';
 import {
@@ -195,6 +203,9 @@ const learnedRuleParamsSchema = z.object({ id: z.string().trim().min(1).max(64) 
 const chatMessageParamsSchema = z.object({
   id: ticketIdSchema,
   messageId: ticketIdSchema,
+});
+const chatAttachmentParamsSchema = chatMessageParamsSchema.extend({
+  attachmentId: z.string().trim().min(1).max(64),
 });
 const agentParamsSchema = z.object({
   env: z.string().trim().min(1).max(64),
@@ -2595,25 +2606,106 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         };
       });
 
-      api.post('/sessions/:id/messages', async (request, reply) => {
-        requireAdmin(request);
-        const { id } = paramsSchema.parse(request.params);
-        const session = repo.getChatSession(parseTicketId(id));
-        if (!session) {
-          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
-        }
-        if (session.status !== 'ACTIVE') {
-          throw new ConflictError(
-            `session ${formatTicketId(id)} is ${session.status}`,
-            'SESSION_CLOSED',
-          );
-        }
+      api.post(
+        '/sessions/:id/messages',
+        // Base64 inflates by a third; four 8 MB images plus the text still fit.
+        { bodyLimit: 48 * 1024 * 1024 },
+        async (request, reply) => {
+          requireAdmin(request);
+          const { id } = paramsSchema.parse(request.params);
+          const session = repo.getChatSession(parseTicketId(id));
+          if (!session) {
+            throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+          }
+          if (session.status !== 'ACTIVE') {
+            throw new ConflictError(
+              `session ${formatTicketId(id)} is ${session.status}`,
+              'SESSION_CLOSED',
+            );
+          }
 
-        const input = sendChatMessageSchema.parse(request.body);
-        const message = repo.sendChatMessage(Number(session.id), input);
-        sessionBus.publish(session);
-        return reply.code(201).send({ session, message });
-      });
+          const input = sendChatMessageSchema.parse(request.body);
+          let saved: Awaited<ReturnType<typeof saveChatImages>> = {
+            attachments: [],
+            files: [],
+          };
+          let message: ReturnType<typeof repo.sendChatMessage>;
+          try {
+            if (input.images && input.images.length > 0) {
+              saved = await saveChatImages(
+                config.chatUploadsPath,
+                Number(session.id),
+                input.images,
+              );
+            }
+            message = repo.sendChatMessage(Number(session.id), {
+              content: input.content,
+              attachments: saved.attachments,
+            });
+          } catch (error) {
+            if (saved.attachments.length > 0) {
+              await removeChatImages(
+                config.chatUploadsPath,
+                Number(session.id),
+                saved.attachments,
+              );
+            }
+            if (error instanceof ChatImageError) {
+              throw new BadRequestError(error.message, 'INVALID_IMAGE');
+            }
+            throw error;
+          }
+          sessionBus.publish(session);
+          return reply.code(201).send({ session, message });
+        },
+      );
+
+      // The browser fetches images with its Bearer token, so the dashboard can
+      // authenticate exactly like every other API call (no token in the URL).
+      api.get(
+        '/sessions/:id/messages/:messageId/attachments/:attachmentId',
+        async (request, reply) => {
+          const { id, messageId, attachmentId } =
+            chatAttachmentParamsSchema.parse(request.params);
+          const session = repo.getChatSession(parseTicketId(id));
+          if (!session) {
+            throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+          }
+          requireEnvAccess(request, session.env);
+
+          const attachment = repo.getChatAttachment(
+            Number(session.id),
+            parseTicketId(messageId),
+            attachmentId,
+          );
+          if (!attachment) {
+            throw new NotFoundError(
+              `attachment ${attachmentId} not found in message ${formatTicketId(messageId)}`,
+            );
+          }
+
+          const bytes = await readChatImage(
+            config.chatUploadsPath,
+            Number(session.id),
+            attachment,
+          );
+          if (!bytes) {
+            throw new NotFoundError(`attachment ${attachmentId} file is missing`);
+          }
+
+          return reply
+            .header('content-type', attachment.mime)
+            .header('cache-control', 'private, max-age=31536000, immutable')
+            .header('x-content-type-options', 'nosniff')
+            .header(
+              'content-disposition',
+              `inline; filename*=UTF-8''${encodeURIComponent(
+                attachment.name,
+              ).replace(/'/g, '%27')}`,
+            )
+            .send(bytes);
+        },
+      );
 
       // Adopting a draft is the only path that turns agent-authored text into
       // a queued user message; the human may edit it on the way through.
@@ -2692,6 +2784,16 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
             'ALREADY_FINALIZED',
           );
         }
+        // A closed conversation will never run another turn: drop every image
+        // the hub still holds, including queued ones nobody claimed.
+        const used = repo.expireSessionChatAttachments(Number(session.id));
+        if (used.length > 0) {
+          await removeChatImages(
+            config.chatUploadsPath,
+            Number(session.id),
+            used,
+          );
+        }
         return { session: closed };
       });
 
@@ -2713,6 +2815,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           );
         }
         repo.deleteChatSession(Number(session.id));
+        await removeSessionChatImages(
+          config.chatUploadsPath,
+          Number(session.id),
+        );
         sessionBus.publish(session);
         return { deleted: true, id: session.id };
       });
@@ -2773,14 +2879,45 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           );
         }
 
-        const input = completeChatMessageSchema.parse(request.body);
-        return repo.completeChatMessage(
+        const parsed = completeChatMessageSchema.parse(request.body);
+        const hasImages = (message.attachments ?? []).some(
+          (attachment) => !attachment.expired,
+        );
+        // An old bridge ignores attachments and would report DONE for an
+        // image-only turn. Refuse that result: keeping the files and showing
+        // a failure lets the human upgrade and retry instead of losing them.
+        const input: CompleteChatMessageInput =
+          hasImages && parsed.status === 'DONE' && parsed.attachmentsHandled !== true
+            ? {
+                status: 'FAILED',
+                error:
+                  '端侧 bridge 未读取图片（attached images were not handled）；请升级到 0.1.20 或更高版本后重试',
+                ...(parsed.force ? { force: true } : {}),
+              }
+            : parsed;
+        const result = repo.completeChatMessage(
           Number(session.id),
           Number(message.id),
           input,
           Date.now(),
           input.force === true,
         );
+        // The runner already downloaded the images before this turn finished;
+        // DONE is the point where the hub's copy is no longer needed.
+        if (input.status === 'DONE') {
+          const used = repo.expireChatMessageAttachments(
+            Number(session.id),
+            Number(message.id),
+          );
+          if (used.length > 0) {
+            await removeChatImages(
+              config.chatUploadsPath,
+              Number(session.id),
+              used,
+            );
+          }
+        }
+        return result;
       });
 
       // Human retries a failed turn in place; the runner claims it again.
@@ -2875,8 +3012,24 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
             );
           }
 
+          // Withdrawn before the runner saw it: the hub copy is dead weight.
+          const used = repo.expireChatMessageAttachments(
+            Number(session.id),
+            Number(message.id),
+          );
+          if (used.length > 0) {
+            await removeChatImages(
+              config.chatUploadsPath,
+              Number(session.id),
+              used,
+            );
+          }
+
           sessionBus.publish(session);
-          return { session, message };
+          return {
+            session,
+            message: repo.getChatMessage(Number(message.id)) ?? message,
+          };
         },
       );
 

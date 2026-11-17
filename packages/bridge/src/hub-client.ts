@@ -97,6 +97,12 @@ export interface HubApi {
     messageId: string,
     input: AppendChatEventInput,
   ): Promise<ChatEvent>;
+  /** Fetch one image the human attached to a message, as raw bytes. */
+  downloadChatAttachment(
+    sessionId: string,
+    messageId: string,
+    attachmentId: string,
+  ): Promise<Buffer>;
   completeChatMessage(
     sessionId: string,
     messageId: string,
@@ -319,6 +325,49 @@ export class HubClient implements HubApi {
       REQUEST_GRACE_MS,
     );
     return body.event;
+  }
+
+  async downloadChatAttachment(
+    sessionId: string,
+    messageId: string,
+    attachmentId: string,
+  ): Promise<Buffer> {
+    const sid = ticketIdSchema.parse(String(sessionId));
+    const mid = ticketIdSchema.parse(String(messageId));
+    const controller = new AbortController();
+    const timeoutMs = 60_000;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await this.fetchImpl(
+        this.url(
+          `/api/sessions/${sid}/messages/${mid}/attachments/${encodeURIComponent(attachmentId)}`,
+        ),
+        {
+          headers: { authorization: `Bearer ${this.config.token}` },
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok) {
+        throw new HubApiError(
+          response.status,
+          `HTTP_${response.status}`,
+          `cannot download chat attachment (${response.status})`,
+        );
+      }
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      if (error instanceof HubApiError) throw error;
+      if ((error as Error).name === 'AbortError') {
+        throw new HubApiError(0, 'REQUEST_TIMEOUT', 'chat attachment download timed out');
+      }
+      throw new HubApiError(
+        0,
+        'NETWORK_ERROR',
+        `cannot download chat attachment: ${(error as Error).message}`,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async completeChatMessage(

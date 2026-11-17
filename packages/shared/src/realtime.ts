@@ -114,6 +114,8 @@ export const realtimeClientFrameSchema = z.discriminatedUnion('type', [
     content: z.string().max(20_000).optional(),
     externalId: z.string().max(128).optional(),
     error: z.string().max(2_000).optional(),
+    /** The runner consumed the message's attached images before replying. */
+    attachmentsHandled: z.boolean().optional(),
   }),
   z.object({
     type: z.literal('pty.ready'),

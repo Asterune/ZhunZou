@@ -7,6 +7,7 @@ import type {
 } from '@zhunzou/shared';
 
 import type { BridgeConfig } from './config.js';
+import { prepareChatPrompt, removeChatAttachmentFiles } from './chat-attachments.js';
 import { HubApiError, type HubApi } from './hub-client.js';
 import type { PresenceReporter } from './presence.js';
 import { RunnerState } from './runner-state.js';
@@ -86,12 +87,12 @@ export function supportsChat(wake: WakeConfig): boolean {
 function renderChatTemplate(
   template: string,
   session: ChatSession,
-  message: ChatMessage,
   externalId: string,
+  text: string,
 ): string {
   const values: Record<string, string> = {
-    message: message.content,
-    prompt: message.content,
+    message: text,
+    prompt: text,
     session: externalId,
     env: session.env,
     project: session.projectName ?? '',
@@ -107,6 +108,7 @@ export function buildChatRun(
   wake: WakeConfig,
   session: ChatSession,
   message: ChatMessage,
+  text = message.content,
 ): ChatRun {
   const externalId = session.externalId;
   // A conversation created with an explicit model keeps it across turns.
@@ -127,7 +129,7 @@ export function buildChatRun(
           ...(model ? ['-m', model] : []),
           '--session',
           assigned,
-          message.content,
+          text,
         ],
         externalId: assigned,
       };
@@ -143,7 +145,7 @@ export function buildChatRun(
           'json',
           ...(model ? ['--model', model] : []),
           ...(externalId ? ['--resume', externalId] : []),
-          message.content,
+          text,
         ],
       };
     }
@@ -156,7 +158,7 @@ export function buildChatRun(
           'json',
           ...(model ? ['--model', model] : []),
           ...(externalId ? ['--resume', externalId] : []),
-          message.content,
+          text,
         ],
       };
     case 'qoder':
@@ -168,7 +170,7 @@ export function buildChatRun(
           'json',
           ...(model ? ['--model', model] : []),
           ...(externalId ? ['--resume', externalId] : []),
-          message.content,
+          text,
         ],
       };
     case 'command': {
@@ -181,8 +183,8 @@ export function buildChatRun(
       const template = renderChatTemplate(
         wake.command,
         session,
-        message,
         assigned,
+        text,
       );
       return {
         binary: process.platform === 'win32' ? 'cmd' : 'sh',
@@ -435,10 +437,15 @@ export async function runSessionDaemon(
       }`,
     );
     state.beginTurn(message.id);
+    const summary =
+      message.content.trim() ||
+      (message.attachments?.length
+        ? `[${message.attachments.length} 张图片]`
+        : '');
     await options.presence
       ?.beat({
         status: 'Running',
-        currentTask: tail(`会话 #${session.id}：${message.content}`, 300),
+        currentTask: tail(`会话 #${session.id}：${summary}`, 300),
       })
       .catch(() => undefined);
 
@@ -450,8 +457,13 @@ export async function runSessionDaemon(
     sink.push('system', `[zhunzou] 开始处理消息 #${message.id}\n`);
 
     let completion: CompleteChatMessageInput;
+    let promptFiles: string[] = [];
+    let imagesHandled = false;
     try {
-      const run = buildChatRun(adapter, wake, session, message);
+      const prompt = await prepareChatPrompt(client, session, message);
+      promptFiles = prompt.files;
+      imagesHandled = true;
+      const run = buildChatRun(adapter, wake, session, message, prompt.text);
       const result = await runTurn(run, wake, session, state, sink.push);
 
       if (result.timedOut) {
@@ -486,6 +498,13 @@ export async function runSessionDaemon(
       sink.push('system', `\n[zhunzou] 失败：${reason}\n`);
       completion = { status: 'FAILED', error: reason.slice(0, 2_000) };
       logError(`会话 #${session.id} 消息 #${message.id} 失败：${reason}`);
+    } finally {
+      // The CLI has exited; the phone keeps the original, the runner does not.
+      await removeChatAttachmentFiles(promptFiles);
+    }
+
+    if (imagesHandled && message.attachments?.length) {
+      completion = { ...completion, attachmentsHandled: true };
     }
 
     await sink.close();

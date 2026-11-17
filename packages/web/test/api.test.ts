@@ -223,7 +223,7 @@ describe('createHubApi', () => {
     expect(list.sessions).toHaveLength(1);
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('/api/sessions?limit=50');
 
-    await api.sendChatMessage(token, '1', 'hello');
+    await api.sendChatMessage(token, '1', { content: 'hello' });
     expect(fetchImpl.mock.calls[1]?.[0]).toBe('/api/sessions/1/messages');
     expect(
       JSON.parse(String((fetchImpl.mock.calls[1]?.[1] as RequestInit).body)),
