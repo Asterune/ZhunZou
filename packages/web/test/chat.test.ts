@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest';
 import type { ChatMessage, DecisionTicket } from '@zhunzou/shared';
 
 import {
+  dirName,
   queuedUserMessages,
+  sessionProjectMismatch,
   ticketsForSession,
+  workspaceForSession,
 } from '../src/lib/chat';
 
 function message(overrides: Partial<ChatMessage>): ChatMessage {
@@ -86,5 +89,72 @@ describe('queuedUserMessages', () => {
     ];
 
     expect(queuedUserMessages(messages).map((item) => item.id)).toEqual(['2']);
+  });
+});
+
+describe('workspaceForSession', () => {
+  const workspaces = [
+    { env: 'claude-mac', path: '/Users/qiliu/agent-hub', projectName: 'agent-hub' },
+    { env: 'cursor-mac', path: '/Users/qiliu/FitAI-', projectName: 'FitAI-' },
+  ];
+
+  it('returns the directory of the session env, not its project label', () => {
+    expect(
+      workspaceForSession(
+        { env: 'claude-mac', projectName: 'FitAI-' },
+        workspaces,
+      ),
+    ).toEqual(workspaces[0]);
+  });
+
+  it('has nothing to say about an env the hub never reported', () => {
+    expect(
+      workspaceForSession({ env: 'ghost-mac', projectName: 'FitAI-' }, workspaces),
+    ).toBeNull();
+    expect(workspaceForSession(null, workspaces)).toBeNull();
+  });
+});
+
+describe('sessionProjectMismatch', () => {
+  const hub = {
+    env: 'claude-mac',
+    path: '/Users/qiliu/agent-hub',
+    projectName: 'agent-hub',
+  };
+
+  it('flags a conversation labelled after another project', () => {
+    expect(
+      sessionProjectMismatch({ env: 'claude-mac', projectName: 'FitAI-' }, hub),
+    ).toBe(true);
+  });
+
+  it('accepts the label that names the directory', () => {
+    expect(
+      sessionProjectMismatch({ env: 'claude-mac', projectName: 'agent-hub' }, hub),
+    ).toBe(false);
+  });
+
+  it('does not guess when the project or directory is unknown', () => {
+    expect(sessionProjectMismatch({ env: 'claude-mac' }, hub)).toBe(false);
+    expect(
+      sessionProjectMismatch({ env: 'claude-mac', projectName: 'FitAI-' }, null),
+    ).toBe(false);
+  });
+
+  it('falls back to the folder name when the workspace has no label', () => {
+    expect(
+      sessionProjectMismatch(
+        { env: 'claude-mac', projectName: 'agent-hub' },
+        { path: '/Users/qiliu/agent-hub/' },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('dirName', () => {
+  it('reads the last segment of either path flavour', () => {
+    expect(dirName('/Users/qiliu/FitAI-')).toBe('FitAI-');
+    expect(dirName('C:\\work\\erp\\')).toBe('erp');
+    expect(dirName('')).toBe('');
   });
 });

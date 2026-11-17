@@ -908,6 +908,9 @@ export async function runFleet(
       ...(runtime.hub.projectName
         ? { projectName: runtime.hub.projectName }
         : {}),
+      // This loop is the one that spawns the CLI, so its cwd is the directory a
+      // conversation actually runs in.
+      workspacePath: runtime.wake.cwd,
       onError: (error) =>
         err(
           `[${runtime.project.env}] heartbeat failed: ${(error as Error).message}`,

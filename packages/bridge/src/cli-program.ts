@@ -619,6 +619,9 @@ export function createProgram(): Command {
         const presence = createPresenceReporter(client, {
           intervalMs: hub.heartbeatIntervalMs,
           ...(hub.projectName ? { projectName: hub.projectName } : {}),
+          // The wake loop owns the cwd, so it is the honest answer to "where
+          // does a conversation sent to this env run".
+          workspacePath: wake.cwd,
           onError: (error) =>
             process.stderr.write(
               `[zhunzou] heartbeat failed: ${(error as Error).message}\n`,

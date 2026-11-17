@@ -77,6 +77,8 @@ export const envHeartbeats = sqliteTable(
     env: text('env').primaryKey(),
     status: text('status').$type<EnvStatus>().notNull(),
     projectName: text('project_name'),
+    /** Directory the runner executes in; absent when no runner reported one. */
+    workspacePath: text('workspace_path'),
     currentTask: text('current_task'),
     note: text('note'),
     lastSeenAt: integer('last_seen_at').notNull(),

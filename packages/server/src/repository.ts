@@ -258,6 +258,7 @@ function toHeartbeat(row: HeartbeatRow, now: number): EnvHeartbeat {
     env: row.env,
     status: row.status,
     ...(row.projectName ? { projectName: row.projectName } : {}),
+    ...(row.workspacePath ? { workspacePath: row.workspacePath } : {}),
     ...(row.currentTask ? { currentTask: row.currentTask } : {}),
     ...(row.note ? { note: row.note } : {}),
     lastSeenAt: row.lastSeenAt,
@@ -1297,6 +1298,7 @@ export class TicketRepository implements TicketStore {
         env: input.env,
         status: input.status,
         projectName: input.projectName ?? null,
+        workspacePath: input.workspacePath ?? null,
         currentTask,
         note: input.note ?? null,
         lastSeenAt: now,
@@ -1309,6 +1311,12 @@ export class TicketRepository implements TicketStore {
           currentTask,
           note: input.note ?? null,
           lastSeenAt: now,
+          // Several processes share one env (an editor MCP server, the fleet
+          // runner). Only the one that owns the wake loop knows the directory,
+          // so a heartbeat without it must not erase the last answer.
+          ...(input.workspacePath
+            ? { workspacePath: input.workspacePath }
+            : {}),
         },
       })
       .returning()

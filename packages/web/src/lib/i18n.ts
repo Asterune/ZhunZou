@@ -479,6 +479,11 @@ const zh: Record<string, string> = {
   'chat.runnerHintBefore': '会话由端侧 runner 执行；本机需要常驻',
   'chat.runnerHintMiddle': '或',
   'chat.runnerHintAfter': '，否则消息会停在待领取。',
+  'chat.execDirTitle': '实际执行目录：{dir}',
+  'chat.dirMismatchTitle': '项目与执行目录不一致',
+  'chat.dirMismatchBody':
+    '这个会话标记为 {project}，但 {env} 的 runner 会在 {dir} 里执行，改动和部署都会落到那个仓库。请先在「接入端 → 关联目录」把 {project} 的目录关联到本机，再用它对应的环境开会话。',
+  'chat.dirMismatchBlocked': '项目与执行目录不一致，消息未发送',
   'chat.selectOrCreate': '选择一个会话，或新建一个。',
   'chat.loadingSession': '正在加载会话…',
 
@@ -1155,6 +1160,11 @@ const en: Record<string, string> = {
   'chat.runnerHintBefore': 'Turns run on the local runner; keep',
   'chat.runnerHintMiddle': 'or',
   'chat.runnerHintAfter': 'running, otherwise messages stay queued.',
+  'chat.execDirTitle': 'Working directory: {dir}',
+  'chat.dirMismatchTitle': 'Project and working directory disagree',
+  'chat.dirMismatchBody':
+    'This conversation is labelled {project}, but the runner for {env} executes in {dir} — edits and deploys land in that repository. Associate the {project} directory with this machine under Agents → Link directory, then open the conversation on the environment that owns it.',
+  'chat.dirMismatchBlocked': 'Project and working directory disagree; message not sent',
   'chat.selectOrCreate': 'Pick a chat, or create one.',
   'chat.loadingSession': 'Loading session…',
 

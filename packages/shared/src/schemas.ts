@@ -212,6 +212,15 @@ export const heartbeatSchema = z.object({
   env: envSchema,
   status: z.enum(ENV_STATUSES),
   projectName: projectNameSchema.optional(),
+  /**
+   * Directory the runner executes turns in.
+   *
+   * A project name is a label the hub stores; this is the location. Only the
+   * process that owns the wake loop reports it, and an absent value leaves the
+   * last known directory alone — an editor MCP server that happens to share the
+   * env must not erase what the runner said.
+   */
+  workspacePath: z.string().trim().min(1).max(1000).optional(),
   currentTask: z.string().trim().max(300).optional(),
   note: z.string().trim().max(500).optional(),
   /** Optional client metadata; the hub auto-registers the agent from it. */
@@ -222,6 +231,7 @@ export const envHeartbeatSchema = z.object({
   env: envSchema,
   status: z.enum(ENV_STATUSES),
   projectName: projectNameSchema.optional(),
+  workspacePath: z.string().trim().min(1).max(1000).optional(),
   currentTask: z.string().trim().max(300).optional(),
   note: z.string().trim().max(500).optional(),
   lastSeenAt: z.number().int().nonnegative(),

@@ -5,6 +5,8 @@ import type { HubApi } from './hub-client.js';
 export interface PresenceState {
   status: EnvStatus;
   projectName?: string;
+  /** Directory the runner executes in; only the process owning it reports one. */
+  workspacePath?: string;
   currentTask?: string;
   note?: string;
 }
@@ -27,6 +29,12 @@ export interface PresenceOptions {
   /** Project name reported with every heartbeat so the dashboard can bind it. */
   projectName?: string;
   /**
+   * Directory this process runs agent turns in. Reported with every heartbeat
+   * so a conversation can show where it will execute — and notice when that
+   * is not the project it claims to be.
+   */
+  workspacePath?: string;
+  /**
    * What the first heartbeat should say. The default reads as an idle MCP
    * server, which is wrong for a process that is already doing something.
    */
@@ -38,6 +46,7 @@ function payloadOf(state: PresenceState) {
   return {
     status: state.status,
     ...(state.projectName ? { projectName: state.projectName } : {}),
+    ...(state.workspacePath ? { workspacePath: state.workspacePath } : {}),
     ...(state.currentTask ? { currentTask: state.currentTask } : {}),
     ...(state.note ? { note: state.note } : {}),
   };
@@ -55,6 +64,7 @@ export function createPresenceReporter(
   let state: PresenceState = {
     status: 'Idle',
     ...(options.projectName ? { projectName: options.projectName } : {}),
+    ...(options.workspacePath ? { workspacePath: options.workspacePath } : {}),
     currentTask: 'MCP 已连接',
     ...options.initial,
   };

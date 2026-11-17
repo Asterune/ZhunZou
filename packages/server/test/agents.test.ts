@@ -572,3 +572,53 @@ describe('env identity across machines', () => {
     }
   });
 });
+
+describe('runner directory on the heartbeat', () => {
+  const ENV_DIR = 'claude-mac';
+  const DIR = '/Users/qiliu/agent-hub';
+  const OTHER_DIR = '/Users/qiliu/FitAI-';
+
+  async function beatDirectory(
+    ctx: Ctx,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/status/heartbeat',
+      headers: ctx.auth,
+      payload: { env: ENV_DIR, status: 'Idle', ...payload },
+    });
+    expect(response.statusCode).toBe(200);
+  }
+
+  async function reportedDirectory(ctx: Ctx): Promise<string | undefined> {
+    const response = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/status',
+      headers: ctx.auth,
+    });
+    const body = response.json() as {
+      envs: Array<{ env: string; workspacePath?: string }>;
+    };
+    return body.envs.find((env) => env.env === ENV_DIR)?.workspacePath;
+  }
+
+  it('keeps the directory the runner reported', async () => {
+    const ctx = await createTestContext();
+    try {
+      await beatDirectory(ctx, { workspacePath: DIR });
+      expect(await reportedDirectory(ctx)).toBe(DIR);
+
+      // An editor MCP server sharing the env has no directory to report; that
+      // must not erase the one the runner already answered with.
+      await beatDirectory(ctx, { currentTask: 'MCP 已连接' });
+      expect(await reportedDirectory(ctx)).toBe(DIR);
+
+      // The runner itself moving is a real change and has to land.
+      await beatDirectory(ctx, { workspacePath: OTHER_DIR });
+      expect(await reportedDirectory(ctx)).toBe(OTHER_DIR);
+    } finally {
+      await ctx.close();
+    }
+  });
+});

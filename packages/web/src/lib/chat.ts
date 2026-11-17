@@ -30,3 +30,57 @@ export function queuedUserMessages(
     (message) => message.role === 'user' && message.status === 'PENDING',
   );
 }
+
+/** The parts of a fleet workspace a conversation needs to describe itself. */
+export interface WorkspaceDirectory {
+  env: string;
+  path: string;
+  projectName?: string | null;
+}
+
+/** Last path segment; a workspace without a project label still has a name. */
+export function dirName(path: string): string {
+  return path.split(/[\\/]+/).filter(Boolean).pop() ?? '';
+}
+
+/**
+ * Directory the runner will execute this conversation in, when the hub knows it.
+ *
+ * A session's `projectName` is only a label the hub stores; the runner works in
+ * the node's fleet workspace for that `env`. The workspace is therefore the
+ * honest answer to "where will this run" — and looking it up by env rather than
+ * by project is what lets a mislabelled session show that it is mislabelled.
+ */
+export function workspaceForSession<T extends WorkspaceDirectory>(
+  session: SessionScope | null | undefined,
+  workspaces: readonly T[],
+): T | null {
+  const env = session?.env;
+  if (!env) return null;
+  const rows = workspaces.filter((workspace) => workspace.env === env);
+  if (rows.length <= 1) return rows[0] ?? null;
+  // One env should own one directory; if the hub ever reports more, prefer the
+  // workspace that actually carries this session's project name.
+  const project = session?.projectName?.trim();
+  return (
+    rows.find((workspace) => workspace.projectName === project) ?? rows[0] ?? null
+  );
+}
+
+/**
+ * True when the session's project label and the directory the runner executes
+ * in name different things.
+ *
+ * That is the state where "部署一下" typed in a project conversation redeploys
+ * whichever repo the node was started in, so the chat has to say so out loud
+ * instead of letting the label imply the directory.
+ */
+export function sessionProjectMismatch(
+  session: SessionScope | null | undefined,
+  directory: { path: string; projectName?: string | null } | null | undefined,
+): boolean {
+  const project = session?.projectName?.trim();
+  if (!project || !directory) return false;
+  const actual = directory.projectName?.trim() || dirName(directory.path);
+  return project !== actual;
+}

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import {
+  AlertTriangle,
   ArrowUp,
+  FolderGit2,
   Gavel,
   ListOrdered,
   Loader2,
@@ -32,7 +34,12 @@ import type {
 } from '@zhunzou/shared';
 
 import { hubApi } from '../lib/api';
-import { queuedUserMessages, ticketsForSession } from '../lib/chat';
+import {
+  queuedUserMessages,
+  sessionProjectMismatch,
+  ticketsForSession,
+  workspaceForSession,
+} from '../lib/chat';
 import { failureKindLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { useHubStore } from '../stores/hub';
@@ -168,6 +175,41 @@ const sessionAgent = computed(() =>
 
 const sessionOnline = computed(() => Boolean(sessionAgent.value?.online));
 
+/**
+ * Where this conversation will actually run.
+ *
+ * The session's project name is a label; the node's workspace for its env is
+ * the directory the runner spawns the CLI in. Showing the path — and refusing
+ * to pretend a label is a location — is what keeps "更新部署" from landing in
+ * the wrong repository.
+ */
+const sessionWorkspace = computed(() =>
+  workspaceForSession(session.value, store.fleetWorkspaces),
+);
+
+/**
+ * The directory the turn will really execute in.
+ *
+ * The runner's own heartbeat wins: it is the process that spawns the CLI.
+ * A fleet association is only a fallback for nodes that have not reported a
+ * directory yet. `null` means "the hub does not know", which must not be shown
+ * as if the project label were the location.
+ */
+const sessionDirectory = computed(() => {
+  const reported = store.envs.find(
+    (item) => item.env === session.value?.env,
+  )?.workspacePath;
+  const path = reported?.trim() || sessionWorkspace.value?.path || '';
+  if (!path) return null;
+  return { path, projectName: sessionWorkspace.value?.projectName ?? '' };
+});
+
+const sessionCwd = computed(() => sessionDirectory.value?.path ?? '');
+
+const sessionDirMismatch = computed(() =>
+  sessionProjectMismatch(session.value, sessionDirectory.value),
+);
+
 const runningMessage = computed(() =>
   [...messages.value]
     .reverse()
@@ -261,6 +303,9 @@ const canSend = computed(
     Boolean(session.value) &&
     session.value?.status === 'ACTIVE' &&
     draft.value.trim().length > 0 &&
+    // A mislabelled session would run the turn in someone else's repo; the
+    // banner above the composer explains what to fix first.
+    !sessionDirMismatch.value &&
     !sending.value,
 );
 
@@ -428,7 +473,12 @@ async function createSession(): Promise<void> {
 }
 
 async function send(): Promise<void> {
-  if (!canSend.value || !session.value) return;
+  if (!session.value) return;
+  if (sessionDirMismatch.value) {
+    pushToast(t('chat.dirMismatchBlocked'), 'error');
+    return;
+  }
+  if (!canSend.value) return;
   const content = draft.value.trim();
   if (!content) return;
 
@@ -931,6 +981,15 @@ onBeforeUnmount(() => {
                 {{ activeSession.projectName }}
               </span>
               <span
+                v-if="sessionCwd"
+                class="flex min-w-0 items-center gap-1 font-mono"
+                :class="sessionDirMismatch ? 'text-error' : ''"
+                :title="t('chat.execDirTitle', { dir: sessionCwd })"
+              >
+                <FolderGit2 :size="11" class="shrink-0" />
+                <span class="max-w-[16rem] truncate">{{ sessionCwd }}</span>
+              </span>
+              <span
                 v-if="activeSession.model"
                 class="rounded bg-surface-container-high px-1.5 py-0.5 font-mono"
                 :title="t('chat.modelBadge')"
@@ -1323,6 +1382,24 @@ onBeforeUnmount(() => {
               {{ t('chat.runningNow') }}
             </span>
             <span class="text-on-surface-variant/60">{{ t('chat.queueHint') }}</span>
+          </div>
+          <div
+            v-if="sessionDirMismatch"
+            class="mb-2 rounded-lg border border-error/40 bg-error-container/40 px-2.5 py-2 text-[11px] leading-5 text-on-error-container"
+          >
+            <p class="flex items-center gap-1 font-medium">
+              <AlertTriangle :size="12" class="shrink-0" />
+              {{ t('chat.dirMismatchTitle') }}
+            </p>
+            <p class="mt-0.5">
+              {{
+                t('chat.dirMismatchBody', {
+                  project: activeSession.projectName ?? '',
+                  env: activeSession.env,
+                  dir: sessionCwd,
+                })
+              }}
+            </p>
           </div>
           <div class="flex items-end gap-2">
             <textarea

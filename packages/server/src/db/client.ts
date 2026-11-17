@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS env_heartbeats (
   env TEXT PRIMARY KEY,
   status TEXT NOT NULL,
   project_name TEXT,
+  workspace_path TEXT,
   current_task TEXT,
   note TEXT,
   last_seen_at INTEGER NOT NULL
@@ -387,6 +388,8 @@ export function createDatabase(dbPath: string): {
   ensureColumn(sqlite, 'tickets', 'expires_at', 'INTEGER');
   ensureColumn(sqlite, 'tickets', 'task_id', 'INTEGER');
   sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tickets_task ON tickets(task_id);');
+  // The runner's directory is where a conversation will actually execute.
+  ensureColumn(sqlite, 'env_heartbeats', 'workspace_path', 'TEXT');
   ensureColumn(sqlite, 'agent_tasks', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(sqlite, 'agent_tasks', 'lease_at', 'INTEGER');
   // Supervisor fields: a pre-Phase-1 hub has no routing, origin or retry
