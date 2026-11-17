@@ -41,24 +41,50 @@ export function useMediaQuery(query: string) {
 }
 
 /**
- * Height of the part of the page the phone is actually showing.
+ * How far the page must move down so a `position: fixed` layer lines up with
+ * the part of the screen the phone is actually showing.
+ *
+ * On iOS the keyboard shrinks `visualViewport`, and Safari pans the visual
+ * viewport down to reveal the focused input (`offsetTop > 0`). Fixed elements
+ * are still laid out against the layout viewport, so a full-screen page pinned
+ * at `top: 0` loses its header off the top and leaves a gap above the keyboard.
+ * Following `offsetTop` fixes that.
+ *
+ * iOS 26 sometimes leaves `offsetTop` above zero after the keyboard closes.
+ * The page is scroll-locked while a conversation is open, so an offset larger
+ * than the keyboard-covered area cannot be real; clamp it away.
+ */
+export function visibleViewportTop(
+  offsetTop: number,
+  height: number,
+  layoutHeight: number,
+): number {
+  const covered = Math.max(0, layoutHeight - height);
+  return Math.max(0, Math.min(offsetTop, covered));
+}
+
+/**
+ * Metrics of the part of the page the phone is actually showing.
  *
  * On iOS the soft keyboard shrinks `visualViewport` but not `100dvh`, so a
  * chat pinned to dvh would leave its composer buried under the keyboard. A
  * conversation listens to this and sizes itself from the visible height.
  */
-export function useVisualViewportHeight() {
-  const height = ref(
-    typeof window === 'undefined'
-      ? 0
-      : Math.round(window.visualViewport?.height ?? window.innerHeight),
-  );
+export function useVisualViewport() {
+  const height = ref(0);
+  const offsetTop = ref(0);
+  const layoutHeight = ref(0);
 
   function sync(): void {
     if (typeof window === 'undefined') return;
-    height.value = Math.round(
-      window.visualViewport?.height ?? window.innerHeight,
-    );
+    const viewport = window.visualViewport;
+    height.value = Math.round(viewport?.height ?? window.innerHeight);
+    offsetTop.value = Math.round(viewport?.offsetTop ?? 0);
+    layoutHeight.value = Math.round(window.innerHeight);
+  }
+
+  if (typeof window !== 'undefined') {
+    sync();
   }
 
   onMounted(() => {
@@ -76,5 +102,5 @@ export function useVisualViewportHeight() {
     window.visualViewport?.removeEventListener('scroll', sync);
   });
 
-  return height;
+  return { height, offsetTop, layoutHeight };
 }

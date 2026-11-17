@@ -54,7 +54,11 @@ import {
   type VoiceSession,
 } from '../lib/speech';
 import { pageParallaxOffset, shouldCompleteSwipe } from '../lib/swipe';
-import { useMediaQuery, useVisualViewportHeight } from '../lib/viewport';
+import {
+  useMediaQuery,
+  useVisualViewport,
+  visibleViewportTop,
+} from '../lib/viewport';
 import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
 import ChatSessionList from './ChatSessionList.vue';
@@ -69,7 +73,15 @@ const { t, locale } = useI18n();
 
 /** Desktop keeps the two columns; phones get list → detail pages. */
 const isDesktop = useMediaQuery('(min-width: 1024px)');
-const viewportHeight = useVisualViewportHeight();
+const viewport = useVisualViewport();
+const viewportHeight = viewport.height;
+const viewportTop = computed(() =>
+  visibleViewportTop(
+    viewport.offsetTop.value,
+    viewport.height.value,
+    viewport.layoutHeight.value,
+  ),
+);
 
 /** Remember the open chat so a PWA update reload lands back in it. */
 const ACTIVE_SESSION_KEY = 'zhunzou.chat.active';
@@ -331,21 +343,33 @@ const mobileListStyle = computed(() => {
  * the *visible* viewport (visualViewport), not `100dvh`: on iOS the keyboard
  * shrinks the former while the latter keeps the old height and hides the
  * composer. Desktop keeps the in-grid card.
+ *
+ * Safari also pans the visual viewport down to reveal the focused composer
+ * (`offsetTop > 0`). A fixed layer stays glued to the layout viewport, so the
+ * page has to follow that pan or its top bar is pushed off-screen while the
+ * user types. The transform is only emitted while the page is actually
+ * sliding: an idle `translate3d(0, 0, 0)` would promote the fixed page to its
+ * own compositing layer, which iOS positions inconsistently around the
+ * keyboard.
  */
 const chatCardStyle = computed(() => {
   if (isDesktop.value) {
     return { height: 'clamp(340px, calc(100dvh - 13rem), 760px)' };
   }
+  const sliding = detailOffset.value !== 0 || detailAnimating.value;
   return {
-    height: viewportHeight.value
-      ? `${Math.max(320, viewportHeight.value)}px`
-      : '100dvh',
-    transform: `translate3d(${detailOffset.value}px, 0, 0)`,
-    transition: detailAnimating.value
-      ? `transform ${motionMs()}ms ${DETAIL_EASE}`
-      : 'none',
+    top: `${viewportTop.value}px`,
+    height: viewportHeight.value ? `${viewportHeight.value}px` : '100dvh',
+    ...(sliding
+      ? {
+          transform: `translate3d(${detailOffset.value}px, 0, 0)`,
+          transition: detailAnimating.value
+            ? `transform ${motionMs()}ms ${DETAIL_EASE}`
+            : 'none',
+          willChange: 'transform',
+        }
+      : {}),
     touchAction: 'pan-y',
-    willChange: 'transform',
     boxShadow:
       detailOffset.value > 0
         ? '-10px 0 30px rgba(30, 27, 25, 0.18)'
