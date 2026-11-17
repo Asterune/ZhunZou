@@ -1,27 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import { visibleViewportTop } from '../src/lib/viewport';
+import { viewportTopOffset } from '../src/lib/viewport';
 
-describe('visibleViewportTop', () => {
-  it('stays at the layout top while the keyboard is closed', () => {
-    expect(visibleViewportTop(0, 800, 800)).toBe(0);
+describe('viewportTopOffset', () => {
+  it('stays at zero while no editable control is focused', () => {
+    expect(viewportTopOffset(0, false)).toBe(0);
+    // iOS 26 can leave a stale offset after the keyboard closes.
+    expect(viewportTopOffset(120, false)).toBe(0);
   });
 
-  it('follows the pan Safari applies to reveal a focused input', () => {
-    expect(visibleViewportTop(120, 500, 800)).toBe(120);
+  it('follows the pan Safari applies to reveal a focused composer', () => {
+    expect(viewportTopOffset(120, true)).toBe(120);
+    expect(viewportTopOffset(0, true)).toBe(0);
   });
 
-  it('never scrolls past the area the keyboard covers', () => {
-    // 300px is hidden by the keyboard, so a larger offset cannot be real.
-    expect(visibleViewportTop(420, 500, 800)).toBe(300);
-  });
-
-  it('ignores a stale offset after the keyboard closes (iOS 26)', () => {
-    expect(visibleViewportTop(120, 800, 800)).toBe(0);
-  });
-
-  it('tolerates a layout viewport that has not been measured yet', () => {
-    expect(visibleViewportTop(0, 0, 0)).toBe(0);
-    expect(visibleViewportTop(50, 0, 0)).toBe(0);
+  it('never produces a negative translation', () => {
+    expect(viewportTopOffset(-12, true)).toBe(0);
   });
 });

@@ -524,6 +524,7 @@ const zh: Record<string, string> = {
   'chat.autoAdopted': 'hub 自动采纳：{reason}',
   'chat.inputPlaceholder':
     '给这个项目的 Agent 发消息…（Enter 换行，Shift+Enter 发送）',
+  'chat.inputPlaceholderMobile': '发消息…',
   'chat.send': '发送',
   'chat.runnerHintBefore': '会话由端侧 runner 执行；本机需要常驻',
   'chat.runnerHintMiddle': '或',
@@ -1258,6 +1259,7 @@ const en: Record<string, string> = {
   'chat.autoAdopted': 'Auto-adopted by the hub: {reason}',
   'chat.inputPlaceholder':
     'Message this project’s agent… (Enter for a new line, Shift+Enter to send)',
+  'chat.inputPlaceholderMobile': 'Message…',
   'chat.send': 'Send',
   'chat.runnerHintBefore': 'Turns run on the local runner; keep',
   'chat.runnerHintMiddle': 'or',

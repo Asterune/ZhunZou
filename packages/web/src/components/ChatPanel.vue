@@ -65,7 +65,7 @@ import { pageParallaxOffset, shouldCompleteSwipe } from '../lib/swipe';
 import {
   useMediaQuery,
   useVisualViewport,
-  visibleViewportTop,
+  viewportTopOffset,
 } from '../lib/viewport';
 import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
@@ -84,13 +84,59 @@ const { t, locale } = useI18n();
 const isDesktop = useMediaQuery('(min-width: 1024px)');
 const viewport = useVisualViewport();
 const viewportHeight = viewport.height;
+/** True while a form control is focused; gates the iOS keyboard pan offset. */
+const editableFocused = ref(false);
+/**
+ * A focused field owns the visual viewport: use its height (the keyboard may
+ * shrink it) and follow its pan. On blur, snap back to the layout viewport so
+ * a stale shrunken height cannot leave the chat as a half-page strip.
+ */
 const viewportTop = computed(() =>
-  visibleViewportTop(
-    viewport.offsetTop.value,
-    viewport.height.value,
-    viewport.layoutHeight.value,
-  ),
+  viewportTopOffset(viewport.offsetTop.value, editableFocused.value),
 );
+const pageHeight = computed(() =>
+  editableFocused.value
+    ? viewportHeight.value || viewport.layoutHeight.value
+    : viewport.layoutHeight.value || viewportHeight.value,
+);
+
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (
+    target.matches(
+      'textarea, [contenteditable]:not([contenteditable="false"])',
+    )
+  ) {
+    return true;
+  }
+  if (target instanceof HTMLInputElement) {
+    return ![
+      'button',
+      'checkbox',
+      'radio',
+      'file',
+      'range',
+      'color',
+      'submit',
+      'reset',
+      'image',
+    ].includes(target.type);
+  }
+  return false;
+}
+
+function onDocumentFocusIn(event: FocusEvent): void {
+  editableFocused.value = isEditableElement(event.target);
+}
+
+function onDocumentFocusOut(): void {
+  // focusout fires before the next element receives focus; let it settle.
+  queueMicrotask(() => {
+    if (typeof document !== 'undefined') {
+      editableFocused.value = isEditableElement(document.activeElement);
+    }
+  });
+}
 
 /** Remember the open chat so a PWA update reload lands back in it. */
 const ACTIVE_SESSION_KEY = 'zhunzou.chat.active';
@@ -362,29 +408,23 @@ const mobileListStyle = computed(() => {
  *
  * Safari also pans the visual viewport down to reveal the focused composer
  * (`offsetTop > 0`). A fixed layer stays glued to the layout viewport, so the
- * page has to follow that pan or its top bar is pushed off-screen while the
- * user types. The transform is only emitted while the page is actually
- * sliding: an idle `translate3d(0, 0, 0)` would promote the fixed page to its
- * own compositing layer, which iOS positions inconsistently around the
- * keyboard.
+ * page follows that pan with `translateY`; the panel is a composited layer
+ * anyway, and transform-only movement avoids fighting the keyboard animation.
  */
 const chatCardStyle = computed(() => {
   if (isDesktop.value) {
     return { height: 'clamp(340px, calc(100dvh - 13rem), 760px)' };
   }
-  const sliding = detailOffset.value !== 0 || detailAnimating.value;
   return {
-    top: `${viewportTop.value}px`,
-    height: viewportHeight.value ? `${viewportHeight.value}px` : '100dvh',
-    ...(sliding
-      ? {
-          transform: `translate3d(${detailOffset.value}px, 0, 0)`,
-          transition: detailAnimating.value
-            ? `transform ${motionMs()}ms ${DETAIL_EASE}`
-            : 'none',
-          willChange: 'transform',
-        }
-      : {}),
+    height: pageHeight.value ? `${pageHeight.value}px` : '100dvh',
+    // translateY follows the iOS visual-viewport pan. A compositor transform
+    // tracks the keyboard animation more reliably than changing `top`, which
+    // forces a layout pass that Safari can repaint a frame behind.
+    transform: `translate3d(${detailOffset.value}px, ${viewportTop.value}px, 0)`,
+    transition: detailAnimating.value
+      ? `transform ${motionMs()}ms ${DETAIL_EASE}`
+      : 'none',
+    willChange: 'transform',
     touchAction: 'pan-y',
     boxShadow:
       detailOffset.value > 0
@@ -403,6 +443,7 @@ watchEffect(() => {
 // Keep the list underneath still while the page covers it.
 watch(mobileChatDetailOpen, (open) => {
   if (typeof document === 'undefined') return;
+  document.documentElement.style.overflow = open ? 'hidden' : '';
   document.body.style.overflow = open ? 'hidden' : '';
 });
 
@@ -1321,6 +1362,8 @@ watch(voiceState, (state) => {
 onMounted(() => {
   if (mode.value === 'single') setMode('single');
   voiceSupported.value = speechSupported();
+  document.addEventListener('focusin', onDocumentFocusIn);
+  document.addEventListener('focusout', onDocumentFocusOut);
   void loadSessions(true);
   startPolling();
 });
@@ -1331,10 +1374,15 @@ onBeforeUnmount(() => {
   removeDragListeners();
   clearDetailTimers();
   clearPendingImages();
+  document.removeEventListener('focusin', onDocumentFocusIn);
+  document.removeEventListener('focusout', onDocumentFocusOut);
   mobileChatDetailOpen.value = false;
   mobileChatShift.value = 0;
   mobileChatAnimating.value = false;
-  if (typeof document !== 'undefined') document.body.style.overflow = '';
+  if (typeof document !== 'undefined') {
+    document.documentElement.style.overflow = '';
+    document.body.style.overflow = '';
+  }
   if (typeof window !== 'undefined') {
     window.removeEventListener('pointerup', onWindowPointerUp);
     window.removeEventListener('pointercancel', onWindowPointerUp);
@@ -2193,7 +2241,11 @@ onBeforeUnmount(() => {
               rows="2"
               maxlength="32000"
               :disabled="activeSession.status !== 'ACTIVE' || sending"
-              :placeholder="t('chat.inputPlaceholder')"
+              :placeholder="
+                isDesktop
+                  ? t('chat.inputPlaceholder')
+                  : t('chat.inputPlaceholderMobile')
+              "
               class="min-h-[52px] min-w-0 flex-1 resize-none rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-3 py-2 text-[13px] leading-5 text-on-surface outline-none focus:border-primary disabled:opacity-60"
               @keydown="onComposerKeydown"
               @paste="onComposerPaste"

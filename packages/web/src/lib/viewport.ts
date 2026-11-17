@@ -41,26 +41,19 @@ export function useMediaQuery(query: string) {
 }
 
 /**
- * How far the page must move down so a `position: fixed` layer lines up with
- * the part of the screen the phone is actually showing.
+ * How far a fixed layer must move down to follow the visual viewport.
  *
- * On iOS the keyboard shrinks `visualViewport`, and Safari pans the visual
- * viewport down to reveal the focused input (`offsetTop > 0`). Fixed elements
- * are still laid out against the layout viewport, so a full-screen page pinned
- * at `top: 0` loses its header off the top and leaves a gap above the keyboard.
- * Following `offsetTop` fixes that.
- *
- * iOS 26 sometimes leaves `offsetTop` above zero after the keyboard closes.
- * The page is scroll-locked while a conversation is open, so an offset larger
- * than the keyboard-covered area cannot be real; clamp it away.
+ * iOS pans the visual viewport to reveal a focused input (`offsetTop > 0`).
+ * Only trust the offset while an editable control is focused: iOS 26 can leave
+ * a stale offset after the keyboard closes, and the page is scroll-locked, so
+ * a nonzero offset with nothing focused is never a real keyboard pan.
  */
-export function visibleViewportTop(
+export function viewportTopOffset(
   offsetTop: number,
-  height: number,
-  layoutHeight: number,
+  editableFocused: boolean,
 ): number {
-  const covered = Math.max(0, layoutHeight - height);
-  return Math.max(0, Math.min(offsetTop, covered));
+  if (!editableFocused) return 0;
+  return Math.max(0, Math.round(offsetTop));
 }
 
 /**
