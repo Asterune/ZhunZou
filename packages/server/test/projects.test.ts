@@ -145,14 +145,82 @@ describe('GET /api/projects', () => {
     }
   });
 
-  it('answers admin credentials only', async () => {
-    const ctx = await createTestContext();
+  it('answers admin credentials only', async () => {    const ctx = await createTestContext();
     try {
       const response = await ctx.app.inject({
         method: 'GET',
         url: '/api/projects',
       });
       expect(response.statusCode).toBe(401);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+describe('project name canonicalisation', () => {
+  it('binds every spelling of one project to the spelling already in use', async () => {
+    const ctx = await createTestContext();
+    try {
+      for (const env of ['cursor-a', 'cursor-b']) {
+        await ctx.app.inject({
+          method: 'POST',
+          url: '/api/agents',
+          headers: ctx.auth,
+          payload: { env, kind: 'cursor', host: 'lq' },
+        });
+      }
+
+      ctx.app.repo.bindWorkspaceProject('cursor-a', 'FitAI-');
+      // A different case and a lost trailing separator are the same project.
+      ctx.app.repo.bindWorkspaceProject('cursor-b', 'fitai');
+      ctx.app.repo.bindWorkspaceProject('cursor-a', 'FitAI');
+
+      const list = await projects(ctx);
+      expect(list).toHaveLength(1);
+      expect(list[0]).toMatchObject({
+        name: 'FitAI-',
+        envs: ['cursor-a', 'cursor-b'],
+      });
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('files tickets, tasks and sessions under the canonical name', async () => {
+    const ctx = await createTestContext();
+    try {
+      await ctx.app.inject({
+        method: 'POST',
+        url: '/api/agents',
+        headers: ctx.auth,
+        payload: { env: 'cursor-a', kind: 'cursor', host: 'lq' },
+      });
+      ctx.app.repo.bindWorkspaceProject('cursor-a', 'FitAI-');
+
+      await createTicket(ctx, {
+        env: 'cursor-a',
+        projectName: 'fitai',
+      });
+      ctx.app.repo.createTask({
+        env: 'cursor-a',
+        title: '补测试',
+        instruction: '给登录页补测试',
+        projectName: 'FitAI',
+      });
+      const session = ctx.app.repo.createChatSession({
+        env: 'cursor-a',
+        projectName: 'fitai',
+      });
+
+      const list = await projects(ctx);
+      expect(list).toHaveLength(1);
+      expect(list[0]).toMatchObject({
+        name: 'FitAI-',
+        ticketCount: 1,
+        taskCount: 1,
+      });
+      expect(session.projectName).toBe('FitAI-');
     } finally {
       await ctx.close();
     }

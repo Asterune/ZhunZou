@@ -92,6 +92,8 @@ import {
   HEARTBEAT_ONLINE_WINDOW_MS,
   createLearnedRuleSchema,
   nodeFreeMemoryMB,
+  projectDisplayName,
+  projectKey,
   wipBranchName,
 } from '@zhunzou/shared';
 
@@ -1151,7 +1153,7 @@ export class TicketRepository implements TicketStore {
       .insert(tickets)
       .values({
         env: input.env,
-        projectName: input.projectName,
+        projectName: this.resolveProjectName(input.projectName),
         status: 'PENDING_META',
         taskId: claimed?.id ?? null,
         doneSummary: input.doneSummary,
@@ -1520,13 +1522,17 @@ export class TicketRepository implements TicketStore {
       input.currentTask === LEGACY_IDLE_TASK
         ? LEGACY_IDLE_TASK_LABEL
         : (input.currentTask ?? null);
+    // The card, the binding and every later ticket must agree on one spelling.
+    const projectName = input.projectName
+      ? this.resolveProjectName(input.projectName)
+      : undefined;
 
     const row = this.db
       .insert(envHeartbeats)
       .values({
         env: input.env,
         status: input.status,
-        projectName: input.projectName ?? null,
+        projectName: projectName ?? null,
         workspacePath: input.workspacePath ?? null,
         currentTask,
         note: input.note ?? null,
@@ -1536,7 +1542,7 @@ export class TicketRepository implements TicketStore {
         target: envHeartbeats.env,
         set: {
           status: input.status,
-          projectName: input.projectName ?? null,
+          projectName: projectName ?? null,
           currentTask,
           note: input.note ?? null,
           lastSeenAt: now,
@@ -1551,8 +1557,8 @@ export class TicketRepository implements TicketStore {
       .returning()
       .get();
 
-    if (input.projectName) {
-      this.bindWorkspaceProject(input.env, input.projectName, now);
+    if (projectName) {
+      this.bindWorkspaceProject(input.env, projectName, now);
     }
 
     // An active agent proves the task is still being worked on, so refresh
@@ -2158,12 +2164,15 @@ export class TicketRepository implements TicketStore {
     // Make the device visible in the top status strip as well as the agent
     // registry. If an HTTP heartbeat already owns the status, only refresh the
     // timestamp so a running task is not overwritten with "Idle".
+    const projectName = input.projectName
+      ? this.resolveProjectName(input.projectName)
+      : undefined;
     this.db
       .insert(envHeartbeats)
       .values({
         env: input.env,
         status: 'Idle',
-        projectName: input.projectName ?? null,
+        projectName: projectName ?? null,
         currentTask: '反向长连已连接',
         note: null,
         lastSeenAt: now,
@@ -2172,13 +2181,13 @@ export class TicketRepository implements TicketStore {
         target: envHeartbeats.env,
         set: {
           lastSeenAt: now,
-          ...(input.projectName ? { projectName: input.projectName } : {}),
+          ...(projectName ? { projectName } : {}),
         },
       })
       .run();
 
-    if (input.projectName) {
-      this.bindWorkspaceProject(input.env, input.projectName, now);
+    if (projectName) {
+      this.bindWorkspaceProject(input.env, projectName, now);
     }
 
     return this.getAgent(input.env, now)!;
@@ -2521,14 +2530,17 @@ export class TicketRepository implements TicketStore {
     input: CreateChatSessionInput,
     now = Date.now(),
   ): ChatSession {
+    const projectName = input.projectName
+      ? this.resolveProjectName(input.projectName)
+      : undefined;
     const title =
       input.title?.trim() ||
-      `${input.projectName ?? input.env} 会话`;
+      `${projectName ?? input.env} 会话`;
     const row = this.db
       .insert(chatSessions)
       .values({
         env: input.env,
-        projectName: input.projectName ?? null,
+        projectName: projectName ?? null,
         title,
         status: 'ACTIVE',
         model: input.model?.trim() || null,
@@ -2538,8 +2550,8 @@ export class TicketRepository implements TicketStore {
       .returning()
       .get();
 
-    if (input.projectName) {
-      this.bindWorkspaceProject(input.env, input.projectName, now);
+    if (projectName) {
+      this.bindWorkspaceProject(input.env, projectName, now);
     }
     return toChatSession(row, 0, 0);
   }
@@ -3340,7 +3352,9 @@ export class TicketRepository implements TicketStore {
       .insert(terminalSessions)
       .values({
         env: input.env,
-        projectName: input.projectName ?? null,
+        projectName: input.projectName
+          ? this.resolveProjectName(input.projectName)
+          : null,
         title: input.title,
         shell: input.shell ?? null,
         cwd: input.cwd ?? null,
@@ -3536,7 +3550,9 @@ export class TicketRepository implements TicketStore {
       .insert(exchanges)
       .values({
         env,
-        projectName: input.projectName ?? null,
+        projectName: input.projectName
+          ? this.resolveProjectName(input.projectName)
+          : null,
         question: input.question ?? null,
         conclusion: input.conclusion ?? null,
         createdAt: now,
@@ -3625,11 +3641,14 @@ export class TicketRepository implements TicketStore {
   /* ---------------------------------------------------------------- */
 
   createTask(input: CreateTaskInput, now = Date.now()): AgentTask {
+    const projectName = input.projectName
+      ? this.resolveProjectName(input.projectName)
+      : undefined;
     const row = this.db
       .insert(agentTasks)
       .values({
         env: input.env,
-        projectName: input.projectName ?? null,
+        projectName: projectName ?? null,
         title: input.title,
         instruction: input.instruction,
         status: 'PENDING',
@@ -3646,8 +3665,8 @@ export class TicketRepository implements TicketStore {
       .returning()
       .get();
 
-    if (input.projectName) {
-      this.bindWorkspaceProject(input.env, input.projectName, now);
+    if (projectName) {
+      this.bindWorkspaceProject(input.env, projectName, now);
     }
 
     return toTask(row);
@@ -3659,11 +3678,14 @@ export class TicketRepository implements TicketStore {
   }
 
   createWrappedTask(input: CreateLocalTaskInput, now = Date.now()): AgentTask {
+    const projectName = input.projectName
+      ? this.resolveProjectName(input.projectName)
+      : undefined;
     const row = this.db
       .insert(agentTasks)
       .values({
         env: input.env,
-        projectName: input.projectName ?? null,
+        projectName: projectName ?? null,
         title: input.title,
         instruction: input.instruction,
         // Claimed on the way in: the terminal that is running it holds the work.
@@ -3684,8 +3706,8 @@ export class TicketRepository implements TicketStore {
       .returning()
       .get();
 
-    if (input.projectName) {
-      this.bindWorkspaceProject(input.env, input.projectName, now);
+    if (projectName) {
+      this.bindWorkspaceProject(input.env, projectName, now);
     }
 
     return toTask(row);
@@ -4085,11 +4107,12 @@ export class TicketRepository implements TicketStore {
     projectName: string,
     now = Date.now(),
   ): WorkspaceProject {
+    const canonical = this.resolveProjectName(projectName);
     const row = this.db
       .insert(workspaceProjects)
       .values({
         env,
-        projectName,
+        projectName: canonical,
         createdAt: now,
         updatedAt: now,
       })
@@ -4101,6 +4124,43 @@ export class TicketRepository implements TicketStore {
       .get();
 
     return toWorkspaceProject(row);
+  }
+
+  /**
+   * The spelling this project already uses, or a cleaned version of `name`.
+   *
+   * Clients report one checkout under several spellings (`FitAI-`, `FitAI`,
+   * `fitai`), and every heartbeat used to add the newcomer as a new project.
+   * Matching is by `projectKey`; the winner is the spelling with the most
+   * bindings, then the oldest, which keeps the label the dashboard already
+   * shows instead of letting the latest typo rename the project.
+   */
+  private resolveProjectName(name: string): string {
+    const key = projectKey(name);
+    const cleaned = projectDisplayName(name);
+    if (!key) return cleaned;
+
+    const rows = this.db
+      .select({
+        projectName: workspaceProjects.projectName,
+        bindings: count(),
+        firstSeenAt: sql<number>`min(${workspaceProjects.createdAt})`,
+      })
+      .from(workspaceProjects)
+      .groupBy(workspaceProjects.projectName)
+      .orderBy(desc(count()), asc(sql`min(${workspaceProjects.createdAt})`))
+      .all()
+      // SQL leaves same-count, same-age spellings in arbitrary order; the
+      // lexical tiebreak keeps the choice stable between heartbeats.
+      .sort(
+        (left, right) =>
+          right.bindings - left.bindings ||
+          left.firstSeenAt - right.firstSeenAt ||
+          (left.projectName < right.projectName ? -1 : 1),
+      );
+
+    const match = rows.find((row) => projectKey(row.projectName) === key);
+    return projectDisplayName(match?.projectName ?? name);
   }
 
   listWorkspaceProjects(query: ListWorkspaceProjectsQuery = {}): {

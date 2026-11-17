@@ -24,6 +24,8 @@ import type {
   WorkspaceProject,
 } from '@zhunzou/shared';
 
+import { dedupeProjectNames } from '@zhunzou/shared';
+
 import { ApiError, hubApi, type HubApi, type ServerHealth } from '../lib/api';
 import {
   isActiveTask,
@@ -254,20 +256,22 @@ export function createHubStore(api: HubApi = hubApi) {
    * dashboard never has to ask the user to type a project name.
    */
   const knownProjects = computed(() => {
-    const names = new Set<string>();
+    const names: string[] = [];
     for (const project of workspaceProjects.value) {
-      names.add(project.projectName);
+      names.push(project.projectName);
     }
     for (const env of envs.value) {
-      if (env.projectName) names.add(env.projectName);
+      if (env.projectName) names.push(env.projectName);
     }
     for (const task of tasks.value) {
-      if (task.projectName) names.add(task.projectName);
+      if (task.projectName) names.push(task.projectName);
     }
     for (const ticket of tickets.value) {
-      if (ticket.projectName) names.add(ticket.projectName);
+      if (ticket.projectName) names.push(ticket.projectName);
     }
-    return [...names].sort((left, right) => left.localeCompare(right));
+    return dedupeProjectNames(names).sort((left, right) =>
+      left.localeCompare(right),
+    );
   });
 
   /**
@@ -333,12 +337,10 @@ export function createHubStore(api: HubApi = hubApi) {
 
   /** Projects an identity knows: its bindings plus the workspace it has open. */
   function projectNamesOfEnv(env: string): string[] {
-    const names = new Set(
-      projectsForEnv(env).map((project) => project.projectName),
-    );
+    const names = projectsForEnv(env).map((project) => project.projectName);
     const current = envs.value.find((item) => item.env === env)?.projectName;
-    if (current) names.add(current);
-    return [...names];
+    if (current) names.push(current);
+    return dedupeProjectNames(names);
   }
 
   /**
@@ -359,29 +361,29 @@ export function createHubStore(api: HubApi = hubApi) {
     }
     if (!hosts.size) return [];
 
-    const names = new Set<string>();
+    const names: string[] = [];
     for (const candidate of fleetCandidates.value) {
       if (hosts.has(normalizeMachineHost(candidate.host))) {
-        names.add(candidate.projectName);
+        names.push(candidate.projectName);
       }
     }
     for (const workspace of fleetWorkspaces.value) {
       if (hosts.has(normalizeMachineHost(workspace.host))) {
-        names.add(workspace.projectName);
+        names.push(workspace.projectName);
       }
     }
-    return [...names];
+    return dedupeProjectNames(names);
   }
 
   function projectsForMachine(machine: MachineTarget): string[] {
-    const names = new Set<string>();
+    const names: string[] = [];
     for (const agent of machine.agents) {
-      for (const project of projectNamesOfEnv(agent.env)) names.add(project);
+      names.push(...projectNamesOfEnv(agent.env));
     }
-    for (const project of fleetProjectNamesOnMachine(machine)) {
-      names.add(project);
-    }
-    return [...names].sort((left, right) => left.localeCompare(right));
+    names.push(...fleetProjectNamesOnMachine(machine));
+    return dedupeProjectNames(names).sort((left, right) =>
+      left.localeCompare(right),
+    );
   }
 
   /** Identities on a machine that take this project; all of them when none is named. */
