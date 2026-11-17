@@ -27,6 +27,7 @@ import {
   reactive,
   ref,
   watch,
+  watchEffect,
 } from 'vue';
 
 import type {
@@ -45,13 +46,14 @@ import {
 } from '../lib/chat';
 import { failureKindLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
-import { mobileChatDetailOpen } from '../lib/mobile-chat';
+import { mobileChatAnimating, mobileChatDetailOpen, mobileChatShift } from '../lib/mobile-chat';
 import {
   appendTranscript,
   speechSupported,
   startVoiceRecognition,
   type VoiceSession,
 } from '../lib/speech';
+import { pageParallaxOffset, shouldCompleteSwipe } from '../lib/swipe';
 import { useMediaQuery, useVisualViewportHeight } from '../lib/viewport';
 import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
@@ -113,9 +115,22 @@ const error = ref('');
 const formOpen = ref(false);
 /** On a phone the session list is the first-level page, not a drawer. */
 const mobileDetail = ref(false);
-const mobileChatHeight = ref(0);
-const chatCardEl = ref<HTMLElement | null>(null);
+const detailEl = ref<HTMLElement | null>(null);
 const composerEl = ref<HTMLTextAreaElement | null>(null);
+
+/**
+ * iOS-style push/pop state for the phone's second-level page.
+ *
+ * `detailOffset` is how far the page sits to the right of the viewport:
+ * 0 = fully open, viewport width = fully off-screen. A back swipe drives it
+ * directly; releasing past a third of the width (or with a rightward fling)
+ * completes the pop, otherwise it springs back.
+ */
+const detailOffset = ref(0);
+const detailAnimating = ref(false);
+const detailClosing = ref(false);
+let closeTimer: ReturnType<typeof setTimeout> | null = null;
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Push-to-talk state, WeChat-style: keyboard ⇄ hold-to-talk. */
 const voiceMode = ref(false);
@@ -144,7 +159,6 @@ function setMode(next: ChatMode): void {
   if (next === 'chat') focusTaskId.value = '';
   if (next === 'single') {
     resetMobileDetail();
-    mobileDetail.value = false;
   }
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
@@ -267,33 +281,99 @@ const sessionTickets = computed(() =>
 
 const activeSession = computed(() => session.value);
 
-/** The transcript owns the phone screen only after a session was tapped. */
-const showMobileList = computed(
-  () => !isDesktop.value && !mobileDetail.value,
-);
+/** The phone keeps the list mounted underneath, so the push has something to slide over. */
+const showMobileList = computed(() => !isDesktop.value);
+
+const DETAIL_MS = 340;
+const DETAIL_EASE = 'cubic-bezier(.32,.72,0,1)';
+const EDGE_SWIPE_PX = 24;
+
+function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+  return Boolean(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+function motionMs(): number {
+  return prefersReducedMotion() ? 0 : DETAIL_MS;
+}
+
+function viewportWidth(): number {
+  if (typeof window === 'undefined') return 0;
+  return Math.round(window.visualViewport?.width ?? window.innerWidth);
+}
 
 /**
- * Size the card to the *visible* viewport, not `100dvh`: on iOS the keyboard
- * shrinks visualViewport while dvh keeps the old height and would hide the
- * composer underneath.
+ * The list page's horizontal offset while a conversation sits on top of it.
+ * 0 when closed; -28% of the screen when fully open (iOS parallax).
+ */
+const listShift = computed(() => {
+  if (isDesktop.value) return 0;
+  if (!mobileDetail.value && !detailClosing.value) return 0;
+  return pageParallaxOffset(viewportWidth(), detailOffset.value);
+});
+
+const mobileListStyle = computed(() => {
+  if (isDesktop.value) return undefined;
+  if (!mobileDetail.value && !detailClosing.value) return undefined;
+  return {
+    transform: `translate3d(${listShift.value}px, 0, 0)`,
+    transition: detailAnimating.value
+      ? `transform ${motionMs()}ms ${DETAIL_EASE}`
+      : 'none',
+    willChange: 'transform',
+  };
+});
+
+/**
+ * The phone renders the conversation as a fixed second-level page sized from
+ * the *visible* viewport (visualViewport), not `100dvh`: on iOS the keyboard
+ * shrinks the former while the latter keeps the old height and hides the
+ * composer. Desktop keeps the in-grid card.
  */
 const chatCardStyle = computed(() => {
   if (isDesktop.value) {
     return { height: 'clamp(340px, calc(100dvh - 13rem), 760px)' };
   }
-  if (mobileChatHeight.value) return { height: `${mobileChatHeight.value}px` };
-  return { height: '100dvh' };
+  return {
+    height: viewportHeight.value
+      ? `${Math.max(320, viewportHeight.value)}px`
+      : '100dvh',
+    transform: `translate3d(${detailOffset.value}px, 0, 0)`,
+    transition: detailAnimating.value
+      ? `transform ${motionMs()}ms ${DETAIL_EASE}`
+      : 'none',
+    touchAction: 'pan-y',
+    willChange: 'transform',
+    boxShadow:
+      detailOffset.value > 0
+        ? '-10px 0 30px rgba(30, 27, 25, 0.18)'
+        : 'none',
+  };
 });
 
-function syncChatHeight(): void {
-  if (typeof window === 'undefined') return;
-  if (isDesktop.value || !mobileDetail.value) return;
-  const element = chatCardEl.value;
-  if (!element) return;
-  const visible = window.visualViewport?.height ?? window.innerHeight;
-  const top = element.getBoundingClientRect().top;
-  mobileChatHeight.value = Math.max(320, Math.round(visible - top - 4));
-}
+// App.vue rides the global chrome along with the list pane.
+watchEffect(() => {
+  mobileChatShift.value = listShift.value;
+  mobileChatAnimating.value = detailAnimating.value;
+  mobileChatDetailOpen.value = mobileDetail.value || detailClosing.value;
+});
+
+// Keep the list underneath still while the page covers it.
+watch(mobileChatDetailOpen, (open) => {
+  if (typeof document === 'undefined') return;
+  document.body.style.overflow = open ? 'hidden' : '';
+});
+
+// A desktop viewport has no second-level page; fold the mobile state away so
+// the body does not stay scroll-locked after a rotation / resize.
+watch(isDesktop, (desktop) => {
+  if (!desktop) return;
+  removeDragListeners();
+  resetMobileDetail();
+  mobileChatDetailOpen.value = false;
+});
 
 /**
  * The transcript is a fixed-height scroll box, so new turns have to be pulled
@@ -395,7 +475,6 @@ async function loadSessions(
       session.value = null;
       messages.value = [];
       rememberActiveSession('');
-      mobileDetail.value = false;
       resetMobileDetail();
     }
 
@@ -443,6 +522,7 @@ async function refreshSession(
 }
 
 async function openSession(id: string): Promise<void> {
+  if (detailClosing.value) return;
   activeId.value = id;
   rememberActiveSession(id);
   session.value = null;
@@ -450,37 +530,226 @@ async function openSession(id: string): Promise<void> {
   cancelEditProposal();
   cancelEditQueued();
   if (!isDesktop.value) {
+    clearDetailTimers();
     mobileDetail.value = true;
-    mobileChatDetailOpen.value = true;
+    detailClosing.value = false;
+    detailAnimating.value = false;
+    detailOffset.value = viewportWidth();
   }
   await refreshSession({ force: true });
+  if (!isDesktop.value) {
+    if (!mobileDetail.value) return;
+    await nextTick();
+    playDetailEnter();
+  }
   stickToBottom = true;
-  void nextTick(() => {
-    scrollToBottom(true);
-    syncChatHeight();
-  });
-  if (typeof window !== 'undefined') {
+  void nextTick(() => scrollToBottom(true));
+  // The fixed page keeps the list's scroll position; only desktop follows the
+  // page itself back to the top.
+  if (isDesktop.value && typeof window !== 'undefined') {
     window.scrollTo({ top: 0, behavior: 'auto' });
   }
 }
 
-/**
- * WeChat's back arrow: return to the conversation list without throwing the
- * loaded session away, so re-entering it is instant.
- */
-function resetMobileDetail(): void {
-  mobileChatDetailOpen.value = false;
-  mobileChatHeight.value = 0;
+function clearDetailTimers(): void {
+  if (closeTimer) {
+    clearTimeout(closeTimer);
+    closeTimer = null;
+  }
+  if (settleTimer) {
+    clearTimeout(settleTimer);
+    settleTimer = null;
+  }
 }
 
-function backToList(): void {
+function settleDetailAnimation(): void {
+  if (settleTimer) clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => {
+    settleTimer = null;
+    detailAnimating.value = false;
+  }, motionMs() + 30);
+}
+
+/** Slide the second-level page in from the right, iOS-push style. */
+function playDetailEnter(): void {
+  if (isDesktop.value || !mobileDetail.value) return;
+  clearDetailTimers();
+  if (prefersReducedMotion()) {
+    detailAnimating.value = false;
+    detailOffset.value = 0;
+    return;
+  }
+  detailAnimating.value = false;
+  detailOffset.value = viewportWidth();
+  void nextTick(() => {
+    // Force a style flush so the browser animates from off-screen instead of
+    // painting the open position straight away.
+    void detailEl.value?.offsetWidth;
+    detailAnimating.value = true;
+    detailOffset.value = 0;
+    settleDetailAnimation();
+  });
+}
+
+function resetMobileDetail(): void {
+  clearDetailTimers();
+  detailClosing.value = false;
+  detailAnimating.value = false;
+  detailOffset.value = 0;
   mobileDetail.value = false;
+}
+
+function finalizeDetailClose(): void {
   resetMobileDetail();
   cancelEditProposal();
   cancelEditQueued();
-  if (typeof window !== 'undefined') {
-    window.scrollTo({ top: 0, behavior: 'auto' });
+}
+
+function scheduleDetailClose(): void {
+  if (closeTimer) clearTimeout(closeTimer);
+  closeTimer = setTimeout(() => {
+    closeTimer = null;
+    finalizeDetailClose();
+  }, motionMs() + 30);
+}
+
+function completeDetailClose(): void {
+  if (settleTimer) {
+    clearTimeout(settleTimer);
+    settleTimer = null;
   }
+  detailClosing.value = true;
+  detailAnimating.value = true;
+  detailOffset.value = viewportWidth();
+  scheduleDetailClose();
+}
+
+function closeMobileDetail(): void {
+  if (!mobileDetail.value || detailClosing.value) return;
+  if (isDesktop.value || !session.value || prefersReducedMotion()) {
+    finalizeDetailClose();
+    return;
+  }
+  clearDetailTimers();
+  completeDetailClose();
+}
+
+/** Back arrow / back swipe: animate the page out, then unmount it. */
+function backToList(): void {
+  closeMobileDetail();
+}
+
+// ---------------------------------------------------------------- back swipe
+//
+// iOS lets you start at the left edge and drag the pushed page back. The same
+// gesture here drives `detailOffset` frame by frame: the page follows the
+// finger, the list and the global chrome parallax underneath, and releasing
+// past a third of the width (or with a rightward fling) completes the pop.
+let dragPointerId: number | null = null;
+let dragAxis: 'none' | 'x' | 'y' = 'none';
+let dragStartX = 0;
+let dragStartY = 0;
+let dragStartOffset = 0;
+let dragLastX = 0;
+let dragLastAt = 0;
+let dragVelocity = 0;
+
+function removeDragListeners(): void {
+  if (typeof window === 'undefined') return;
+  window.removeEventListener('pointermove', onDetailPointerMove);
+  window.removeEventListener('pointerup', onDetailPointerEnd);
+  window.removeEventListener('pointercancel', onDetailPointerCancel);
+}
+
+function onDetailPointerDown(event: PointerEvent): void {
+  if (isDesktop.value || !mobileDetail.value || detailClosing.value) return;
+  if (event.pointerType === 'mouse' || !event.isPrimary) return;
+  // Only the left edge, like the system gesture.
+  if (event.clientX > EDGE_SWIPE_PX) return;
+  if (detailAnimating.value) return;
+
+  dragPointerId = event.pointerId;
+  dragAxis = 'none';
+  dragStartX = event.clientX;
+  dragStartY = event.clientY;
+  dragStartOffset = detailOffset.value;
+  dragLastX = event.clientX;
+  dragLastAt = performance.now();
+  dragVelocity = 0;
+  window.addEventListener('pointermove', onDetailPointerMove, {
+    passive: false,
+  });
+  window.addEventListener('pointerup', onDetailPointerEnd);
+  window.addEventListener('pointercancel', onDetailPointerCancel);
+}
+
+function onDetailPointerMove(event: PointerEvent): void {
+  if (dragPointerId === null || event.pointerId !== dragPointerId) return;
+  const dx = event.clientX - dragStartX;
+  const dy = event.clientY - dragStartY;
+
+  if (dragAxis === 'none') {
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+    // A vertical scroll (or a leftward drag) belongs to the page, not to us.
+    if (Math.abs(dy) >= Math.abs(dx) || dx <= 0) {
+      removeDragListeners();
+      dragAxis = 'y';
+      dragPointerId = null;
+      return;
+    }
+    dragAxis = 'x';
+    detailAnimating.value = false;
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+    }
+  }
+  if (dragAxis !== 'x') return;
+
+  event.preventDefault();
+  const width = viewportWidth();
+  detailOffset.value = Math.min(width, Math.max(0, dragStartOffset + dx));
+
+  const now = performance.now();
+  const elapsed = now - dragLastAt;
+  if (elapsed > 0) dragVelocity = (event.clientX - dragLastX) / elapsed;
+  dragLastX = event.clientX;
+  dragLastAt = now;
+}
+
+function finishDetailDrag(close: boolean): void {
+  removeDragListeners();
+  const wasHorizontal = dragAxis === 'x';
+  dragAxis = 'none';
+  dragPointerId = null;
+  if (!wasHorizontal) return;
+  if (close) {
+    clearDetailTimers();
+    completeDetailClose();
+    return;
+  }
+  detailAnimating.value = true;
+  detailOffset.value = 0;
+  settleDetailAnimation();
+}
+
+function onDetailPointerEnd(event: PointerEvent): void {
+  if (dragPointerId === null || event.pointerId !== dragPointerId) return;
+  // A finger that stopped before lifting is a placement, not a fling; without
+  // this, pausing at 20% and letting go would still complete the pop.
+  const stillMoving = performance.now() - dragLastAt < 100;
+  finishDetailDrag(
+    shouldCompleteSwipe(
+      detailOffset.value,
+      viewportWidth(),
+      stillMoving ? dragVelocity : 0,
+    ),
+  );
+}
+
+function onDetailPointerCancel(event: PointerEvent): void {
+  if (dragPointerId === null || event.pointerId !== dragPointerId) return;
+  finishDetailDrag(false);
 }
 
 // The dashboard long poll tells us when sessions or messages changed. Only
@@ -766,9 +1035,7 @@ async function deleteSession(item: ChatSession): Promise<void> {
       session.value = null;
       messages.value = [];
       rememberActiveSession('');
-      mobileDetail.value = false;
-      mobileChatDetailOpen.value = false;
-      mobileChatHeight.value = 0;
+      resetMobileDetail();
     }
     sessions.value = sessions.value.filter((entry) => entry.id !== item.id);
     await loadSessions(true);
@@ -910,36 +1177,22 @@ watch(voiceState, (state) => {
   }
 });
 
-// The bottom tab bar belongs to the first-level page only.
-watch(
-  [
-    isDesktop,
-    mobileDetail,
-    viewportHeight,
-    () => Boolean(activeSession.value),
-    () => store.connection,
-  ],
-  () => {
-    mobileChatDetailOpen.value = !isDesktop.value && mobileDetail.value;
-    if (!isDesktop.value && mobileDetail.value) {
-      void nextTick(syncChatHeight);
-    }
-  },
-  { immediate: true },
-);
-
 onMounted(() => {
   if (mode.value === 'single') setMode('single');
   voiceSupported.value = speechSupported();
   void loadSessions(true);
   startPolling();
-  void nextTick(syncChatHeight);
 });
 
 onBeforeUnmount(() => {
   stopPolling();
   cancelVoice();
+  removeDragListeners();
+  clearDetailTimers();
   mobileChatDetailOpen.value = false;
+  mobileChatShift.value = 0;
+  mobileChatAnimating.value = false;
+  if (typeof document !== 'undefined') document.body.style.overflow = '';
   if (typeof window !== 'undefined') {
     window.removeEventListener('pointerup', onWindowPointerUp);
     window.removeEventListener('pointercancel', onWindowPointerUp);
@@ -950,8 +1203,8 @@ onBeforeUnmount(() => {
 <template>
   <section>
     <div
-      v-if="isDesktop || !mobileDetail"
       class="mb-4 flex flex-wrap items-end justify-between gap-2 px-0.5"
+      :style="mobileListStyle"
     >
       <div class="flex items-center gap-2">
         <span class="h-2.5 w-2.5 rotate-45 rounded-[2px] bg-primary-container" />
@@ -1128,7 +1381,11 @@ onBeforeUnmount(() => {
       </aside>
 
       <!-- Phone, first level: the conversation list is the page itself. -->
-      <div v-if="showMobileList" class="lg:hidden">
+      <div
+        v-if="showMobileList"
+        class="lg:hidden"
+        :style="mobileListStyle"
+      >
         <ChatSessionList
           variant="page"
           :sessions="sessions"
@@ -1155,14 +1412,15 @@ onBeforeUnmount(() => {
       <!-- Chat -->
       <div
         v-if="activeSession && (isDesktop || mobileDetail)"
-        ref="chatCardEl"
+        ref="detailEl"
         class="flex flex-col overflow-hidden bg-surface-container-lowest"
         :class="
           isDesktop
             ? 'rounded-xl border border-outline-variant/35 shadow-sm'
-            : ''
+            : 'chat-swipe-page fixed inset-x-0 top-0 z-50 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]'
         "
         :style="chatCardStyle"
+        @pointerdown="onDetailPointerDown"
       >
         <!-- Desktop header -->
         <header
@@ -1234,7 +1492,7 @@ onBeforeUnmount(() => {
         <!-- Phone: the second-level page owns its top bar. -->
         <header
           v-else
-          class="shrink-0 border-b border-outline-variant/30 bg-surface/95 px-1.5 pb-2 pt-[calc(0.4rem_+_env(safe-area-inset-top))] backdrop-blur-xl"
+          class="shrink-0 border-b border-outline-variant/30 bg-surface px-1.5 pb-2 pt-[calc(0.4rem_+_env(safe-area-inset-top))]"
         >
           <div class="flex items-center gap-1">
             <button
@@ -1822,7 +2080,7 @@ onBeforeUnmount(() => {
 
       <div
         v-else-if="!isDesktop && mobileDetail"
-        class="flex min-h-[60vh] items-start justify-center bg-surface-container-lowest px-6 pt-[calc(2rem_+_env(safe-area-inset-top))] text-center text-[12px] text-on-surface-variant"
+        class="fixed inset-0 z-50 flex items-start justify-center bg-surface-container-lowest px-6 pl-[calc(1.5rem_+_env(safe-area-inset-left))] pr-[calc(1.5rem_+_env(safe-area-inset-right))] pt-[calc(2rem_+_env(safe-area-inset-top))] text-center text-[12px] text-on-surface-variant"
       >
         <div>
           <RefreshCw
@@ -1863,3 +2121,16 @@ onBeforeUnmount(() => {
     </div>
   </section>
 </template>
+
+<style scoped>
+/*
+ * The transcript is its own scroll container, and a scroll container's
+ * `touch-action: auto` would let the browser claim a horizontal drag before
+ * the back-swipe handler sees it. Pin every surface inside the second-level
+ * page to vertical panning so horizontal drags always reach the gesture.
+ */
+.chat-swipe-page,
+.chat-swipe-page :deep(*) {
+  touch-action: pan-y;
+}
+</style>

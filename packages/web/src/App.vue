@@ -43,7 +43,7 @@ import UpdatePrompt from './components/UpdatePrompt.vue';
 import { relativeTime, formatUptime } from './lib/format';
 import { blockedCount } from './lib/inbox';
 import { useI18n } from './lib/i18n';
-import { mobileChatDetailOpen } from './lib/mobile-chat';
+import { mobileChatAnimating, mobileChatShift } from './lib/mobile-chat';
 import { useHubStore } from './stores/hub';
 
 type Tab = 'pending' | 'inbox' | 'chat' | 'terminal' | 'agents' | 'history' | 'rules';
@@ -229,6 +229,21 @@ const connectionTextClass = computed(() => {
   return 'text-on-surface-variant';
 });
 
+/**
+ * The global header and tab bar ride along with the conversation-list page
+ * while a second-level chat pushes in from the right (and follows the finger
+ * during an iOS-style back swipe). ChatPanel publishes the shared offset.
+ */
+const mobileChromeStyle = computed(() => {
+  if (!mobileChatShift.value) return undefined;
+  return {
+    transform: `translate3d(${mobileChatShift.value}px, 0, 0)`,
+    transition: mobileChatAnimating.value
+      ? 'transform 340ms cubic-bezier(.32,.72,0,1)'
+      : 'none',
+  };
+});
+
 /** Ticks so the reported server uptime ages without another request. */
 const now = ref(Date.now());
 let clockTimer: ReturnType<typeof setInterval> | null = null;
@@ -286,16 +301,11 @@ onBeforeUnmount(() => {
 
   <div
     v-else
-    class="paper-grain min-h-screen bg-surface pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
-    :class="
-      mobileChatDetailOpen
-        ? 'pb-0 lg:pb-0'
-        : 'pb-[calc(6rem_+_env(safe-area-inset-bottom))] lg:pb-0'
-    "
+    class="paper-grain min-h-screen bg-surface pb-[calc(6rem_+_env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] lg:pb-0"
   >
     <header
-      v-if="!mobileChatDetailOpen"
       class="sticky top-0 z-40 border-b border-outline-variant/35 bg-surface pt-[env(safe-area-inset-top)] shadow-[0_1px_8px_rgba(30,27,25,0.04)]"
+      :style="mobileChromeStyle"
     >
       <div class="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4 sm:px-6">
         <div class="flex min-w-0 items-center gap-2.5">
@@ -481,12 +491,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main
-      class="mx-auto max-w-6xl"
-      :class="
-        mobileChatDetailOpen ? 'px-0 py-0 lg:px-6 lg:py-5' : 'px-4 py-5 sm:px-6'
-      "
-    >
+    <main class="mx-auto max-w-6xl px-4 py-5 sm:px-6">
       <div
         v-if="store.connection === 'offline'"
         class="mb-4 flex flex-wrap items-center gap-2 rounded-lg bg-tertiary-fixed px-3.5 py-2.5 text-xs text-on-tertiary-fixed shadow-sm"
@@ -602,9 +607,9 @@ onBeforeUnmount(() => {
     </footer>
 
     <nav
-      v-if="!mobileChatDetailOpen"
       class="fixed inset-x-0 bottom-0 z-40 border-t border-outline-variant/35 bg-surface/95 pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] shadow-[0_-2px_12px_rgba(30,27,25,0.05)] backdrop-blur-xl lg:hidden"
       :aria-label="t('app.mainNav')"
+      :style="mobileChromeStyle"
     >
       <div class="flex h-16 items-stretch">
         <button
