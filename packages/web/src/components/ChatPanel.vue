@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowUp,
   FolderGit2,
   Gavel,
+  Keyboard,
   ListOrdered,
   Loader2,
   MessageSquare,
   MessageSquarePlus,
-  PanelLeft,
+  Mic,
   PenLine,
   Plus,
   RefreshCw,
@@ -35,6 +37,7 @@ import type {
 
 import { hubApi } from '../lib/api';
 import {
+  isSendShortcut,
   queuedUserMessages,
   sessionProjectMismatch,
   ticketsForSession,
@@ -42,6 +45,14 @@ import {
 } from '../lib/chat';
 import { failureKindLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
+import { mobileChatDetailOpen } from '../lib/mobile-chat';
+import {
+  appendTranscript,
+  speechSupported,
+  startVoiceRecognition,
+  type VoiceSession,
+} from '../lib/speech';
+import { useMediaQuery, useVisualViewportHeight } from '../lib/viewport';
 import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
 import ChatSessionList from './ChatSessionList.vue';
@@ -52,7 +63,11 @@ import TaskBoard from './TaskBoard.vue';
 import TicketCard from './TicketCard.vue';
 
 const store = useHubStore();
-const { t } = useI18n();
+const { t, locale } = useI18n();
+
+/** Desktop keeps the two columns; phones get list → detail pages. */
+const isDesktop = useMediaQuery('(min-width: 1024px)');
+const viewportHeight = useVisualViewportHeight();
 
 /** Remember the open chat so a PWA update reload lands back in it. */
 const ACTIVE_SESSION_KEY = 'zhunzou.chat.active';
@@ -96,7 +111,18 @@ const queuedBusy = ref('');
 const error = ref('');
 
 const formOpen = ref(false);
-const sessionListOpen = ref(false);
+/** On a phone the session list is the first-level page, not a drawer. */
+const mobileDetail = ref(false);
+const mobileChatHeight = ref(0);
+const chatCardEl = ref<HTMLElement | null>(null);
+const composerEl = ref<HTMLTextAreaElement | null>(null);
+
+/** Push-to-talk state, WeChat-style: keyboard ⇄ hold-to-talk. */
+const voiceMode = ref(false);
+const voiceState = ref<'idle' | 'listening' | 'processing'>('idle');
+const voicePreview = ref('');
+const voiceSupported = ref(speechSupported());
+let voiceSession: VoiceSession | null = null;
 
 /**
  * 「单次执行」is the old 下发任务 page folded in here: same env/project picker,
@@ -116,6 +142,10 @@ function readInitialMode(): ChatMode {
 function setMode(next: ChatMode): void {
   mode.value = next;
   if (next === 'chat') focusTaskId.value = '';
+  if (next === 'single') {
+    resetMobileDetail();
+    mobileDetail.value = false;
+  }
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
   url.searchParams.set('tab', 'chat');
@@ -141,8 +171,6 @@ const modes = computed(() => [
     hint: t('chat.mode.singleHint'),
   },
 ]);
-const sessionListButton = ref<HTMLButtonElement | null>(null);
-const sessionDrawer = ref<HTMLElement | null>(null);
 const form = reactive({
   env: '',
   projectName: '',
@@ -238,6 +266,34 @@ const sessionTickets = computed(() =>
 );
 
 const activeSession = computed(() => session.value);
+
+/** The transcript owns the phone screen only after a session was tapped. */
+const showMobileList = computed(
+  () => !isDesktop.value && !mobileDetail.value,
+);
+
+/**
+ * Size the card to the *visible* viewport, not `100dvh`: on iOS the keyboard
+ * shrinks visualViewport while dvh keeps the old height and would hide the
+ * composer underneath.
+ */
+const chatCardStyle = computed(() => {
+  if (isDesktop.value) {
+    return { height: 'clamp(340px, calc(100dvh - 13rem), 760px)' };
+  }
+  if (mobileChatHeight.value) return { height: `${mobileChatHeight.value}px` };
+  return { height: 'calc(100dvh - 6rem)' };
+});
+
+function syncChatHeight(): void {
+  if (typeof window === 'undefined') return;
+  if (isDesktop.value || !mobileDetail.value) return;
+  const element = chatCardEl.value;
+  if (!element) return;
+  const visible = window.visualViewport?.height ?? window.innerHeight;
+  const top = element.getBoundingClientRect().top;
+  mobileChatHeight.value = Math.max(320, Math.round(visible - top - 4));
+}
 
 /**
  * The transcript is a fixed-height scroll box, so new turns have to be pulled
@@ -339,6 +395,8 @@ async function loadSessions(
       session.value = null;
       messages.value = [];
       rememberActiveSession('');
+      mobileDetail.value = false;
+      resetMobileDetail();
     }
 
     if (!session.value) {
@@ -346,7 +404,7 @@ async function loadSessions(
       // newest one when it was deleted elsewhere. Also covers a first load
       // that failed while the hub was restarting.
       if (activeId.value) await refreshSession({ force: true });
-      else if (selectFirst && response.sessions[0]) {
+      else if (selectFirst && isDesktop.value && response.sessions[0]) {
         await openSession(response.sessions[0].id);
       }
     }
@@ -385,16 +443,41 @@ async function refreshSession(
 }
 
 async function openSession(id: string): Promise<void> {
-  sessionListOpen.value = false;
   activeId.value = id;
   rememberActiveSession(id);
   session.value = null;
   messages.value = [];
   cancelEditProposal();
   cancelEditQueued();
+  if (!isDesktop.value) {
+    mobileDetail.value = true;
+    mobileChatDetailOpen.value = true;
+  }
   await refreshSession({ force: true });
   stickToBottom = true;
-  void nextTick(() => scrollToBottom(true));
+  void nextTick(() => {
+    scrollToBottom(true);
+    syncChatHeight();
+  });
+  if (typeof window !== 'undefined') {
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }
+}
+
+/**
+ * WeChat's back arrow: return to the conversation list without throwing the
+ * loaded session away, so re-entering it is instant.
+ */
+function resetMobileDetail(): void {
+  mobileChatDetailOpen.value = false;
+  mobileChatHeight.value = 0;
+}
+
+function backToList(): void {
+  mobileDetail.value = false;
+  resetMobileDetail();
+  cancelEditProposal();
+  cancelEditQueued();
   if (typeof window !== 'undefined') {
     window.scrollTo({ top: 0, behavior: 'auto' });
   }
@@ -470,6 +553,18 @@ async function createSession(): Promise<void> {
   } finally {
     creating.value = false;
   }
+}
+
+/**
+ * Enter inserts a newline; sending takes Shift+Enter.
+ *
+ * Bare Enter used to send, which also fired while a Chinese IME was still
+ * composing — confirming a candidate sent a half-finished sentence.
+ */
+function onComposerKeydown(event: KeyboardEvent): void {
+  if (!isSendShortcut(event)) return;
+  event.preventDefault();
+  void send();
 }
 
 async function send(): Promise<void> {
@@ -671,6 +766,9 @@ async function deleteSession(item: ChatSession): Promise<void> {
       session.value = null;
       messages.value = [];
       rememberActiveSession('');
+      mobileDetail.value = false;
+      mobileChatDetailOpen.value = false;
+      mobileChatHeight.value = 0;
     }
     sessions.value = sessions.value.filter((entry) => entry.id !== item.id);
     await loadSessions(true);
@@ -686,50 +784,169 @@ function openForm(): void {
   formOpen.value = true;
 }
 
-function openSessionList(): void {
-  sessionListOpen.value = true;
-}
-
-function closeSessionList(): void {
-  sessionListOpen.value = false;
-}
-
-function onSessionListKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') closeSessionList();
-}
-
-// The PWA keeps the transcript on screen and slides the session list in from
-// the left, so switching chats never steals half the viewport.
-watch(sessionListOpen, async (open) => {
-  if (typeof document !== 'undefined') {
-    document.body.style.overflow = open ? 'hidden' : '';
+function voiceErrorText(code: string): string {
+  switch (code) {
+    case 'not-allowed':
+    case 'service-not-allowed':
+      return t('chat.voiceNotAllowed');
+    case 'no-speech':
+      return t('chat.voiceNoSpeech');
+    case 'network':
+      return t('chat.voiceNetwork');
+    case 'audio-capture':
+      return t('chat.voiceNoMic');
+    default:
+      return t('chat.voiceFailed');
   }
-  if (open) {
-    document.addEventListener('keydown', onSessionListKeydown);
-    await nextTick();
-    sessionDrawer.value?.focus();
+}
+
+function toggleVoiceMode(): void {
+  if (!voiceSupported.value) {
+    pushToast(t('chat.voiceUnsupported'), 'error');
+    return;
+  }
+  if (voiceState.value !== 'idle') return;
+  voiceMode.value = !voiceMode.value;
+  voicePreview.value = '';
+}
+
+/** Called once the recognizer has a final transcript (or went silent). */
+function finishVoice(text: string): void {
+  voiceSession = null;
+  const spoken = (text || voicePreview.value).trim();
+  voicePreview.value = '';
+  voiceState.value = 'idle';
+  if (!spoken) return;
+  draft.value = appendTranscript(draft.value, spoken);
+  // Show the words in the real composer so they can be checked and edited.
+  voiceMode.value = false;
+  pushToast(t('chat.voiceTranscribed'), 'success');
+  // Desktop can edit right away; on a phone, keep the keyboard down until the
+  // human taps the box (otherwise the keyboard covers the transcript).
+  if (isDesktop.value) {
+    void nextTick(() => composerEl.value?.focus());
+  }
+}
+
+function beginVoice(): void {
+  if (
+    !voiceSupported.value ||
+    voiceState.value !== 'idle' ||
+    sending.value ||
+    !session.value ||
+    session.value.status !== 'ACTIVE'
+  ) {
+    return;
+  }
+  if (sessionDirMismatch.value) {
+    pushToast(t('chat.dirMismatchBlocked'), 'error');
+    return;
+  }
+
+  voicePreview.value = '';
+  const started = startVoiceRecognition(locale.value, {
+    onStart: () => {
+      voiceState.value = 'listening';
+    },
+    onTranscript: (text) => {
+      voicePreview.value = text;
+    },
+    onError: (code) => {
+      pushToast(voiceErrorText(code), 'error');
+    },
+    onEnd: (text) => finishVoice(text),
+  });
+
+  if (!started) {
+    voiceState.value = 'idle';
+    pushToast(t('chat.voiceFailed'), 'error');
+    return;
+  }
+  voiceSession = started;
+  voiceState.value = 'listening';
+}
+
+function endVoice(): void {
+  if (voiceState.value !== 'listening') return;
+  voiceState.value = 'processing';
+  voiceSession?.stop();
+}
+
+function cancelVoice(): void {
+  voiceSession?.abort();
+  voiceSession = null;
+  voicePreview.value = '';
+  if (voiceState.value !== 'idle') voiceState.value = 'idle';
+}
+
+function onVoicePointerDown(event: PointerEvent): void {
+  if (event.pointerType === 'mouse' && event.button !== 0) return;
+  event.preventDefault();
+  (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(
+    event.pointerId,
+  );
+  beginVoice();
+}
+
+function onVoicePointerUp(event: PointerEvent): void {
+  event.preventDefault();
+  endVoice();
+}
+
+function onWindowPointerUp(): void {
+  endVoice();
+}
+
+// Releasing outside the button still ends dictation; without capture the
+// pointerup can land on the page instead of the held button.
+watch(voiceState, (state) => {
+  if (typeof window === 'undefined') return;
+  if (state === 'listening') {
+    window.addEventListener('pointerup', onWindowPointerUp);
+    window.addEventListener('pointercancel', onWindowPointerUp);
   } else {
-    document.removeEventListener('keydown', onSessionListKeydown);
-    sessionListButton.value?.focus();
+    window.removeEventListener('pointerup', onWindowPointerUp);
+    window.removeEventListener('pointercancel', onWindowPointerUp);
   }
 });
 
+// The bottom tab bar belongs to the first-level page only.
+watch(
+  [isDesktop, mobileDetail, viewportHeight, () => Boolean(activeSession.value)],
+  () => {
+    mobileChatDetailOpen.value = !isDesktop.value && mobileDetail.value;
+    if (!isDesktop.value && mobileDetail.value) {
+      void nextTick(syncChatHeight);
+    }
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   if (mode.value === 'single') setMode('single');
+  voiceSupported.value = speechSupported();
   void loadSessions(true);
   startPolling();
+  void nextTick(syncChatHeight);
 });
 
 onBeforeUnmount(() => {
   stopPolling();
-  document.removeEventListener('keydown', onSessionListKeydown);
-  document.body.style.overflow = '';
+  cancelVoice();
+  mobileChatDetailOpen.value = false;
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pointerup', onWindowPointerUp);
+    window.removeEventListener('pointercancel', onWindowPointerUp);
+  }
 });
 </script>
 
 <template>
   <section>
-    <div class="mb-4 flex flex-wrap items-end justify-between gap-2 px-0.5">
+    <div
+      v-if="isDesktop || !mobileDetail"
+      class="mb-4 flex flex-wrap items-end justify-between gap-2 px-0.5"
+    >
       <div class="flex items-center gap-2">
         <span class="h-2.5 w-2.5 rotate-45 rounded-[2px] bg-primary-container" />
         <h2
@@ -886,6 +1103,7 @@ onBeforeUnmount(() => {
         <div class="min-h-0 flex-1">
           <ChatSessionList
             :sessions="sessions"
+            :tickets="store.pendingTickets"
             :active-id="activeId"
             :loading="loadingList"
             :loaded="listLoaded"
@@ -903,71 +1121,53 @@ onBeforeUnmount(() => {
         </div>
       </aside>
 
-      <!-- Mobile session drawer: the transcript stays on screen. -->
-      <Teleport to="body">
-        <Transition
-          enter-active-class="transition duration-200 ease-out"
-          enter-from-class="opacity-0"
-          leave-active-class="transition duration-150 ease-in"
-          leave-to-class="opacity-0"
-        >
-          <div
-            v-if="sessionListOpen"
-            class="fixed inset-0 z-50 lg:hidden"
-            role="dialog"
-            aria-modal="true"
-            :aria-label="t('chat.all')"
-          >
-            <div
-              class="absolute inset-0 bg-black/40 backdrop-blur-sm"
-              @click="closeSessionList"
-            />
-            <aside
-              ref="sessionDrawer"
-              tabindex="-1"
-              class="absolute inset-y-0 left-0 flex w-[86vw] max-w-xs flex-col bg-surface px-3 pb-[calc(0.75rem_+_env(safe-area-inset-bottom))] pt-[calc(0.75rem_+_env(safe-area-inset-top))] shadow-2xl outline-none"
-            >
-              <div class="min-h-0 flex-1">
-                <ChatSessionList
-                  :sessions="sessions"
-                  :active-id="activeId"
-                  :loading="loadingList"
-                  :loaded="listLoaded"
-                  :deleting-id="deletingId"
-                  dismissible
-                  @open="openSession"
-                  @delete="deleteSession"
-                  @refresh="loadSessions(true)"
-                  @close="closeSessionList"
-                />
-              </div>
-              <div class="mt-3 shrink-0 border-t border-outline-variant/30 pt-2">
-                <SingleTaskList
-                  :active-task-id="focusTaskId"
-                  @open="openSingleTask"
-                />
-              </div>
-            </aside>
-          </div>
-        </Transition>
-      </Teleport>
+      <!-- Phone, first level: the conversation list is the page itself. -->
+      <div v-if="showMobileList" class="lg:hidden">
+        <ChatSessionList
+          variant="page"
+          :sessions="sessions"
+          :tickets="store.pendingTickets"
+          :active-id="activeId"
+          :loading="loadingList"
+          :loaded="listLoaded"
+          :deleting-id="deletingId"
+          @open="openSession"
+          @delete="deleteSession"
+          @refresh="loadSessions(true)"
+        />
+        <div class="mt-3 border-t border-outline-variant/30 pt-2">
+          <SingleTaskList
+            :active-task-id="focusTaskId"
+            @open="openSingleTask"
+          />
+        </div>
+        <p class="mt-3 px-1 text-center text-[11px] text-on-surface-variant/60">
+          {{ t('chat.listHint') }}
+        </p>
+      </div>
 
       <!-- Chat -->
       <div
-        v-if="activeSession"
-        class="flex flex-col overflow-hidden rounded-xl border border-outline-variant/35 bg-surface-container-lowest shadow-sm"
-        style="height: clamp(340px, calc(100dvh - 13rem), 760px)"
+        v-if="activeSession && (isDesktop || mobileDetail)"
+        ref="chatCardEl"
+        class="flex flex-col overflow-hidden bg-surface-container-lowest"
+        :class="
+          isDesktop
+            ? 'rounded-xl border border-outline-variant/35 shadow-sm'
+            : 'border-y border-outline-variant/35'
+        "
+        :style="chatCardStyle"
       >
-        <header class="flex shrink-0 items-center gap-2 border-b border-outline-variant/30 px-2 py-3 sm:px-4">
+        <header class="flex shrink-0 items-center gap-2 border-b border-outline-variant/30 px-2 py-2.5 sm:px-4 sm:py-3">
           <button
-            ref="sessionListButton"
+            v-if="!isDesktop"
             type="button"
-            class="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface lg:hidden"
-            :aria-label="t('chat.openList')"
-            :title="t('chat.openList')"
-            @click="openSessionList"
+            class="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-on-surface"
+            :aria-label="t('chat.backToList')"
+            :title="t('chat.backToList')"
+            @click="backToList"
           >
-            <PanelLeft :size="18" />
+            <ArrowLeft :size="19" />
           </button>
           <div class="min-w-0 flex-1">
             <h3 class="truncate text-sm font-semibold text-on-surface">
@@ -1027,7 +1227,7 @@ onBeforeUnmount(() => {
             @click="closeSession"
           >
             <XCircle :size="13" />
-            {{ t('chat.close') }}
+            <span class="hidden sm:inline">{{ t('chat.close') }}</span>
           </button>
         </header>
 
@@ -1230,7 +1430,12 @@ onBeforeUnmount(() => {
           </section>
         </div>
 
-        <div class="shrink-0 border-t border-outline-variant/30 p-3">
+        <div
+          class="shrink-0 border-t border-outline-variant/30 p-3"
+          :class="
+            isDesktop ? '' : 'pb-[calc(0.75rem_+_env(safe-area-inset-bottom))]'
+          "
+        >
           <!-- Cursor-style queue: compact rows sit below the active turn and
                above the composer, so the transcript only holds sent turns. -->
           <section
@@ -1401,15 +1606,48 @@ onBeforeUnmount(() => {
               }}
             </p>
           </div>
-          <div class="flex items-end gap-2">
+          <div
+            v-if="voicePreview"
+            class="mb-2 rounded-xl border border-primary/25 bg-primary/[0.04] px-3 py-2 text-[12px] leading-5 text-on-surface"
+          >
+            <p class="mb-1 flex items-center gap-1 text-[10px] font-medium text-primary">
+              <Mic :size="11" />
+              {{
+                voiceState === 'listening'
+                  ? t('chat.voiceListening')
+                  : t('chat.voiceProcessing')
+              }}
+            </p>
+            <p class="max-h-20 overflow-y-auto whitespace-pre-wrap break-words">{{ voicePreview }}</p>
+          </div>
+
+          <div v-if="!voiceMode" class="flex items-end gap-2">
+            <button
+              type="button"
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg transition disabled:opacity-40"
+              :class="
+                voiceSupported
+                  ? 'text-on-surface-variant hover:bg-surface-container hover:text-primary'
+                  : 'text-on-surface-variant/40'
+              "
+              :disabled="activeSession.status !== 'ACTIVE'"
+              :aria-label="t('chat.voiceToggle')"
+              :title="
+                voiceSupported ? t('chat.voiceToggle') : t('chat.voiceUnsupported')
+              "
+              @click="toggleVoiceMode"
+            >
+              <Mic :size="17" />
+            </button>
             <textarea
+              ref="composerEl"
               v-model="draft"
               rows="2"
               maxlength="32000"
               :disabled="activeSession.status !== 'ACTIVE' || sending"
               :placeholder="t('chat.inputPlaceholder')"
               class="min-h-[52px] flex-1 resize-none rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-3 py-2 text-[13px] leading-5 text-on-surface outline-none focus:border-primary disabled:opacity-60"
-              @keydown.enter.exact.prevent="send"
+              @keydown="onComposerKeydown"
             />
             <button
               type="button"
@@ -1421,16 +1659,103 @@ onBeforeUnmount(() => {
               <ArrowUp :size="17" />
             </button>
           </div>
-          <p class="mt-1.5 text-[10px] text-on-surface-variant/60">
-            {{ t('chat.runnerHintBefore') }} <span class="font-mono">wake</span>
-            {{ t('chat.runnerHintMiddle') }}
-            <span class="font-mono">fleet</span>{{ t('chat.runnerHintAfter') }}
+
+          <!-- WeChat-style voice bar: hold to talk, release to transcribe. -->
+          <div v-else class="flex items-center gap-2">
+            <button
+              type="button"
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container hover:text-primary"
+              :aria-label="t('chat.voiceToggle')"
+              :title="t('chat.voiceToggle')"
+              @click="toggleVoiceMode"
+            >
+              <Keyboard :size="17" />
+            </button>
+            <button
+              type="button"
+              class="flex h-[52px] flex-1 touch-none select-none items-center justify-center gap-2 rounded-lg text-[14px] font-medium transition"
+              :class="
+                voiceState === 'listening'
+                  ? 'bg-primary text-on-primary shadow-inner'
+                  : voiceState === 'processing'
+                    ? 'bg-primary/15 text-primary'
+                    : 'bg-surface-container text-on-surface hover:bg-surface-container-high'
+              "
+              :disabled="activeSession.status !== 'ACTIVE' || sending"
+              @pointerdown="onVoicePointerDown"
+              @pointerup="onVoicePointerUp"
+              @pointercancel="onVoicePointerUp"
+              @contextmenu.prevent
+            >
+              <Loader2
+                v-if="voiceState === 'processing'"
+                :size="17"
+                class="animate-spin"
+              />
+              <Mic
+                v-else
+                :size="17"
+                :class="voiceState === 'listening' ? 'animate-pulse' : ''"
+              />
+              {{
+                voiceState === 'listening'
+                  ? t('chat.voiceRelease')
+                  : voiceState === 'processing'
+                    ? t('chat.voiceProcessing')
+                    : t('chat.voiceHold')
+              }}
+            </button>
+            <button
+              v-if="draft.trim()"
+              type="button"
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary text-on-primary transition hover:bg-primary-container disabled:opacity-40"
+              :disabled="!canSend"
+              :aria-label="t('chat.send')"
+              @click="send"
+            >
+              <ArrowUp :size="17" />
+            </button>
+          </div>
+
+          <p
+            class="mt-1.5 text-[10px] text-on-surface-variant/60"
+            :class="voiceMode ? '' : 'hidden sm:block'"
+          >
+            <template v-if="voiceMode">{{ t('chat.voiceHint') }}</template>
+            <template v-else>
+              {{ t('chat.runnerHintBefore') }}
+              <span class="font-mono">wake</span>
+              {{ t('chat.runnerHintMiddle') }}
+              <span class="font-mono">fleet</span>{{ t('chat.runnerHintAfter') }}
+            </template>
           </p>
         </div>
       </div>
 
       <div
-        v-else
+        v-else-if="!isDesktop && mobileDetail"
+        class="flex min-h-[40vh] items-center justify-center border-y border-outline-variant/35 bg-surface-container-lowest px-6 text-center text-[12px] text-on-surface-variant"
+      >
+        <div>
+          <RefreshCw
+            :size="22"
+            class="mx-auto mb-2 animate-spin text-on-surface-variant/50"
+          />
+          {{ t('chat.loadingSession') }}
+          <p v-if="error" class="mt-2 max-w-xs text-error">{{ error }}</p>
+          <button
+            type="button"
+            class="mt-3 inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-[12px] font-medium text-on-surface-variant transition hover:bg-surface-container"
+            @click="backToList"
+          >
+            <ArrowLeft :size="14" />
+            {{ t('chat.backToList') }}
+          </button>
+        </div>
+      </div>
+
+      <div
+        v-else-if="isDesktop"
         class="flex min-h-[320px] items-center justify-center rounded-xl border border-dashed border-outline-variant bg-surface-container-low/60 p-6 text-center text-[12px] text-on-surface-variant"
       >
         <div>
@@ -1444,14 +1769,6 @@ onBeforeUnmount(() => {
           <template v-else>
             <Plus :size="22" class="mx-auto mb-2 text-on-surface-variant/50" />
             {{ t('chat.selectOrCreate') }}
-            <button
-              type="button"
-              class="mt-3 flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-medium text-on-primary shadow-sm transition hover:bg-primary-container lg:hidden"
-              @click="openSessionList"
-            >
-              <PanelLeft :size="14" />
-              {{ t('chat.openList') }}
-            </button>
           </template>
         </div>
       </div>

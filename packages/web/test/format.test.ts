@@ -12,6 +12,7 @@ import {
   isActiveTask,
   isAwaitingTicket,
   isTerminalTicket,
+  listTime,
   optionLabel,
   relativeTime,
   taskStatusLabel,
@@ -136,6 +137,32 @@ describe('relativeTime', () => {
 
   it('falls back to an absolute date after a week', () => {
     expect(relativeTime(now - 30 * 86_400_000, now)).toBe('2026-05-16');
+  });
+});
+
+describe('listTime', () => {
+  const now = new Date(2026, 10, 17, 15, 30, 0).getTime();
+
+  it('shows a clock for today', () => {
+    expect(listTime(new Date(2026, 10, 17, 9, 5, 0).getTime(), 'zh', now)).toBe(
+      '09:05',
+    );
+  });
+
+  it('says yesterday in the chosen language', () => {
+    const yesterday = new Date(2026, 10, 16, 9, 0, 0).getTime();
+    expect(listTime(yesterday, 'zh', now)).toBe('昨天');
+    expect(listTime(yesterday, 'en', now)).toBe('Yesterday');
+  });
+
+  it('uses a weekday this week and a short date beyond it', () => {
+    expect(
+      listTime(new Date(2026, 10, 12, 9, 0, 0).getTime(), 'zh', now),
+    ).toBe('周四');
+    expect(
+      listTime(new Date(2026, 9, 18, 9, 0, 0).getTime(), 'zh', now),
+    ).toBe('10/18');
+    expect(listTime(undefined, 'zh', now)).toBe('');
   });
 });
 

@@ -154,6 +154,41 @@ export function relativeTime(timestamp: number, now: number = Date.now()): strin
   return formatDate(timestamp);
 }
 
+/**
+ * Compact timestamp for conversation rows, WeChat-style: 14:32 / 昨天 / 周三 /
+ * 3/5. The full relative wording ("3 分钟前") wraps at a narrow list edge.
+ */
+export function listTime(
+  timestamp: number | undefined,
+  locale: 'zh' | 'en' = 'zh',
+  now: number = Date.now(),
+): string {
+  if (!timestamp) return '';
+  const tag = locale === 'zh' ? 'zh-CN' : 'en-US';
+  const date = new Date(timestamp);
+  const current = new Date(now);
+  const calendarDay = (value: Date): number =>
+    Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()) /
+    86_400_000;
+  const days = calendarDay(current) - calendarDay(date);
+
+  if (days <= 0) {
+    return new Intl.DateTimeFormat(tag, {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(date);
+  }
+  if (days === 1) return locale === 'zh' ? '昨天' : 'Yesterday';
+  if (days < 7) {
+    return new Intl.DateTimeFormat(tag, { weekday: 'short' }).format(date);
+  }
+  return new Intl.DateTimeFormat(tag, {
+    month: 'numeric',
+    day: 'numeric',
+  }).format(date);
+}
+
 /** Coarse elapsed time, for "this process has been up for…" labels. */
 export function formatUptime(ms: number): string {
   if (ms < 0) return t('time.justNow');
