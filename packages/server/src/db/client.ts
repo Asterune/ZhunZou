@@ -38,6 +38,10 @@ CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_tickets_project ON tickets(project_name);
 CREATE INDEX IF NOT EXISTS idx_tickets_created ON tickets(created_at);
 CREATE INDEX IF NOT EXISTS idx_tickets_updated ON tickets(updated_at);
+-- The dashboard filters by status/project and orders by createdAt; separate
+-- single-column indexes force SQLite to pick one and scan the rest.
+CREATE INDEX IF NOT EXISTS idx_tickets_status_created ON tickets(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_tickets_project_created ON tickets(project_name, created_at);
 
 CREATE TABLE IF NOT EXISTS env_heartbeats (
   env TEXT PRIMARY KEY,
@@ -176,6 +180,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_env ON agent_tasks(env);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_created ON agent_tasks(created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_updated ON agent_tasks(updated_at);
+-- Claims filter one env by status and take the oldest task.
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_env_status ON agent_tasks(env, status, created_at);
 
 CREATE TABLE IF NOT EXISTS task_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,6 +244,8 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_status ON chat_messages(status);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_updated ON chat_messages(updated_at);
+-- Pending-claim lookups: "which messages of this session are still PENDING?"
+CREATE INDEX IF NOT EXISTS idx_chat_messages_status_session ON chat_messages(status, session_id);
 
 CREATE TABLE IF NOT EXISTS chat_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

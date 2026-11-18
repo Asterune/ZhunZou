@@ -2942,6 +2942,14 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           Number(message.id),
           input,
         );
+        // Dashboards following this turn append the chunk directly; polling
+        // stays only as a recovery net for connections without a socket.
+        realtime?.broadcast({
+          type: 'chat.delta',
+          sessionId: event.sessionId,
+          messageId: event.messageId,
+          events: [event],
+        });
         return reply.code(201).send({ event });
       });
 

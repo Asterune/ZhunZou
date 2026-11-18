@@ -270,6 +270,7 @@ const form = reactive({
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let slowTimer: ReturnType<typeof setInterval> | null = null;
+let revRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let listInFlight = false;
 /** Sequence number of the newest `refreshSession` request. */
 let sessionRequest = 0;
@@ -974,12 +975,14 @@ watch(
 
 function startPolling(): void {
   stopPolling();
+  // The sync revision already tells us when a turn changed state; this timer
+  // is only the fallback for a dropped socket or a missed frame.
   pollTimer = setInterval(() => {
     if (typeof document !== 'undefined' && document.hidden) return;
     if (!busy.value) return;
     void loadSessions(false, { silent: true });
     void refreshSession();
-  }, 2_000);
+  }, 15_000);
   // Recovery net in case a revision is missed (restart, dropped event).
   slowTimer = setInterval(() => {
     if (typeof document !== 'undefined' && document.hidden) return;
@@ -997,7 +1000,30 @@ function stopPolling(): void {
     clearInterval(slowTimer);
     slowTimer = null;
   }
+  if (revRefreshTimer !== null) {
+    clearTimeout(revRefreshTimer);
+    revRefreshTimer = null;
+  }
 }
+
+/**
+ * A new revision means a message changed state (queued, running, answered) or
+ * a ticket was created. Refresh the open conversation then, instead of asking
+ * every two seconds; a burst of changes collapses into one refresh.
+ */
+watch(
+  () => store.rev,
+  () => {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (!activeId.value) return;
+    if (revRefreshTimer !== null) return;
+    revRefreshTimer = setTimeout(() => {
+      revRefreshTimer = null;
+      void loadSessions(false, { silent: true });
+      void refreshSession();
+    }, 300);
+  },
+);
 
 async function createSession(): Promise<void> {
   if (creating.value) return;

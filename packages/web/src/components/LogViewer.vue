@@ -12,6 +12,10 @@ const props = defineProps<{
     nextAfter: number;
     truncated: boolean;
   }>;
+  /** Chunks pushed over the socket; merged without waiting for a poll. */
+  liveEntries?: LogEntry[];
+  /** How often the HTTP pager still runs as a recovery net. */
+  pollMs?: number;
   emptyText?: string;
 }>();
 
@@ -36,7 +40,23 @@ function startTimer(): void {
   if (!props.active) return;
   timer = setInterval(() => {
     void load();
-  }, 1_200);
+  }, props.pollMs ?? 1_200);
+}
+
+/** Merge entries (live or fetched), keeping the cursor monotonic. */
+function appendEntries(entries: LogEntry[]): void {
+  const fresh = entries.filter((entry) => entry.id > after.value);
+  if (fresh.length === 0) return;
+
+  logs.value = [...logs.value, ...fresh].slice(-2_000);
+  after.value = fresh[fresh.length - 1]!.id;
+  void scrollToEnd();
+}
+
+async function scrollToEnd(): Promise<void> {
+  await nextTick();
+  const element = scroller.value;
+  if (element) element.scrollTop = element.scrollHeight;
 }
 
 async function load(): Promise<void> {
@@ -46,13 +66,10 @@ async function load(): Promise<void> {
     const page = await props.fetchPage(after.value);
     error.value = '';
 
-    if (page.entries.length > 0) {
-      logs.value = [...logs.value, ...page.entries].slice(-2_000);
-      after.value = page.nextAfter;
-      await nextTick();
-      const element = scroller.value;
-      if (element) element.scrollTop = element.scrollHeight;
-    }
+    appendEntries(page.entries);
+    // A live frame may have advanced the cursor past this page while the
+    // request was in flight; never move it backwards.
+    if (page.nextAfter > after.value) after.value = page.nextAfter;
 
     if (page.truncated) {
       setTimeout(() => void load(), 50);
@@ -70,6 +87,20 @@ onMounted(() => {
 });
 
 onBeforeUnmount(stopTimer);
+
+watch(
+  () => props.liveEntries,
+  (entries) => {
+    if (entries && entries.length > 0) appendEntries(entries);
+  },
+);
+
+watch(
+  () => props.pollMs,
+  () => {
+    if (props.active) startTimer();
+  },
+);
 
 watch(
   () => props.active,

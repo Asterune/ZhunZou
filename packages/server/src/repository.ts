@@ -178,6 +178,8 @@ const MAX_TASK_EVENTS = 500;
  * cap trades a little transient growth for far fewer scans.
  */
 const TASK_LOG_TRIM_SLACK_BYTES = 64 * 1024;
+/** How long a canonical project spelling is trusted without a new binding. */
+const PROJECT_SPELLING_TTL_MS = 30_000;
 
 /**
  * Marks a turn the hub gave up on because the client vanished mid-flight.
@@ -1181,6 +1183,16 @@ export class TicketRepository implements TicketStore {
    * for a trim when the buffer is plausibly over its cap.
    */
   private readonly taskLogBytes = new Map<number, number>();
+
+  /**
+   * Canonical project spelling per normalised key. Resolving it is a GROUP BY
+   * over `workspace_projects`, and heartbeats call it twice a beat, so the
+   * answer is cached until a binding changes (or the TTL expires).
+   */
+  private projectSpellings: {
+    at: number;
+    byKey: Map<string, string>;
+  } | null = null;
 
   constructor(
     private readonly db: DrizzleDatabase,
@@ -4348,6 +4360,9 @@ export class TicketRepository implements TicketStore {
     now = Date.now(),
   ): WorkspaceProject {
     const canonical = this.resolveProjectName(projectName);
+    // `resolveProjectName` just filled the cache; a key that was already known
+    // keeps the same winner, so the heartbeat path need not rebuild it.
+    const known = this.projectSpellings?.byKey.get(projectKey(canonical));
     const row = this.db
       .insert(workspaceProjects)
       .values({
@@ -4363,6 +4378,7 @@ export class TicketRepository implements TicketStore {
       .returning()
       .get();
 
+    if (known !== canonical) this.projectSpellings = null;
     return toWorkspaceProject(row);
   }
 
@@ -4380,6 +4396,24 @@ export class TicketRepository implements TicketStore {
     const cleaned = projectDisplayName(name);
     if (!key) return cleaned;
 
+    const now = Date.now();
+    if (
+      this.projectSpellings === null ||
+      now - this.projectSpellings.at > PROJECT_SPELLING_TTL_MS
+    ) {
+      this.projectSpellings = { at: now, byKey: this.loadProjectSpellings() };
+    }
+
+    const canonical = this.projectSpellings.byKey.get(key);
+    return projectDisplayName(canonical ?? name);
+  }
+
+  /**
+   * One query answers "which spelling wins for every key". SQL leaves
+   * same-count, same-age spellings in arbitrary order, so the lexical
+   * tiebreak keeps the choice stable between heartbeats.
+   */
+  private loadProjectSpellings(): Map<string, string> {
     const rows = this.db
       .select({
         projectName: workspaceProjects.projectName,
@@ -4390,8 +4424,6 @@ export class TicketRepository implements TicketStore {
       .groupBy(workspaceProjects.projectName)
       .orderBy(desc(count()), asc(sql`min(${workspaceProjects.createdAt})`))
       .all()
-      // SQL leaves same-count, same-age spellings in arbitrary order; the
-      // lexical tiebreak keeps the choice stable between heartbeats.
       .sort(
         (left, right) =>
           right.bindings - left.bindings ||
@@ -4399,8 +4431,12 @@ export class TicketRepository implements TicketStore {
           (left.projectName < right.projectName ? -1 : 1),
       );
 
-    const match = rows.find((row) => projectKey(row.projectName) === key);
-    return projectDisplayName(match?.projectName ?? name);
+    const byKey = new Map<string, string>();
+    for (const row of rows) {
+      const key = projectKey(row.projectName);
+      if (key && !byKey.has(key)) byKey.set(key, row.projectName);
+    }
+    return byKey;
   }
 
   listWorkspaceProjects(query: ListWorkspaceProjectsQuery = {}): {
@@ -4443,6 +4479,7 @@ export class TicketRepository implements TicketStore {
       .where(eq(workspaceProjects.id, id))
       .returning()
       .get();
+    this.projectSpellings = null;
     return row ? toWorkspaceProject(row) : null;
   }
 

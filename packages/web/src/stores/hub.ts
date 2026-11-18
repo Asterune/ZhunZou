@@ -3,6 +3,7 @@ import { computed, reactive, ref } from 'vue';
 import type {
   Agent,
   AgentTask,
+  ChatEvent,
   CreateAgentInput,
   CreateEnrollmentInput,
   CreateTaskInput,
@@ -157,6 +158,13 @@ export function createHubStore(api: HubApi = hubApi) {
   const fleetBrowseError = ref('');
   /** Server revision of the snapshot currently applied. */
   const rev = ref(0);
+  /**
+   * Streamed chunks pushed over the dashboard socket, newest last. Consumers
+   * (the running-turn output viewer) filter by session and message id, so a
+   * bounded global buffer is enough.
+   */
+  const chatDeltas = ref<ChatEvent[]>([]);
+  const CHAT_DELTA_LIMIT = 2_000;
 
   const authenticating = ref(false);
   const refreshing = ref(false);
@@ -646,6 +654,9 @@ export function createHubStore(api: HubApi = hubApi) {
               envs?: EnvHeartbeat[];
               agents?: Agent[];
               devices?: Device[];
+              sessionId?: string;
+              messageId?: string;
+              events?: ChatEvent[];
             };
             if (frame.type === 'sync.snapshot' && frame.state) {
               applySnapshot(frame.state);
@@ -653,6 +664,15 @@ export function createHubStore(api: HubApi = hubApi) {
               lastSyncAt.value = Date.now();
               lastError.value = '';
               connection.value = 'online';
+              return;
+            }
+            if (frame.type === 'chat.delta') {
+              // Streamed output arrives here; the panel filters it by message.
+              if (frame.events?.length) {
+                chatDeltas.value = [...chatDeltas.value, ...frame.events].slice(
+                  -CHAT_DELTA_LIMIT,
+                );
+              }
               return;
             }
             if (frame.type === 'presence.changed') {
@@ -1493,6 +1513,7 @@ export function createHubStore(api: HubApi = hubApi) {
     contextBudget,
     pollHealth,
     rev,
+    chatDeltas,
     lastSyncAt,
     lastError,
     authError,

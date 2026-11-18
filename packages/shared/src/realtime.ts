@@ -9,6 +9,7 @@ import {
   agentSchema,
   agentTaskSchema,
   chatContextHandoffSchema,
+  chatEventSchema,
   chatMessageSchema,
   chatSessionSchema,
   decisionTicketSchema,
@@ -183,6 +184,16 @@ export const realtimeServerFrameSchema = z.discriminatedUnion('type', [
     type: z.literal('sync.snapshot'),
     rev: z.number().int().nonnegative(),
     state: syncStateSchema,
+  }),
+  /**
+   * One streamed chunk of a running chat turn. Dashboards append it directly
+   * instead of re-reading `/api/sessions/:id/events` every second.
+   */
+  z.object({
+    type: z.literal('chat.delta'),
+    sessionId: ticketIdSchema,
+    messageId: ticketIdSchema,
+    events: z.array(chatEventSchema).min(1),
   }),
   z.object({
     type: z.literal('ack'),

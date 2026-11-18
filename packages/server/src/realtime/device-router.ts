@@ -332,11 +332,18 @@ export function attachDeviceRouter(
       fail(env, 'INVALID_MESSAGE_STATUS', `message is ${message.status}`);
       return;
     }
-    repo.appendChatEvent(
+    const event = repo.appendChatEvent(
       Number(session.id),
       Number(message.id),
       { stream: frame.stream, chunk: frame.chunk },
     );
+    // Dashboards render the chunk without waiting for their next poll.
+    gateway.broadcast({
+      type: 'chat.delta',
+      sessionId: event.sessionId,
+      messageId: event.messageId,
+      events: [event],
+    });
     ack(env);
   };
 

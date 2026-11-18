@@ -362,6 +362,73 @@ describe('realtime gateway', () => {
     }
   });
 
+  it('pushes chat deltas to dashboards instead of waiting for a poll', async () => {
+    const ctx = await createTestContext();
+    try {
+      await ctx.app.listen({ port: 0, host: '127.0.0.1' });
+
+      const ticketResponse = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/realtime/ticket',
+        headers: ctx.auth,
+      });
+      const { ticket } = ticketResponse.json() as { ticket: string };
+      const { socket, received } = await openSocket(
+        serverUrl(ctx, `/ws/realtime?ticket=${encodeURIComponent(ticket)}`),
+      );
+      await waitFor(() => received.find((frame) => frame.type === 'sync.snapshot'));
+
+      const created = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/sessions',
+        headers: ctx.auth,
+        payload: { env: 'delta-env', title: '流式输出' },
+      });
+      const sessionId = (created.json().session as { id: string }).id;
+
+      const sent = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${sessionId}/messages`,
+        headers: ctx.auth,
+        payload: { content: '跑一下' },
+      });
+      const messageId = (sent.json().message as { id: string }).id;
+
+      const claimed = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/sessions/next?env=delta-env&timeout=10',
+        headers: ctx.auth,
+      });
+      expect((claimed.json().message as { id: string }).id).toBe(messageId);
+
+      const appended = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${sessionId}/messages/${messageId}/events`,
+        headers: ctx.auth,
+        payload: { stream: 'stdout', chunk: 'hello' },
+      });
+      expect(appended.statusCode).toBe(201);
+
+      const frame = await waitFor(
+        () => received.find((item) => item.type === 'chat.delta'),
+        { timeoutMs: 4_000 },
+      );
+      expect(frame).toMatchObject({
+        type: 'chat.delta',
+        sessionId,
+        messageId,
+      });
+      expect(
+        (frame as { events: Array<{ chunk: string }> }).events[0]?.chunk,
+      ).toBe('hello');
+
+      socket.close();
+      await sleep(20);
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('closes a device socket when its env is deleted', async () => {
     const ctx = await createTestContext();
     try {

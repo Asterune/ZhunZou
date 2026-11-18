@@ -94,6 +94,8 @@ export const tickets = sqliteTable(
     index('idx_tickets_project').on(table.projectName),
     index('idx_tickets_created').on(table.createdAt),
     index('idx_tickets_updated').on(table.updatedAt),
+    index('idx_tickets_status_created').on(table.status, table.createdAt),
+    index('idx_tickets_project_created').on(table.projectName, table.createdAt),
     index('idx_tickets_task').on(table.taskId),
   ],
 );
@@ -355,6 +357,7 @@ export const agentTasks = sqliteTable(  'agent_tasks',
   (table) => [
     index('idx_agent_tasks_status').on(table.status),
     index('idx_agent_tasks_env').on(table.env),
+    index('idx_agent_tasks_env_status').on(table.env, table.status, table.createdAt),
     index('idx_agent_tasks_repo').on(table.repoName),
     index('idx_agent_tasks_created').on(table.createdAt),
     index('idx_agent_tasks_updated').on(table.updatedAt),
@@ -473,6 +476,7 @@ export const chatMessages = sqliteTable(
   (table) => [
     index('idx_chat_messages_session').on(table.sessionId, table.id),
     index('idx_chat_messages_status').on(table.status),
+    index('idx_chat_messages_status_session').on(table.status, table.sessionId),
     index('idx_chat_messages_updated').on(table.updatedAt),
   ],
 );
