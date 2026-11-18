@@ -955,6 +955,14 @@ export interface TicketStore {
     messageId: number,
     now?: number,
   ): ChatMessage | null;
+  /**
+   * Oldest pending turn for an env, across every session.
+   *
+   * One runner serves one env, so turns are serial by design (decided
+   * 2026-11-18): a long turn delays the env's other conversations instead of
+   * spawning a parallel CLI. FIFO keeps that from starving any one session;
+   * true concurrency would need per-env slots in the bridge.
+   */
   claimNextChatMessage(
     env: string,
     now?: number,
