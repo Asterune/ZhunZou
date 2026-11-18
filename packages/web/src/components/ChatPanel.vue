@@ -1699,6 +1699,13 @@ onBeforeUnmount(() => {
                 <span class="max-w-[16rem] truncate">{{ sessionCwd }}</span>
               </span>
               <span
+                v-if="sessionDirMismatch"
+                class="rounded bg-tertiary-fixed px-1.5 py-0.5 text-[10px] font-medium text-on-tertiary-fixed"
+                :title="t('chat.bindingMismatchHint', { dir: sessionCwd })"
+              >
+                {{ t('chat.bindingMismatch') }}
+              </span>
+              <span
                 v-if="activeSession.model"
                 class="rounded bg-surface-container-high px-1.5 py-0.5 font-mono"
                 :title="t('chat.modelBadge')"

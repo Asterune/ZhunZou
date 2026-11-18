@@ -29,6 +29,7 @@ import type {
 } from '@zhunzou/shared';
 
 import { clientKindLabel, relativeTime } from '../lib/format';
+import { dirName, sameProjectName } from '../lib/chat';
 import { useI18n } from '../lib/i18n';
 import { buildNodeMatrix, type NodeCard } from '../lib/matrix';
 import { useHubStore } from '../stores/hub';
@@ -37,6 +38,23 @@ import ProjectBindings from './ProjectBindings.vue';
 
 const store = useHubStore();
 const { t } = useI18n();
+
+/** Directory this env's runner reported; empty when it never said. */
+function workspaceOf(env: string): string {
+  return store.envs.find((item) => item.env === env)?.workspacePath ?? '';
+}
+
+/**
+ * The label and the folder are two different facts: a runner can heartbeat a
+ * project name that no longer matches the directory it works in. Show that,
+ * instead of letting the card imply they are the same thing.
+ */
+function dirMismatch(agent: { env: string; projectName?: string }): boolean {
+  const path = workspaceOf(agent.env);
+  const project = agent.projectName?.trim();
+  if (!path || !project) return false;
+  return !sameProjectName(project, dirName(path));
+}
 
 const KIND_OPTIONS = AGENT_KINDS;
 
@@ -510,6 +528,24 @@ async function copyEnrollmentCommand(): Promise<void> {
           <div class="min-w-0">
             <dt class="text-on-surface-variant/60">{{ t('agents.currentProject') }}</dt>
             <dd class="truncate text-on-surface">{{ agent.projectName || '—' }}</dd>
+          </div>
+          <div class="col-span-2 min-w-0">
+            <dt class="text-on-surface-variant/60">{{ t('agents.workspaceDir') }}</dt>
+            <dd class="flex min-w-0 items-center gap-1.5 text-on-surface">
+              <span
+                class="truncate font-mono text-[10.5px]"
+                :title="workspaceOf(agent.env) || undefined"
+              >
+                {{ workspaceOf(agent.env) || '—' }}
+              </span>
+              <span
+                v-if="dirMismatch(agent)"
+                class="shrink-0 rounded bg-tertiary-fixed px-1 py-0.5 text-[9.5px] font-medium text-on-tertiary-fixed"
+                :title="t('agents.dirMismatchHint')"
+              >
+                {{ t('agents.dirMismatch') }}
+              </span>
+            </dd>
           </div>
           <div class="min-w-0">
             <dt class="text-on-surface-variant/60">{{ t('agents.lastHeartbeatLabel') }}</dt>

@@ -102,6 +102,21 @@ export function workspaceForSession<T extends WorkspaceDirectory>(
  * whichever repo the node was started in, so the chat has to say so out loud
  * instead of letting the label imply the directory.
  */
+/**
+ * Project labels drift by punctuation and case (`FitAI-`, `fitai `), which is
+ * the same checkout. Compare the way the hub canonicalises them: trimmed,
+ * lowercased, without a `.git` suffix or trailing separators.
+ */
+export function sameProjectName(left: string, right: string): boolean {
+  const normalize = (value: string): string =>
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/\.git$/, '')
+      .replace(/[-_\s]+$/, '');
+  return normalize(left) === normalize(right);
+}
+
 export function sessionProjectMismatch(
   session: SessionScope | null | undefined,
   directory: { path: string; projectName?: string | null } | null | undefined,
@@ -109,5 +124,5 @@ export function sessionProjectMismatch(
   const project = session?.projectName?.trim();
   if (!project || !directory) return false;
   const actual = directory.projectName?.trim() || dirName(directory.path);
-  return project !== actual;
+  return !sameProjectName(project, actual);
 }

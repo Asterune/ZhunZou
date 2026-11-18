@@ -8,6 +8,7 @@ import {
   isSendShortcut,
   queuedUserMessages,
   sessionProjectMismatch,
+  sameProjectName,
   ticketsForSession,
   workspaceForSession,
 } from '../src/lib/chat';
@@ -133,6 +134,18 @@ describe('sessionProjectMismatch', () => {
   it('accepts the label that names the directory', () => {
     expect(
       sessionProjectMismatch({ env: 'claude-mac', projectName: 'agent-hub' }, hub),
+    ).toBe(false);
+  });
+
+  it('ignores punctuation and case differences', () => {
+    expect(sameProjectName('FitAI-', 'fitai')).toBe(true);
+    expect(sameProjectName(' agent-hub ', 'Agent-Hub')).toBe(true);
+    expect(sameProjectName('agent-hub', 'erp')).toBe(false);
+    expect(
+      sessionProjectMismatch(
+        { env: 'claude-mac', projectName: 'FitAI-' },
+        { path: '/Users/qiliu/FitAI', projectName: 'FitAI' },
+      ),
     ).toBe(false);
   });
 
