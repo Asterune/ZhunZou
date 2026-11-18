@@ -72,6 +72,7 @@ import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
 import ChatSessionList from './ChatSessionList.vue';
 import ChatImages from './ChatImages.vue';
+import MarkdownBody from './MarkdownBody.vue';
 import SessionOutput from './SessionOutput.vue';
 import SingleTaskList from './SingleTaskList.vue';
 import TargetPicker from './TargetPicker.vue';
@@ -2010,7 +2011,11 @@ onBeforeUnmount(() => {
                     : 'bg-surface-container text-on-surface'
               "
             >
-              <p v-if="message.content" class="whitespace-pre-wrap break-words">
+              <MarkdownBody
+                v-if="message.content && message.role === 'assistant'"
+                :content="message.content"
+              />
+              <p v-else-if="message.content" class="whitespace-pre-wrap break-words">
                 {{ message.content }}
               </p>
               <ChatImages
