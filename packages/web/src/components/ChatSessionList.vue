@@ -105,6 +105,27 @@ function isPage(): boolean {
             : 'space-y-1.5'
         "
       >
+        <template v-if="loading && !sessions.length">
+          <div
+            v-for="index in 5"
+            :key="`skeleton-${index}`"
+            class="flex items-center gap-2.5"
+            :class="
+              isPage()
+                ? 'px-3 py-3'
+                : 'rounded-xl border border-outline-variant/25 px-2 py-2'
+            "
+          >
+            <div
+              class="h-7 w-7 shrink-0 animate-pulse rounded-full bg-surface-container-high"
+            />
+            <div class="min-w-0 flex-1 space-y-1.5">
+              <div class="h-3 w-2/3 animate-pulse rounded bg-surface-container-high" />
+              <div class="h-2.5 w-2/5 animate-pulse rounded bg-surface-container" />
+            </div>
+          </div>
+        </template>
+
         <div
           v-for="item in sessions"
           :key="item.id"
@@ -243,7 +264,7 @@ function isPage(): boolean {
       </div>
 
       <p
-        v-if="loaded && !sessions.length"
+        v-if="loaded && !loading && !sessions.length"
         class="rounded-xl border border-dashed border-outline-variant bg-surface-container-low/60 px-3 py-8 text-center text-[12px] text-on-surface-variant"
       >
         {{ t('chat.emptyList') }}

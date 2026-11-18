@@ -72,6 +72,7 @@ import { useHubStore } from '../stores/hub';
 import { pushToast } from '../lib/toast';
 import ChatSessionList from './ChatSessionList.vue';
 import ChatImages from './ChatImages.vue';
+import ChatDetailSkeleton from './ChatDetailSkeleton.vue';
 import MarkdownBody from './MarkdownBody.vue';
 import SessionOutput from './SessionOutput.vue';
 import SingleTaskList from './SingleTaskList.vue';
@@ -2451,42 +2452,50 @@ onBeforeUnmount(() => {
 
       <div
         v-else-if="!isDesktop && mobileDetail"
-        class="fixed inset-0 z-50 flex items-start justify-center bg-surface-container-lowest px-6 pl-[calc(1.5rem_+_env(safe-area-inset-left))] pr-[calc(1.5rem_+_env(safe-area-inset-right))] pt-[calc(2rem_+_env(safe-area-inset-top))] text-center text-[12px] text-on-surface-variant"
+        class="chat-swipe-page fixed inset-x-0 top-0 z-50 flex flex-col bg-surface-container-lowest pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
+        :style="chatCardStyle"
+        aria-busy="true"
+        :aria-label="t('chat.loadingSession')"
       >
-        <div>
-          <RefreshCw
-            :size="22"
-            class="mx-auto mb-2 animate-spin text-on-surface-variant/50"
-          />
-          {{ t('chat.loadingSession') }}
-          <p v-if="error" class="mt-2 max-w-xs text-error">{{ error }}</p>
+        <div
+          class="flex shrink-0 items-center gap-2 px-3 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))]"
+        >
           <button
             type="button"
-            class="mt-3 inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-[12px] font-medium text-on-surface-variant transition hover:bg-surface-container"
+            class="grid h-8 w-8 place-items-center rounded-lg text-on-surface-variant transition hover:bg-surface-container"
+            :aria-label="t('chat.backToList')"
             @click="backToList"
           >
-            <ArrowLeft :size="14" />
-            {{ t('chat.backToList') }}
+            <ArrowLeft :size="16" />
           </button>
+          <div class="h-4 w-36 animate-pulse rounded bg-surface-container-high" />
         </div>
+        <div v-if="error" class="px-6 pt-10 text-center text-[12px] text-error">
+          {{ error }}
+        </div>
+        <ChatDetailSkeleton v-else :show-header="false" />
       </div>
 
       <div
         v-else-if="isDesktop"
-        class="flex min-h-[320px] items-center justify-center rounded-xl border border-dashed border-outline-variant bg-surface-container-low/60 p-6 text-center text-[12px] text-on-surface-variant"
+        class="overflow-hidden rounded-xl border border-outline-variant/35 bg-surface-container-lowest shadow-sm"
+        :style="chatCardStyle"
       >
-        <div>
-          <template v-if="loadingSession">
-            <RefreshCw
-              :size="22"
-              class="mx-auto mb-2 animate-spin text-on-surface-variant/50"
-            />
-            {{ t('chat.loadingSession') }}
-          </template>
-          <template v-else>
+        <div
+          v-if="error"
+          class="flex h-full min-h-[320px] items-center justify-center p-6 text-center text-[12px] text-error"
+        >
+          {{ error }}
+        </div>
+        <ChatDetailSkeleton v-else-if="loadingSession" />
+        <div
+          v-else
+          class="flex h-full min-h-[320px] items-center justify-center p-6 text-center text-[12px] text-on-surface-variant"
+        >
+          <div>
             <Plus :size="22" class="mx-auto mb-2 text-on-surface-variant/50" />
             {{ t('chat.selectOrCreate') }}
-          </template>
+          </div>
         </div>
       </div>
     </div>
