@@ -127,4 +127,36 @@ describe('findSimilarTickets', () => {
 
     expect(matches.map((ticket) => ticket.id)).not.toContain(resolved.id);
   });
+
+  it('bounds streamed chat output while trimming in batches', () => {
+    const repo = ctx.app.repo;
+    const session = repo.createChatSession({
+      env: 'trim-env',
+      title: '输出上限',
+    });
+    const now = Date.now();
+    const chunk = 'x'.repeat(12_000);
+
+    // Trimming is amortised, so a burst is allowed to overshoot the cap by at
+    // most one chunk before the batch trigger re-reads the session.
+    for (let index = 0; index < 40; index += 1) {
+      repo.appendChatEvent(
+        Number(session.id),
+        1,
+        { stream: 'stdout', chunk },
+        now,
+      );
+    }
+
+    const { events } = repo.listChatEvents(Number(session.id), {
+      after: 0,
+      limit: 500,
+    });
+    const bytes = events.reduce((sum, event) => sum + event.chunk.length, 0);
+
+    expect(events.length).toBeLessThan(40);
+    expect(bytes).toBeLessThanOrEqual(
+      256 * 1024 + 64 * 1024,
+    );
+  });
 });

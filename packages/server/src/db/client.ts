@@ -403,6 +403,10 @@ export function createDatabase(dbPath: string): {
 
   const sqlite = new Database(dbPath);
   sqlite.pragma('journal_mode = WAL');
+  // WAL + NORMAL is SQLite's recommended pairing: commits no longer fsync on
+  // every write, and a crash can only lose the newest transactions, never
+  // corrupt the database (the file is still consistent after recovery).
+  sqlite.pragma('synchronous = NORMAL');
   sqlite.pragma('busy_timeout = 5000');
   sqlite.exec(DDL);
 

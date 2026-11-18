@@ -84,6 +84,8 @@ export interface RealtimeGatewayOptions {
   getSyncState?: () => SyncState;
   /** Current monotonic dashboard revision. */
   getRevision?: () => number;
+  /** A dashboard socket connected, so background sync work may resume. */
+  onDashboardConnected?: () => void;
 }
 
 function readHeader(
@@ -385,6 +387,7 @@ export function attachRealtimeGateway(
 
   const attachDashboard = (socket: WebSocket): void => {
     dashboards.add(socket);
+    options.onDashboardConnected?.();
     send(socket, {
       type: 'ready',
       protocol: DEVICE_PROTOCOL_VERSION,

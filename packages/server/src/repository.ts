@@ -164,6 +164,12 @@ const CHAT_PENDING_STATUSES: ChatMessageStatus[] = [
 /** Keep each task's live log bounded; older chunks are trimmed on append. */
 const MAX_TASK_LOG_BYTES = 256 * 1024;
 const MAX_CHAT_EVENT_BYTES = 256 * 1024;
+/**
+ * Trimming re-reads every stored event of a session, so it is deferred until
+ * a session actually exceeds the cap. The slack amortises the scan over a few
+ * streamed chunks instead of paying it on every POST.
+ */
+const CHAT_EVENT_TRIM_SLACK_BYTES = 64 * 1024;
 /** Events are small fixed rows, so their cap counts rows instead of bytes. */
 const MAX_TASK_EVENTS = 500;
 
@@ -1149,6 +1155,13 @@ export interface TicketStore {
 }
 
 export class TicketRepository implements TicketStore {
+  /**
+   * Roughly how much streamed text a session is holding, so an append can tell
+   * whether it is worth re-reading the session to trim. The figure is exact
+   * while the process lives and measured once per session after a restart.
+   */
+  private readonly chatEventBytes = new Map<number, number>();
+
   constructor(
     private readonly db: DrizzleDatabase,
     private readonly hooks: RepositoryHooks = {},
@@ -3159,29 +3172,12 @@ export class TicketRepository implements TicketStore {
     now = Date.now(),
     force = false,
   ): ChatMessageResponse {
-    let row = this.db
-      .update(chatMessages)
-      .set({
-        status: input.status,
-        error: input.error ?? null,
-        failureKind: input.failureKind ?? null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(chatMessages.id, messageId),
-          eq(chatMessages.sessionId, sessionId),
-          eq(chatMessages.status, 'RUNNING'),
-        ),
-      )
-      .returning()
-      .get();
-
-    // The hub already gave this turn up while the client was unreachable.
-    // `force` lets a replayed answer replace that placeholder; a genuine
-    // failure or an already-recorded turn stays untouched.
-    if (!row && force) {
-      row = this.db
+    // One turn is three rows: the user message's new status, the assistant's
+    // reply and the session counters. A crash between them used to leave the
+    // message DONE with no reply, and a DONE message can never be retried, so
+    // the turn is written in a single SQLite transaction.
+    return this.db.transaction((tx) => {
+      let row = tx
         .update(chatMessages)
         .set({
           status: input.status,
@@ -3193,72 +3189,95 @@ export class TicketRepository implements TicketStore {
           and(
             eq(chatMessages.id, messageId),
             eq(chatMessages.sessionId, sessionId),
-            eq(chatMessages.role, 'user'),
-            eq(chatMessages.status, 'FAILED'),
-            like(chatMessages.error, `${CHAT_INTERRUPTED_PREFIX}%`),
+            eq(chatMessages.status, 'RUNNING'),
           ),
         )
         .returning()
         .get();
-    }
 
-    if (!row) {
-      throw new ConflictError(
-        `session message #${messageId} is not running`,
-        'INVALID_MESSAGE_STATUS',
-      );
-    }
+      // The hub already gave this turn up while the client was unreachable.
+      // `force` lets a replayed answer replace that placeholder; a genuine
+      // failure or an already-recorded turn stays untouched.
+      if (!row && force) {
+        row = tx
+          .update(chatMessages)
+          .set({
+            status: input.status,
+            error: input.error ?? null,
+            failureKind: input.failureKind ?? null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(chatMessages.id, messageId),
+              eq(chatMessages.sessionId, sessionId),
+              eq(chatMessages.role, 'user'),
+              eq(chatMessages.status, 'FAILED'),
+              like(chatMessages.error, `${CHAT_INTERRUPTED_PREFIX}%`),
+            ),
+          )
+          .returning()
+          .get();
+      }
 
-    let assistant: ChatMessageRow | undefined;
-    if (input.status === 'DONE') {
-      assistant = this.db
-        .insert(chatMessages)
-        .values({
-          sessionId,
-          role: 'assistant',
-          content: input.content?.trim() || '（无输出）',
-          status: 'DONE',
-          origin: 'agent',
-          createdAt: now,
+      if (!row) {
+        throw new ConflictError(
+          `session message #${messageId} is not running`,
+          'INVALID_MESSAGE_STATUS',
+        );
+      }
+
+      let assistant: ChatMessageRow | undefined;
+      if (input.status === 'DONE') {
+        assistant = tx
+          .insert(chatMessages)
+          .values({
+            sessionId,
+            role: 'assistant',
+            content: input.content?.trim() || '（无输出）',
+            status: 'DONE',
+            origin: 'agent',
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning()
+          .get();
+      }
+
+      const sessionRow = tx
+        .update(chatSessions)
+        .set({
           updatedAt: now,
+          lastMessageAt: now,
+          ...(input.externalId ? { externalId: input.externalId } : {}),
+          // Charge the turn against the native session's context budget. An
+          // overflow complaint flags the session so the next claim rotates
+          // instead of repeating the same rejected prompt.
+          ...(input.status === 'FAILED' && isContextOverflow(input.error)
+            ? { contextRotateRequested: true }
+            : (input.contextUsage ?? 0) > 0
+              ? {
+                  contextTokens: sql`${chatSessions.contextTokens} + ${input.contextUsage}`,
+                }
+              : {}),
         })
+        .where(eq(chatSessions.id, sessionId))
         .returning()
         .get();
-    }
 
-    const sessionRow = this.db
-      .update(chatSessions)
-      .set({
-        updatedAt: now,
-        lastMessageAt: now,
-        ...(input.externalId ? { externalId: input.externalId } : {}),
-        // Charge the turn against the native session's context budget. An
-        // overflow complaint flags the session so the next claim rotates
-        // instead of repeating the same rejected prompt.
-        ...(input.status === 'FAILED' && isContextOverflow(input.error)
-          ? { contextRotateRequested: true }
-          : (input.contextUsage ?? 0) > 0
-            ? {
-                contextTokens: sql`${chatSessions.contextTokens} + ${input.contextUsage}`,
-              }
-            : {}),
-      })
-      .where(eq(chatSessions.id, sessionId))
-      .returning()
-      .get();
+      if (!sessionRow) {
+        throw new ConflictError(
+          `session #${sessionId} not found`,
+          'NOT_FOUND',
+        );
+      }
 
-    if (!sessionRow) {
-      throw new ConflictError(
-        `session #${sessionId} not found`,
-        'NOT_FOUND',
-      );
-    }
-
-    return {
-      session: toChatSession(sessionRow),
-      message: toChatMessage(row),
-      ...(assistant ? { assistant: toChatMessage(assistant) } : {}),
-    };
+      return {
+        session: toChatSession(sessionRow),
+        message: toChatMessage(row),
+        ...(assistant ? { assistant: toChatMessage(assistant) } : {}),
+      };
+    });
   }
 
   appendChatEvent(
@@ -3279,8 +3298,40 @@ export class TicketRepository implements TicketStore {
       .returning()
       .get();
 
-    this.trimChatEvents(sessionId);
+    this.scheduleChatEventTrim(sessionId, input.chunk.length);
     return toChatEvent(row);
+  }
+
+  /**
+   * Trim only once the session is actually over its cap: the cap is a storage
+   * bound, not a per-chunk invariant, and the extra slack trades a little
+   * transient growth for far fewer full scans of the event table.
+   */
+  private scheduleChatEventTrim(sessionId: number, addedBytes: number): void {
+    let total = this.chatEventBytes.get(sessionId);
+    if (total === undefined) {
+      total = this.measureChatEventBytes(sessionId);
+    }
+    total += addedBytes;
+
+    if (total <= MAX_CHAT_EVENT_BYTES + CHAT_EVENT_TRIM_SLACK_BYTES) {
+      this.chatEventBytes.set(sessionId, total);
+      return;
+    }
+
+    const removed = this.trimChatEvents(sessionId);
+    this.chatEventBytes.set(sessionId, Math.max(0, total - removed));
+  }
+
+  private measureChatEventBytes(sessionId: number): number {
+    const row = this.db
+      .select({
+        total: sql<number>`COALESCE(SUM(length(${chatEvents.chunk})), 0)`,
+      })
+      .from(chatEvents)
+      .where(eq(chatEvents.sessionId, sessionId))
+      .get();
+    return Number(row?.total ?? 0);
   }
 
   listChatEvents(
@@ -3332,6 +3383,7 @@ export class TicketRepository implements TicketStore {
    * The tables have no foreign keys, so children are removed first.
    */
   deleteChatSession(sessionId: number): boolean {
+    this.chatEventBytes.delete(sessionId);
     this.db.delete(chatEvents).where(eq(chatEvents.sessionId, sessionId)).run();
     this.db
       .delete(chatMessages)
@@ -3727,7 +3779,8 @@ export class TicketRepository implements TicketStore {
     this.db.delete(exchanges).where(inArray(exchanges.id, overflow)).run();
   }
 
-  private trimChatEvents(sessionId: number): void {
+  /** Drop the oldest events past the cap; returns how many bytes went away. */
+  private trimChatEvents(sessionId: number): number {
     const rows = this.db
       .select({
         id: chatEvents.id,
@@ -3744,8 +3797,9 @@ export class TicketRepository implements TicketStore {
       total -= Number(rows[remove]!.size);
       remove += 1;
     }
-    if (remove === 0) return;
+    if (remove === 0) return 0;
 
+    const dropped = rows.slice(0, remove);
     this.db
       .delete(chatEvents)
       .where(
@@ -3753,11 +3807,13 @@ export class TicketRepository implements TicketStore {
           eq(chatEvents.sessionId, sessionId),
           inArray(
             chatEvents.id,
-            rows.slice(0, remove).map((row) => row.id),
+            dropped.map((row) => row.id),
           ),
         ),
       )
       .run();
+
+    return dropped.reduce((sum, row) => sum + Number(row.size), 0);
   }
 
   /* ---------------------------------------------------------------- */

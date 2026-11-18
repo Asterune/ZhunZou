@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path';
 
 import fastifyStatic from '@fastify/static';
 import Fastify, {
+  LogController,
   type FastifyInstance,
   type FastifyRequest,
   type FastifyServerOptions,
@@ -152,7 +153,11 @@ import {
   NotFoundError,
 } from './errors.js';
 import { SyncEventBus, TaskEventBus, SessionEventBus, TicketEventBus } from './events.js';
-import { createMetaAgent, type MetaAgent } from './meta-agent.js';
+import {
+  createMetaAgent,
+  type DecisionKind,
+  type MetaAgent,
+} from './meta-agent.js';
 import {
   createNotifiers,
   notifyTaskOutcome,
@@ -256,6 +261,23 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const app = Fastify({
     logger: options.logger ?? { level: config.logLevel },
     bodyLimit: 256 * 1024,
+    // The dashboard holds long polls and re-reads chat events every couple of
+    // seconds; logging every one of those at info level buries real errors in
+    // the journal. Failures are logged below and in the error handler.
+    logController: new LogController({ disableRequestLogging: true }),
+  });
+
+  app.addHook('onResponse', async (request, reply) => {
+    if (reply.statusCode < 400 || reply.statusCode >= 500) return;
+    request.log.warn(
+      {
+        statusCode: reply.statusCode,
+        method: request.method,
+        url: request.url,
+        responseTime: Math.round(reply.elapsedTime),
+      },
+      'request failed',
+    );
   });
 
   // Body-less POSTs (cancel / accept / dismiss) are common from simple HTTP
@@ -337,17 +359,26 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     syncBroadcast?.(syncBus.bump());
   };
 
+  /** Whether something still needs the once-a-second fingerprint. */
+  const shouldHoldSyncTicker = (): boolean =>
+    syncBus.waiters > 0 || (realtime?.dashboardCount() ?? 0) > 0;
+
   const ensureSyncTicker = (): void => {
     if (syncTicker !== null) return;
-    syncTicker = setInterval(refreshSyncFingerprint, 1_000);
+    syncTicker = setInterval(() => {
+      refreshSyncFingerprint();
+      // With no held poll and no WebSocket dashboard, nothing reads the
+      // fingerprint: stop until the next connection asks for it again.
+      if (!shouldHoldSyncTicker() && syncTicker !== null) {
+        clearInterval(syncTicker);
+        syncTicker = null;
+      }
+    }, 1_000);
     syncTicker.unref?.();
   };
 
   const stopSyncTickerIfIdle = (): void => {
-    // With the realtime gateway enabled the ticker also feeds WebSocket
-    // dashboards, so it must stay alive even when no HTTP long poll is held.
-    if (config.realtimeEnabled) return;
-    if (syncTicker !== null && syncBus.waiters === 0) {
+    if (syncTicker !== null && !shouldHoldSyncTicker()) {
       clearInterval(syncTicker);
       syncTicker = null;
     }
@@ -677,6 +708,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     ticket: DecisionTicket,
     risk?: OptionRisk,
     applyQuota = true,
+    kind?: DecisionKind,
   ) =>
     adjudicate(
       ticket,
@@ -690,6 +722,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         }),
         ...(risk ? { risk } : {}),
         applyQuota,
+        ...(kind ? { kind } : {}),
       },
       {
         judge: metaAgent,
@@ -2447,7 +2480,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         const outcome = await evaluateDecision(input, {
           mode: config.decisionPolicy,
           adjudicate: (req, ticket) =>
-            adjudicateTicket(ticket, req.risk, req.kind !== 'reply'),
+            adjudicateTicket(ticket, req.risk, req.kind !== 'reply', req.kind),
         });
 
         if (outcome.verdict === 'APPROVED') {
@@ -3984,6 +4017,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     repo,
     getSyncState: syncSnapshot,
     getRevision: () => syncBus.revision,
+    onDashboardConnected: ensureSyncTicker,
   });
   if (realtime) {
     syncBroadcast = (rev) => realtime?.broadcast({ type: 'sync.changed', rev });

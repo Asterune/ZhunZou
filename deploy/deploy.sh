@@ -137,7 +137,7 @@ echo
 echo -n 'service: '; systemctl is-active ${SERVICE_NAME:-zhunzou} || true
 echo -n 'nginx: ';   systemctl is-active nginx || true
 echo '===== TOKEN ====='
-grep -E '^HUB_SECRET_TOKEN=' ${REMOTE_DIR}/.env | cut -d= -f2-
+if grep -qE '^HUB_SECRET_TOKEN=' ${REMOTE_DIR}/.env; then echo 'HUB_SECRET_TOKEN: set'; else echo 'HUB_SECRET_TOKEN: missing'; fi
 echo '===== META ====='
 grep -E '^META_AGENT_ENABLED=' ${REMOTE_DIR}/.env | cut -d= -f2-"
 
