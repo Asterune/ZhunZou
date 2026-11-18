@@ -175,4 +175,39 @@ describe('findSimilarTickets', () => {
       256 * 1024 + 64 * 1024,
     );
   });
+
+  it('bounds streamed task logs while trimming in batches', async () => {
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      headers: ctx.auth,
+      payload: {
+        env: 'trim-log-env',
+        projectName: 'agent-hub',
+        title: '输出上限',
+        instruction: '写一段很长的日志。',
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const task = created.json().task as { id: string };
+
+    const chunk = 'x'.repeat(12_000);
+    const now = Date.now();
+    for (let index = 0; index < 40; index += 1) {
+      ctx.app.repo.appendTaskLog(
+        Number(task.id),
+        { stream: 'stdout', chunk },
+        now + index,
+      );
+    }
+
+    const { logs } = ctx.app.repo.listTaskLogs(Number(task.id), {
+      after: 0,
+      limit: 500,
+    });
+    const bytes = logs.reduce((sum, log) => sum + log.chunk.length, 0);
+
+    expect(logs.length).toBeLessThan(40);
+    expect(bytes).toBeLessThanOrEqual(256 * 1024 + 64 * 1024);
+  });
 });

@@ -172,6 +172,12 @@ const MAX_CHAT_EVENT_BYTES = 256 * 1024;
 const CHAT_EVENT_TRIM_SLACK_BYTES = 64 * 1024;
 /** Events are small fixed rows, so their cap counts rows instead of bytes. */
 const MAX_TASK_EVENTS = 500;
+/**
+ * Task logs are streamed in batches, so trimming on every append re-reads the
+ * whole (bounded) buffer each time. Deferring until it is actually over the
+ * cap trades a little transient growth for far fewer scans.
+ */
+const TASK_LOG_TRIM_SLACK_BYTES = 64 * 1024;
 
 /**
  * Marks a turn the hub gave up on because the client vanished mid-flight.
@@ -1169,6 +1175,12 @@ export class TicketRepository implements TicketStore {
    * while the process lives and measured once per session after a restart.
    */
   private readonly chatEventBytes = new Map<number, number>();
+
+  /**
+   * Same idea for task logs: a byte estimate per task so an append only pays
+   * for a trim when the buffer is plausibly over its cap.
+   */
+  private readonly taskLogBytes = new Map<number, number>();
 
   constructor(
     private readonly db: DrizzleDatabase,
@@ -2456,8 +2468,36 @@ export class TicketRepository implements TicketStore {
       .returning()
       .get();
 
-    this.trimTaskLogs(taskId);
+    this.scheduleTaskLogTrim(taskId, input.chunk.length);
     return toTaskLog(row);
+  }
+
+  /** Trim once the task has plausibly grown past the cap, not on every chunk. */
+  private scheduleTaskLogTrim(taskId: number, addedBytes: number): void {
+    let total = this.taskLogBytes.get(taskId);
+    if (total === undefined) {
+      total = this.measureTaskLogBytes(taskId);
+    }
+    total += addedBytes;
+
+    if (total <= MAX_TASK_LOG_BYTES + TASK_LOG_TRIM_SLACK_BYTES) {
+      this.taskLogBytes.set(taskId, total);
+      return;
+    }
+
+    const removed = this.trimTaskLogs(taskId);
+    this.taskLogBytes.set(taskId, Math.max(0, total - removed));
+  }
+
+  private measureTaskLogBytes(taskId: number): number {
+    const row = this.db
+      .select({
+        total: sql<number>`COALESCE(SUM(length(${taskLogs.chunk})), 0)`,
+      })
+      .from(taskLogs)
+      .where(eq(taskLogs.taskId, taskId))
+      .get();
+    return Number(row?.total ?? 0);
   }
 
   listTaskLogs(
@@ -2532,21 +2572,30 @@ export class TicketRepository implements TicketStore {
   }
 
   private trimTaskEvents(taskId: number): void {
-    const ids = this.db
+    // Indexed (task_id, id) lookup for the 501st newest row: no need to read
+    // every id just to decide what to delete.
+    const cutoff = this.db
       .select({ id: taskEvents.id })
       .from(taskEvents)
       .where(eq(taskEvents.taskId, taskId))
       .orderBy(desc(taskEvents.id))
-      .all();
-    if (ids.length <= MAX_TASK_EVENTS) return;
+      .limit(1)
+      .offset(MAX_TASK_EVENTS)
+      .get();
+    if (!cutoff) return;
 
     this.db
       .delete(taskEvents)
-      .where(and(eq(taskEvents.taskId, taskId), lte(taskEvents.id, ids[MAX_TASK_EVENTS]!.id)))
+      .where(
+        and(
+          eq(taskEvents.taskId, taskId),
+          lte(taskEvents.id, cutoff.id),
+        ),
+      )
       .run();
   }
 
-  private trimTaskLogs(taskId: number): void {
+  private trimTaskLogs(taskId: number): number {
     const rows = this.db
       .select({
         id: taskLogs.id,
@@ -2563,8 +2612,9 @@ export class TicketRepository implements TicketStore {
       total -= Number(rows[remove]!.size);
       remove += 1;
     }
-    if (remove === 0) return;
+    if (remove === 0) return 0;
 
+    const dropped = rows.slice(0, remove);
     this.db
       .delete(taskLogs)
       .where(
@@ -2572,11 +2622,13 @@ export class TicketRepository implements TicketStore {
           eq(taskLogs.taskId, taskId),
           inArray(
             taskLogs.id,
-            rows.slice(0, remove).map((row) => row.id),
+            dropped.map((row) => row.id),
           ),
         ),
       )
       .run();
+
+    return dropped.reduce((sum, row) => sum + Number(row.size), 0);
   }
 
   /* ---------------------------------------------------------------- */

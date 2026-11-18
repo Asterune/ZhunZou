@@ -27,6 +27,17 @@ if (args.help) {
 const config = loadConfig({ ...process.env, ...args.env });
 const app = await buildApp({ config });
 
+// A leaked promise must not take the hub down with it: log the rejection and
+// keep serving. An uncaught exception leaves process state unknown, so that
+// one is logged as fatal and exits; systemd starts a clean process instead.
+process.on('unhandledRejection', (reason) => {
+  app.log.error({ err: reason }, 'unhandled rejection');
+});
+process.on('uncaughtException', (error) => {
+  app.log.fatal({ err: error }, 'uncaught exception; exiting');
+  process.exit(1);
+});
+
 /** Bounds how long a restart keeps the port closed before answering polls. */
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 

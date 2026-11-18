@@ -218,6 +218,24 @@ sed -e "s#/opt/zhunzou#${APP_DIR}#g" \
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME" >/dev/null
 
+# Nightly SQLite snapshot. Optional: an older checkout without the unit files
+# keeps deploying, it just has no automatic backup.
+BACKUP_SERVICE_SRC="${APP_DIR}/deploy/${SERVICE_NAME}-backup.service"
+BACKUP_TIMER_SRC="${APP_DIR}/deploy/${SERVICE_NAME}-backup.timer"
+if [ -f "$BACKUP_SERVICE_SRC" ] && [ -f "$BACKUP_TIMER_SRC" ]; then
+  log "安装每日数据库备份 ${SERVICE_NAME}-backup.timer ..."
+  sed -e "s#/opt/zhunzou#${APP_DIR}#g" \
+      -e "s#^User=.*#User=${RUN_USER}#" \
+      -e "s#^Group=.*#Group=${RUN_USER}#" \
+      "$BACKUP_SERVICE_SRC" > "/etc/systemd/system/${SERVICE_NAME}-backup.service"
+  sed -e "s#/opt/zhunzou#${APP_DIR}#g" \
+      "$BACKUP_TIMER_SRC" > "/etc/systemd/system/${SERVICE_NAME}-backup.timer"
+  systemctl daemon-reload
+  systemctl enable --now "${SERVICE_NAME}-backup.timer" >/dev/null
+  # Take one snapshot now so a fresh install is never without a recovery point.
+  systemctl start "${SERVICE_NAME}-backup.service" || warn "首次备份失败，请检查 ${SERVICE_NAME}-backup.service"
+fi
+
 # Put the maintenance page in front of the existing nginx *before* the bounce,
 # so even this rollout never shows a raw 502. Fresh installs are handled in the
 # nginx section below, after the config exists.

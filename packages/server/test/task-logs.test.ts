@@ -159,7 +159,9 @@ describe('task execution logs', () => {
       await claimTask(ctx);
 
       const chunk = 'x'.repeat(16_384);
-      for (let index = 0; index < 18; index += 1) {
+      // Trimming is batched with a 64 KB slack so a long task does not re-read
+      // its whole log on every chunk; 30 chunks cross that line twice.
+      for (let index = 0; index < 30; index += 1) {
         expect((await appendLog(ctx, task.id, chunk)).statusCode).toBe(201);
       }
 
@@ -171,8 +173,8 @@ describe('task execution logs', () => {
       const logs = response.json().logs as TaskLog[];
       const total = logs.reduce((sum, log) => sum + log.chunk.length, 0);
 
-      expect(total).toBeLessThanOrEqual(256 * 1024);
-      expect(logs.length).toBeLessThan(18);
+      expect(total).toBeLessThanOrEqual(256 * 1024 + 64 * 1024);
+      expect(logs.length).toBeLessThan(30);
       // The newest chunk must survive.
       expect(logs.at(-1)?.chunk).toHaveLength(16_384);
     } finally {

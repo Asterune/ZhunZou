@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Zhunzou SQLite snapshot
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=10min
+Unit=zhunzou-backup.service
+
+[Install]
+WantedBy=timers.target
