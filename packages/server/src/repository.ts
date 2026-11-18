@@ -680,6 +680,14 @@ export interface TicketStore {
    * Used by GET /api/sync to decide whether a long-poll should wake.
    */
   syncFingerprint(): string;
+  /**
+   * The same digest split in two: dashboard content and live presence.
+   *
+   * A heartbeat changes presence every 30 seconds but no ticket or task; the
+   * dashboard can then receive a small presence frame instead of re-fetching
+   * the whole 200-ticket snapshot.
+   */
+  syncFingerprints(): { structural: string; presence: string };
   resolve(id: number, input: ResolveTicketInput, now?: number): DecisionTicket;
   markAutoResolved(
     id: number,
@@ -4784,6 +4792,11 @@ export class TicketRepository implements TicketStore {
    * every connected dashboard.
    */
   syncFingerprint(): string {
+    const { structural, presence } = this.syncFingerprints();
+    return `${structural}|${presence}`;
+  }
+
+  syncFingerprints(): { structural: string; presence: string } {
     const row = this.db.get<Record<string, number>>(sql`
       SELECT
         COALESCE((SELECT MAX(updated_at) FROM tickets), 0) AS tickets_updated,
@@ -4803,6 +4816,31 @@ export class TicketRepository implements TicketStore {
         (SELECT COUNT(*) FROM fleet_candidates) AS fleet_candidates_count,
         (SELECT COUNT(*) FROM fleet_workspaces) AS fleet_workspaces_count
     `);
-    return row ? Object.values(row).join(':') : '';
+    if (!row) return { structural: '', presence: '' };
+
+    return {
+      // Content the dashboard renders as lists and cards.
+      structural: [
+        row.tickets_updated,
+        row.tasks_updated,
+        row.messages_updated,
+        row.sessions_updated,
+        row.exchanges_max,
+        row.fleet_candidates_updated,
+        row.fleet_workspaces_updated,
+        row.projects_count,
+        row.fleet_candidates_count,
+        row.fleet_workspaces_count,
+      ].join(':'),
+      // Who is online right now; changes on every heartbeat.
+      presence: [
+        row.agents_updated,
+        row.devices_updated,
+        row.heartbeats_seen,
+        row.agents_count,
+        row.devices_count,
+        row.heartbeats_count,
+      ].join(':'),
+    };
   }
 }

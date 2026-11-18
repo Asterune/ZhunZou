@@ -334,13 +334,15 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   // `rev` only advances when something the UI renders actually changed.
   const syncBus = new SyncEventBus();
   let syncTicker: ReturnType<typeof setInterval> | null = null;
-  let syncFingerprint = '';
+  let structuralFingerprint = '';
+  let presenceFingerprint = '';
   let syncBroadcast: ((rev: number) => void) | null = null;
+  let presenceBroadcast: ((rev: number) => void) | null = null;
 
   const refreshSyncFingerprint = (): void => {
-    let next: string;
+    let next: { structural: string; presence: string };
     try {
-      next = repo.syncFingerprint();
+      next = repo.syncFingerprints();
     } catch (error) {
       app.log.error(
         { err: (error as Error).message },
@@ -349,14 +351,27 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       return;
     }
 
-    if (syncFingerprint === '') {
-      syncFingerprint = next;
+    if (structuralFingerprint === '' && presenceFingerprint === '') {
+      structuralFingerprint = next.structural;
+      presenceFingerprint = next.presence;
       return;
     }
-    if (next === syncFingerprint) return;
 
-    syncFingerprint = next;
-    syncBroadcast?.(syncBus.bump());
+    const structuralChanged = next.structural !== structuralFingerprint;
+    const presenceChanged = next.presence !== presenceFingerprint;
+    structuralFingerprint = next.structural;
+    presenceFingerprint = next.presence;
+    if (!structuralChanged && !presenceChanged) return;
+
+    // The revision wakes held HTTP polls either way; only dashboard content
+    // needs a full snapshot, while a heartbeat can be answered with the small
+    // presence registries.
+    const rev = syncBus.bump();
+    if (!structuralChanged && presenceBroadcast) {
+      presenceBroadcast(rev);
+      return;
+    }
+    syncBroadcast?.(rev);
   };
 
   /** Whether something still needs the once-a-second fingerprint. */
@@ -4021,6 +4036,16 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   });
   if (realtime) {
     syncBroadcast = (rev) => realtime?.broadcast({ type: 'sync.changed', rev });
+    presenceBroadcast = (rev) => {
+      if (realtime === null || realtime.dashboardCount() === 0) return;
+      realtime.broadcast({
+        type: 'presence.changed',
+        rev,
+        envs: repo.listHeartbeats(),
+        agents: repo.listAgents({}),
+        devices: repo.listDevices(),
+      });
+    };
     ensureSyncTicker();
     terminals = createTerminalManager({
       config,

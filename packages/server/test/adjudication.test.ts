@@ -126,8 +126,57 @@ describe('L2 adjudication', () => {
     }
   });
 
-  it('auto-approves when both reviewers pick the same option', async () => {
+  it('asks both reviewers at the same time when the policy always dual-reviews', async () => {
+    let judgeFinished = false;
+    let challengerStartedBeforeJudge = false;
+
     const ctx = await createTestContext(
+      {
+        async review() {
+          // Yield once so the parallel challenger has a chance to start first.
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          judgeFinished = true;
+          return {
+            canResolve: true,
+            selectedOption: 'A',
+            reason: '低风险重构',
+            confidence: 0.9,
+            category: 'refactor',
+          };
+        },
+      },
+      [],
+      { DECISION_DUAL_REVIEW: 'all' },
+      {
+        challenger: {
+          async review() {
+            challengerStartedBeforeJudge = !judgeFinished;
+            return {
+              canResolve: true,
+              selectedOption: 'A',
+              reason: '同意',
+              confidence: 0.9,
+            };
+          },
+        },
+      },
+    );
+
+    try {
+      const created = await createTicket(ctx);
+      const ticket = await settled(ctx, created.id);
+
+      // Sequential review can only start the challenger after the judge is
+      // done, so this flag is what distinguishes "in parallel" from "in turn".
+      expect(challengerStartedBeforeJudge).toBe(true);
+      expect(ticket.status).toBe('AUTO_RESOLVED');
+      expect(ticket.reviewCount).toBe(2);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('auto-approves when both reviewers pick the same option', async () => {    const ctx = await createTestContext(
       stub({
         canResolve: true,
         selectedOption: 'B',

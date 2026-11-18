@@ -132,6 +132,24 @@ export async function adjudicate(
     }
   }
 
+  // The challenger never sees the judge's answer, so when the policy always
+  // runs both seats they can think at the same time instead of in series.
+  // Other modes still wait for the category, which decides whether the second
+  // reading is needed at all — a wasted model call is worse there.
+  const challengerPromise =
+    config.dualReview === 'all'
+      ? deps.challenger.review(
+          ticket,
+          input.rules,
+          input.precedents,
+          'challenger',
+          input.kind,
+        )
+      : null;
+  // If the judge denies the request early, this promise is abandoned; attach a
+  // handler so a late rejection is not reported as an unhandled one.
+  challengerPromise?.catch(() => undefined);
+
   const judge = await deps.judge.review(
     ticket,
     input.rules,
@@ -200,13 +218,15 @@ export async function adjudicate(
     reviewCount = 2;
     let challenger;
     try {
-      challenger = await deps.challenger.review(
-        ticket,
-        input.rules,
-        input.precedents,
-        'challenger',
-        input.kind,
-      );
+      challenger = challengerPromise
+        ? await challengerPromise
+        : await deps.challenger.review(
+            ticket,
+            input.rules,
+            input.precedents,
+            'challenger',
+            input.kind,
+          );
     } catch (error) {
       return {
         verdict: 'PENDING',

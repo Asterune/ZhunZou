@@ -12,6 +12,8 @@ import {
   chatMessageSchema,
   chatSessionSchema,
   decisionTicketSchema,
+  deviceSchema,
+  envHeartbeatSchema,
   syncStateSchema,
   ticketIdSchema,
 } from './schemas.js';
@@ -164,6 +166,18 @@ export const realtimeServerFrameSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('sync.changed'),
     rev: z.number().int().nonnegative(),
+  }),
+  /**
+   * Presence-only change: a heartbeat moved but no ticket, task or message
+   * did. Sending the small registries keeps the online dots fresh without a
+   * full snapshot round trip.
+   */
+  z.object({
+    type: z.literal('presence.changed'),
+    rev: z.number().int().nonnegative(),
+    envs: z.array(envHeartbeatSchema),
+    agents: z.array(agentSchema),
+    devices: z.array(deviceSchema),
   }),
   z.object({
     type: z.literal('sync.snapshot'),

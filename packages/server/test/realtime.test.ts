@@ -322,6 +322,46 @@ describe('realtime gateway', () => {
     }
   });
 
+  it('answers a heartbeat with a presence frame instead of a snapshot', async () => {
+    const ctx = await createTestContext();
+    try {
+      await ctx.app.listen({ port: 0, host: '127.0.0.1' });
+
+      const ticketResponse = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/realtime/ticket',
+        headers: ctx.auth,
+      });
+      const { ticket } = ticketResponse.json() as { ticket: string };
+
+      const { socket, received } = await openSocket(
+        serverUrl(ctx, `/ws/realtime?ticket=${encodeURIComponent(ticket)}`),
+      );
+      await waitFor(() => received.find((frame) => frame.type === 'sync.snapshot'));
+
+      const beat = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/status/heartbeat',
+        headers: ctx.auth,
+        payload: { env: 'presence-env', status: 'Idle' },
+      });
+      expect(beat.statusCode).toBe(200);
+
+      const frame = await waitFor(
+        () => received.find((item) => item.type === 'presence.changed'),
+        { timeoutMs: 4_000 },
+      );
+      const envs = (frame as { envs: Array<{ env: string }> }).envs;
+      expect(envs.some((entry) => entry.env === 'presence-env')).toBe(true);
+      expect(Array.isArray((frame as { agents?: unknown[] }).agents)).toBe(true);
+
+      socket.close();
+      await sleep(20);
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('closes a device socket when its env is deleted', async () => {
     const ctx = await createTestContext();
     try {

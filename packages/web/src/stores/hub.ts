@@ -643,12 +643,26 @@ export function createHubStore(api: HubApi = hubApi) {
               type?: string;
               rev?: number;
               state?: SyncState;
+              envs?: EnvHeartbeat[];
+              agents?: Agent[];
+              devices?: Device[];
             };
             if (frame.type === 'sync.snapshot' && frame.state) {
               applySnapshot(frame.state);
               rev.value = frame.rev ?? rev.value;
               lastSyncAt.value = Date.now();
               lastError.value = '';
+              connection.value = 'online';
+              return;
+            }
+            if (frame.type === 'presence.changed') {
+              // A heartbeat moved but no ticket or task did: merge the small
+              // registries instead of forcing a full snapshot.
+              if (frame.envs) envs.value = frame.envs;
+              if (frame.agents) agents.value = frame.agents;
+              if (frame.devices) devices.value = frame.devices;
+              rev.value = frame.rev ?? rev.value;
+              lastSyncAt.value = Date.now();
               connection.value = 'online';
               return;
             }

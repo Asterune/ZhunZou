@@ -128,8 +128,24 @@ describe('findSimilarTickets', () => {
     expect(matches.map((ticket) => ticket.id)).not.toContain(resolved.id);
   });
 
-  it('bounds streamed chat output while trimming in batches', () => {
+  it('separates presence changes from dashboard content', async () => {
     const repo = ctx.app.repo;
+    const before = repo.syncFingerprints();
+
+    repo.recordHeartbeat(
+      { env: 'fingerprint-env', status: 'Idle' },
+      Date.now() + 1,
+    );
+    const afterBeat = repo.syncFingerprints();
+    expect(afterBeat.structural).toBe(before.structural);
+    expect(afterBeat.presence).not.toBe(before.presence);
+
+    await createTicket({ projectName: 'fingerprint-project' });
+    const afterTicket = repo.syncFingerprints();
+    expect(afterTicket.structural).not.toBe(afterBeat.structural);
+  });
+
+  it('bounds streamed chat output while trimming in batches', () => {    const repo = ctx.app.repo;
     const session = repo.createChatSession({
       env: 'trim-env',
       title: '输出上限',
