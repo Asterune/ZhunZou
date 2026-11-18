@@ -109,8 +109,11 @@ export function buildChatRun(
   session: ChatSession,
   message: ChatMessage,
   text = message.content,
+  options: { reset?: boolean } = {},
 ): ChatRun {
-  const externalId = session.externalId;
+  // A rotated turn must not resume the old native session: the hub decided it
+  // has spent its context budget and sent a handoff digest to start fresh.
+  const externalId = options.reset ? undefined : session.externalId;
   // A conversation created with an explicit model keeps it across turns.
   // Without one, fall back to the node default, and only then to whatever the
   // CLI itself is configured to use.
@@ -333,6 +336,15 @@ async function runTurn(
   }
 }
 
+/**
+ * Tokens are estimated, not measured: the CLIs report usage in different
+ * shapes (or not at all), and the hub only needs a monotonic growth signal to
+ * decide when to rotate. Four characters per token is the usual rule of thumb.
+ */
+export function estimateChatTokens(text: string): number {
+  return Math.min(2_000_000, Math.ceil(text.length / 4));
+}
+
 /** Turns already finished whose result the hub never accepted. */
 async function replayCompletions(options: {
   client: HubApi;
@@ -436,6 +448,10 @@ export async function runSessionDaemon(
           : ''
       }`,
     );
+    const rotation = next.context?.rotate === true ? next.context : null;
+    if (rotation) {
+      log(`会话 #${session.id} 上下文轮换：新建 CLI 会话并注入交接包`);
+    }
     state.beginTurn(message.id);
     const summary =
       message.content.trim() ||
@@ -459,11 +475,19 @@ export async function runSessionDaemon(
     let completion: CompleteChatMessageInput;
     let promptFiles: string[] = [];
     let imagesHandled = false;
+    let promptText = message.content;
     try {
       const prompt = await prepareChatPrompt(client, session, message);
       promptFiles = prompt.files;
       imagesHandled = true;
-      const run = buildChatRun(adapter, wake, session, message, prompt.text);
+      // A rotated turn opens the new native session with the hub's handoff
+      // digest, so the human's conversation continues without a gap.
+      promptText = rotation?.handoff
+        ? `${rotation.handoff}\n\n${prompt.text}`
+        : prompt.text;
+      const run = buildChatRun(adapter, wake, session, message, promptText, {
+        reset: rotation !== null,
+      });
       const result = await runTurn(run, wake, session, state, sink.push);
 
       if (result.timedOut) {
@@ -471,6 +495,7 @@ export async function runSessionDaemon(
         completion = {
           status: 'FAILED',
           error: `执行超时（${Math.round(wake.runTimeoutMs / 1000)}s）`,
+          contextUsage: estimateChatTokens(promptText),
         };
         logError(`会话 #${session.id} 消息 #${message.id} 超时`);
       } else if (result.code === 0) {
@@ -481,6 +506,9 @@ export async function runSessionDaemon(
           status: 'DONE',
           content: parsed.content || '(无输出)',
           ...(externalId ? { externalId } : {}),
+          contextUsage:
+            estimateChatTokens(promptText) +
+            estimateChatTokens(parsed.content ?? ''),
         };
       } else {
         const error = tail(result.stderr || result.stdout, 2_000);
@@ -490,13 +518,18 @@ export async function runSessionDaemon(
           status: 'FAILED',
           error: error || `CLI 退出码 ${result.code}`,
           ...(failureKind ? { failureKind } : {}),
+          contextUsage: estimateChatTokens(promptText),
         };
         logError(`会话 #${session.id} 消息 #${message.id} 失败`);
       }
     } catch (error) {
       const reason = (error as Error).message || '会话执行失败';
       sink.push('system', `\n[zhunzou] 失败：${reason}\n`);
-      completion = { status: 'FAILED', error: reason.slice(0, 2_000) };
+      completion = {
+        status: 'FAILED',
+        error: reason.slice(0, 2_000),
+        contextUsage: estimateChatTokens(promptText),
+      };
       logError(`会话 #${session.id} 消息 #${message.id} 失败：${reason}`);
     } finally {
       // The CLI has exited; the phone keeps the original, the runner does not.

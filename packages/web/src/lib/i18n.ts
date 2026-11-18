@@ -450,6 +450,12 @@ const zh: Record<string, string> = {
   'chat.dialogModelMachineDefault': '留空用 {model}',
   'chat.dialogModelHint': '按客户端原生模型 ID 填写，例如 opencode-go/deepseek-v4.1-flash',
   'chat.modelBadge': '本会话使用的模型',
+  'chat.contextUsage': '上下文 {percent}%',
+  'chat.contextRotations': '已续接 {count} 次',
+  'chat.contextTitle':
+    '原生会话已用 {percent}%，已自动续接 {count} 次。点击立即换新会话：对话不中断，旧细节会收进交接摘要。',
+  'chat.rotateQueued': '续接排队中',
+  'chat.rotateRequested': '已安排续接，下一轮开始使用新会话',
   'chat.cancel': '取消',
   'chat.creating': '创建中…',
   'chat.create': '创建',
@@ -1181,6 +1187,12 @@ const en: Record<string, string> = {
   'chat.dialogModelHint':
     'Use the client-native model id, e.g. opencode-go/deepseek-v4.1-flash',
   'chat.modelBadge': 'Model this chat runs on',
+  'chat.contextUsage': 'Context {percent}%',
+  'chat.contextRotations': '{count} rotations',
+  'chat.contextTitle':
+    'The native session has spent {percent}% of its budget and rotated {count} time(s). Click to rotate now: the conversation carries on, older detail moves into the handoff digest.',
+  'chat.rotateQueued': 'Rotation queued',
+  'chat.rotateRequested': 'Rotation scheduled; the next turn starts on a fresh session',
   'chat.cancel': 'Cancel',
   'chat.creating': 'Creating…',
   'chat.create': 'Create',

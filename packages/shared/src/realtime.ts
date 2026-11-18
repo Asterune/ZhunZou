@@ -8,6 +8,7 @@ import {
 import {
   agentSchema,
   agentTaskSchema,
+  chatContextHandoffSchema,
   chatMessageSchema,
   chatSessionSchema,
   decisionTicketSchema,
@@ -116,6 +117,8 @@ export const realtimeClientFrameSchema = z.discriminatedUnion('type', [
     error: z.string().max(2_000).optional(),
     /** The runner consumed the message's attached images before replying. */
     attachmentsHandled: z.boolean().optional(),
+    /** Approximate tokens this turn added to the native CLI session. */
+    contextUsage: z.number().int().nonnegative().max(4_000_000).optional(),
   }),
   z.object({
     type: z.literal('pty.ready'),
@@ -208,6 +211,7 @@ export const realtimeServerFrameSchema = z.discriminatedUnion('type', [
     session: chatSessionSchema.nullable(),
     message: chatMessageSchema.nullable(),
     timedOut: z.boolean(),
+    context: chatContextHandoffSchema.optional(),
   }),
   z.object({
     type: z.literal('chat.completed'),

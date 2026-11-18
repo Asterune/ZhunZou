@@ -7,10 +7,12 @@ import {
   desc,
   eq,
   gt,
+  gte,
   inArray,
   isNotNull,
   like,
   lte,
+  or,
   sql,
 } from 'drizzle-orm';
 
@@ -99,6 +101,10 @@ import {
 
 import { normalizeHost, sameMachine } from './env-allocator.js';
 import type { MachineFacts } from './env-allocator.js';
+import {
+  buildChatHandoff,
+  isContextOverflow,
+} from './chat-context.js';
 
 import type { DrizzleDatabase } from './db/client.js';
 import {
@@ -417,6 +423,12 @@ function toChatSession(
     status: row.status,
     ...(row.externalId ? { externalId: row.externalId } : {}),
     ...(row.model ? { model: row.model } : {}),
+    contextTokens: row.contextTokens,
+    contextRotations: row.contextRotations,
+    contextRotateRequested: row.contextRotateRequested,
+    ...(row.contextSummaryAt !== null
+      ? { contextSummaryAt: row.contextSummaryAt }
+      : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ...(row.lastMessageAt !== null ? { lastMessageAt: row.lastMessageAt } : {}),
@@ -925,6 +937,30 @@ export interface TicketStore {
     env: string,
     now?: number,
   ): { session: ChatSession; message: ChatMessage } | null;
+  /**
+   * Swap the native CLI session once it has spent `budgetTokens`, returning
+   * the digest the runner must prepend to the next prompt. Returns null when
+   * the budget is still intact or another claim already rotated first.
+   */
+  rotateChatContext(
+    sessionId: number,
+    budgetTokens: number,
+    now?: number,
+  ): { session: ChatSession; handoff: string } | null;
+  /**
+   * Ask for the next claimed turn to start a fresh native session. Safe to
+   * call twice; returns the session as it will be reported to the dashboard.
+   */
+  requestChatContextRotation(
+    sessionId: number,
+    now?: number,
+  ): ChatSession | null;
+  /** Store the model-written handoff digest and when it was written. */
+  saveChatContextSummary(
+    sessionId: number,
+    summary: string,
+    now?: number,
+  ): ChatSession | null;
   completeChatMessage(
     sessionId: number,
     messageId: number,
@@ -3038,6 +3074,84 @@ export class TicketRepository implements TicketStore {
     };
   }
 
+  rotateChatContext(
+    sessionId: number,
+    budgetTokens: number,
+    now = Date.now(),
+  ): { session: ChatSession; handoff: string } | null {
+    const row = this.db
+      .select()
+      .from(chatSessions)
+      .where(eq(chatSessions.id, sessionId))
+      .get();
+    if (!row) return null;
+    const overBudget = row.contextTokens >= budgetTokens;
+    if (!overBudget && !row.contextRotateRequested) return null;
+
+    const handoff = buildChatHandoff({
+      session: toChatSession(row),
+      messages: this.listChatMessages(sessionId, 200),
+      rotation: row.contextRotations + 1,
+      ...(row.contextSummary ? { summary: row.contextSummary } : {}),
+    });
+
+    // Conditional on the budget still being spent: two claims racing for the
+    // same session must produce exactly one rotation and one handoff.
+    const updated = this.db
+      .update(chatSessions)
+      .set({
+        contextTokens: 0,
+        contextRotateRequested: false,
+        // The summary described the old session; the new one starts with it in
+        // the handoff, so keeping a copy would just go stale.
+        contextSummary: null,
+        contextSummaryAt: null,
+        contextRotations: sql`${chatSessions.contextRotations} + 1`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(chatSessions.id, sessionId),
+          or(
+            gte(chatSessions.contextTokens, budgetTokens),
+            eq(chatSessions.contextRotateRequested, true),
+          ),
+        ),
+      )
+      .returning()
+      .get();
+    if (!updated) return null;
+
+    return { session: toChatSession(updated), handoff };
+  }
+
+  requestChatContextRotation(
+    sessionId: number,
+    now = Date.now(),
+  ): ChatSession | null {
+    const updated = this.db
+      .update(chatSessions)
+      .set({ contextRotateRequested: true, updatedAt: now })
+      .where(eq(chatSessions.id, sessionId))
+      .returning()
+      .get();
+    return updated ? toChatSession(updated) : null;
+  }
+
+  saveChatContextSummary(
+    sessionId: number,
+    summary: string,
+    now = Date.now(),
+  ): ChatSession | null {
+    const updated = this.db
+      .update(chatSessions)
+      .set({ contextSummary: summary, contextSummaryAt: now, updatedAt: now })
+      .where(eq(chatSessions.id, sessionId))
+      .returning()
+      .get();
+    return updated ? toChatSession(updated) : null;
+  }
+
   completeChatMessage(
     sessionId: number,
     messageId: number,
@@ -3118,6 +3232,16 @@ export class TicketRepository implements TicketStore {
         updatedAt: now,
         lastMessageAt: now,
         ...(input.externalId ? { externalId: input.externalId } : {}),
+        // Charge the turn against the native session's context budget. An
+        // overflow complaint flags the session so the next claim rotates
+        // instead of repeating the same rejected prompt.
+        ...(input.status === 'FAILED' && isContextOverflow(input.error)
+          ? { contextRotateRequested: true }
+          : (input.contextUsage ?? 0) > 0
+            ? {
+                contextTokens: sql`${chatSessions.contextTokens} + ${input.contextUsage}`,
+              }
+            : {}),
       })
       .where(eq(chatSessions.id, sessionId))
       .returning()

@@ -748,6 +748,24 @@ export const chatSessionSchema = z.object({
    * whatever the CLI itself is configured to use.
    */
   model: modelNameSchema.optional(),
+  /**
+   * Approximate tokens the native CLI session has been charged since the last
+   * rotation. The bridge reports a per-turn estimate; the hub rotates the
+   * native session once this crosses its budget.
+   */
+  contextTokens: z.number().int().nonnegative().optional(),
+  /** How many times the native session was rotated to stay inside budget. */
+  contextRotations: z.number().int().nonnegative().optional(),
+  /**
+   * Someone asked for the next turn to start a fresh native session: a human
+   * pressed "rotate now", or a provider rejected the prompt as too long.
+   */
+  contextRotateRequested: z.boolean().optional(),
+  /**
+   * When the hub last wrote a model-generated handoff summary. Absent until
+   * the conversation is close enough to its context budget to need one.
+   */
+  contextSummaryAt: z.number().int().nonnegative().optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   lastMessageAt: z.number().int().nonnegative().optional(),
@@ -914,6 +932,12 @@ export const completeChatMessageSchema = z.object({
    * journaled result can still be recorded instead of being dropped.
    */
   force: z.boolean().optional(),
+  /**
+   * Approximate tokens this turn added to the native CLI session (the prompt
+   * it received plus its reply). The bridge estimates it; the hub adds it to
+   * the session's running total and rotates once the budget is spent.
+   */
+  contextUsage: z.number().int().nonnegative().max(4_000_000).optional(),
 });
 
 export const appendChatEventSchema = z.object({
@@ -965,10 +989,25 @@ export const chatEventListResponseSchema = z.object({
   truncated: z.boolean(),
 });
 
+/**
+ * Rotation instruction carried alongside a claimed chat turn. The hub sends it
+ * when the native CLI session has spent its context budget.
+ */
+export const chatContextHandoffSchema = z.object({
+  rotate: z.boolean(),
+  handoff: z.string().max(16_000).optional(),
+});
+
 export const nextChatMessageResponseSchema = z.object({
   session: chatSessionSchema.nullable(),
   message: chatMessageSchema.nullable(),
   timedOut: z.boolean(),
+  /**
+   * Present when the hub decided the native CLI session has spent its context
+   * budget. The runner must start a fresh one and prepend `handoff` to the
+   * prompt so the conversation itself stays unbroken for the human.
+   */
+  context: chatContextHandoffSchema.optional(),
 });
 
 /* ------------------------------------------------------------------ */
@@ -1509,6 +1548,7 @@ export type ChatEventListResponse = z.infer<typeof chatEventListResponseSchema>;
 export type NextChatMessageResponse = z.infer<
   typeof nextChatMessageResponseSchema
 >;
+export type ChatContextHandoff = z.infer<typeof chatContextHandoffSchema>;
 
 export type Exchange = z.infer<typeof exchangeSchema>;
 export type ReportExchangeInput = z.infer<typeof reportExchangeSchema>;

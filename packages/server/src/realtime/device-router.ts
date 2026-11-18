@@ -10,6 +10,7 @@ import type {
 import { isTerminalStatus } from '@zhunzou/shared';
 
 import { removeChatImages } from '../chat-uploads.js';
+import { claimChatWithContext } from '../chat-context.js';
 import type { ServerConfig } from '../config.js';
 import type {
   SessionEventBus,
@@ -30,6 +31,8 @@ export interface DeviceRouterOptions {
   onChanged?: () => void;
   /** Called when a task reaches a terminal state, so the hub can announce it. */
   onTaskSettled?: (task: AgentTask) => void;
+  /** Called after a chat turn is recorded, so the hub can refresh its digest. */
+  onChatTurnSettled?: (sessionId: number) => void;
 }
 
 export interface DeviceRouter {
@@ -58,6 +61,7 @@ export function attachDeviceRouter(
   const { config, repo, gateway, ticketBus, taskBus, sessionBus } = options;
   const onChanged = options.onChanged;
   const onTaskSettled = options.onTaskSettled;
+  const onChatTurnSettled = options.onChatTurnSettled;
 
   const send = (env: string, frame: RealtimeServerFrame): boolean =>
     gateway.sendToBridge(env, frame);
@@ -173,7 +177,7 @@ export function attachDeviceRouter(
   const deliverChat = (
     env: string,
     requestId: string,
-    claim: { session: ChatSession; message: ChatMessage } | null,
+    claim: ReturnType<typeof claimChatWithContext>,
     timedOut: boolean,
   ): void => {
     send(env, {
@@ -182,6 +186,7 @@ export function attachDeviceRouter(
       session: claim?.session ?? null,
       message: claim?.message ?? null,
       timedOut,
+      ...(claim?.context ? { context: claim.context } : {}),
     });
     if (claim) onChanged?.();
   };
@@ -193,7 +198,11 @@ export function attachDeviceRouter(
   ): Promise<void> => {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const claim = repo.claimNextChatMessage(env);
+      const claim = claimChatWithContext(
+        repo,
+        env,
+        config.chatContextBudgetTokens,
+      );
       if (claim) {
         deliverChat(env, requestId, claim, false);
         return;
@@ -206,7 +215,7 @@ export function attachDeviceRouter(
       }
 
       const wake = await sessionBus.wait(env, remaining, () =>
-        repo.claimNextChatMessage(env),
+        claimChatWithContext(repo, env, config.chatContextBudgetTokens),
       );
       if (wake.claim) {
         deliverChat(env, requestId, wake.claim, false);
@@ -361,12 +370,16 @@ export function attachDeviceRouter(
             ...(frame.externalId ? { externalId: frame.externalId } : {}),
             ...(frame.error ? { error: frame.error } : {}),
             ...(frame.attachmentsHandled ? { attachmentsHandled: true } : {}),
+            ...(frame.contextUsage !== undefined
+              ? { contextUsage: frame.contextUsage }
+              : {}),
           };
     const result = repo.completeChatMessage(
       Number(session.id),
       Number(frame.messageId),
       input,
     );
+    onChatTurnSettled?.(Number(session.id));
     if (input.status === 'DONE') {
       const used = repo.expireChatMessageAttachments(
         Number(session.id),

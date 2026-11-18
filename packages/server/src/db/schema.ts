@@ -418,6 +418,22 @@ export const chatSessions = sqliteTable(
      * node default so old sessions keep running on whatever they ran on.
      */
     model: text('model'),
+    /**
+     * Approximate tokens the native CLI session has been charged since the
+     * last rotation; the hub rotates once it crosses the configured budget.
+     */
+    contextTokens: integer('context_tokens').notNull().default(0),
+    /** How many times the native session was swapped for a fresh one. */
+    contextRotations: integer('context_rotations').notNull().default(0),
+    /** Set by "rotate now" or by a provider rejecting the prompt as too long. */
+    contextRotateRequested: integer('context_rotate_requested', {
+      mode: 'boolean',
+    })
+      .notNull()
+      .default(false),
+    /** Model-written handoff digest, refreshed as the budget runs low. */
+    contextSummary: text('context_summary'),
+    contextSummaryAt: integer('context_summary_at'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     lastMessageAt: integer('last_message_at'),

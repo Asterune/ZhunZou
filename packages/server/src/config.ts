@@ -76,6 +76,11 @@ export interface ServerConfig {
   dbPath: string;
   /** Where chat images are stored; defaults to a sibling of the database. */
   chatUploadsPath: string;
+  /**
+   * Tokens a native CLI session may accumulate before the hub swaps it for a
+   * fresh one and prepends a handoff digest. Roughly 60% of a 128k window.
+   */
+  chatContextBudgetTokens: number;
   rulesPath: string;
   waitTimeoutMs: number;
   logLevel: string;
@@ -409,6 +414,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     ),
     rulesPath: resolvePath(env.GLOBAL_RULES_PATH ?? './GLOBAL_RULES.md'),
     waitTimeoutMs: readInt(env.WAIT_TIMEOUT_MS, 40_000, { min: 0, max: 55_000 }),
+    chatContextBudgetTokens: readInt(
+      env.CHAT_CONTEXT_BUDGET_TOKENS,
+      80_000,
+      { min: 4_000, max: 4_000_000 },
+    ),
     logLevel: env.LOG_LEVEL ?? (isProduction ? 'info' : 'debug'),
     serveWeb: readBool(env.SERVE_WEB, true),
     webDistPath: resolvePath(env.WEB_DIST_PATH ?? './packages/web/dist'),

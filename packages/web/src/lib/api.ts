@@ -102,7 +102,10 @@ export interface TakeoverTaskResponse {
 export interface HubApi {
   /** Unauthenticated build identity of the server answering this request. */
   health(): Promise<ServerHealth>;
-  status(token: string): Promise<{ envs: EnvHeartbeat[] }>;
+  status(token: string): Promise<{
+    envs: EnvHeartbeat[];
+    chatContextBudgetTokens?: number;
+  }>;
   listAgents(token: string): Promise<AgentListResponse>;
   listExchanges(
     token: string,
@@ -222,6 +225,10 @@ export interface HubApi {
     attachmentId: string,
   ): Promise<Blob>;
   closeChatSession(
+    token: string,
+    sessionId: string,
+  ): Promise<ChatSessionResponse>;
+  rotateChatContext(
     token: string,
     sessionId: string,
   ): Promise<ChatSessionResponse>;
@@ -391,7 +398,11 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
   return {
     health: () => request<ServerHealth>('', '/healthz'),
 
-    status: (token) => request<{ envs: EnvHeartbeat[] }>(token, '/api/status'),
+    status: (token) =>
+      request<{ envs: EnvHeartbeat[]; chatContextBudgetTokens?: number }>(
+        token,
+        '/api/status',
+      ),
 
     listAgents: (token) => request<AgentListResponse>(token, '/api/agents'),
 
@@ -622,6 +633,13 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
       request<ChatSessionResponse>(token, `/api/sessions/${sessionId}/close`, {
         method: 'POST',
       }),
+
+    rotateChatContext: (token, sessionId) =>
+      request<ChatSessionResponse>(
+        token,
+        `/api/sessions/${sessionId}/context/rotate`,
+        { method: 'POST' },
+      ),
 
     deleteChatSession: (token, sessionId) =>
       request<{ deleted: boolean; id: string }>(

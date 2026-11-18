@@ -15,7 +15,14 @@ import type {
 
 import { HubApiError, type HubApi } from '../src/hub-client.js';
 import { RunnerState } from '../src/runner-state.js';
-import { buildChatRun, openCodeSessionId, parseChatOutput, runSessionDaemon, supportsChat } from '../src/session.js';
+import {
+  buildChatRun,
+  estimateChatTokens,
+  openCodeSessionId,
+  parseChatOutput,
+  runSessionDaemon,
+  supportsChat,
+} from '../src/session.js';
 import { loadWakeConfig } from '../src/wake/config.js';
 import { testConfig } from './helpers.js';
 
@@ -162,6 +169,39 @@ describe('buildChatRun', () => {
     const run = buildChatRun('opencode-run', wake, session, message);
     expect(modelArg(run.args)).toBeUndefined();
   });
+
+  it('opens a fresh native session when the hub rotates the context', () => {
+    const run = buildChatRun(
+      'opencode-run',
+      wake,
+      { ...session, externalId: 'ses_old' },
+      message,
+      'hello',
+      { reset: true },
+    );
+    const assigned = run.args[run.args.indexOf('--session') + 1];
+    expect(assigned).not.toBe('ses_old');
+    expect(assigned).toMatch(/^ses_[0-9a-f]{32}$/);
+  });
+
+  it('keeps resuming the stored session on an ordinary turn', () => {
+    const run = buildChatRun(
+      'opencode-run',
+      wake,
+      { ...session, externalId: 'ses_old' },
+      message,
+    );
+    expect(run.args[run.args.indexOf('--session') + 1]).toBe('ses_old');
+  });
+});
+
+describe('estimateChatTokens', () => {
+  it('rounds up and caps absurd input', () => {
+    expect(estimateChatTokens('')).toBe(0);
+    expect(estimateChatTokens('abcd')).toBe(1);
+    expect(estimateChatTokens('a'.repeat(9))).toBe(3);
+    expect(estimateChatTokens('a'.repeat(9_000_000))).toBe(2_000_000);
+  });
 });
 
 describe('runSessionDaemon', () => {
@@ -195,6 +235,60 @@ describe('runSessionDaemon', () => {
     // The hub uses this id to detect that the previous runner died.
     expect(calls.runnerIds).toHaveLength(1);
     expect(calls.runnerIds?.[0]).toBeTruthy();
+  });
+
+  it('opens a fresh CLI session with the handoff digest when asked to rotate', async () => {
+    const dir = tempDir();
+    const calls: Calls = { events: [], completions: [] };
+    const logs: string[] = [];
+    const wake = loadWakeConfig(
+      {
+        ZHUNZOU_WAKE_ADAPTER: 'command',
+        ZHUNZOU_WAKE_COMMAND: 'echo {message}',
+      },
+      dir,
+    );
+
+    const base = makeClient(calls);
+    const rotating = {
+      ...base,
+      async nextChatMessage(): Promise<NextChatMessageResponse> {
+        if (calls.completions.length > 0) {
+          return { session: null, message: null, timedOut: true };
+        }
+        return {
+          session: { ...session, externalId: 'old-cli-session' },
+          message,
+          timedOut: false,
+          context: {
+            rotate: true,
+            handoff: '[zhunzou] 上下文交接\n之前聊过登录页校验',
+          },
+        };
+      },
+    } as unknown as HubApi;
+
+    const code = await runSessionDaemon({
+      client: rotating,
+      hub: testConfig({ agentEnv: 'company-cursor', projectName: 'demo' }),
+      wake,
+      state: runnerState(dir),
+      once: true,
+      stdout: (line) => logs.push(line),
+      stderr: () => undefined,
+    });
+
+    expect(code).toBe(0);
+    const completion = calls.completions[0];
+    expect(completion).toMatchObject({ status: 'DONE' });
+    // The prompt the CLI received opens with the hub's handoff.
+    expect(completion?.content).toContain('之前聊过登录页校验');
+    expect(completion?.content).toContain('hello');
+    // The old native session is gone; the hub stores the new id for next time.
+    expect(completion?.externalId).toBeTruthy();
+    expect(completion?.externalId).not.toBe('old-cli-session');
+    expect(completion?.contextUsage).toBeGreaterThan(0);
+    expect(logs.join('\n')).toContain('上下文轮换');
   });
 
   // A real executable is spawned without a shell; .cmd needs a shell on

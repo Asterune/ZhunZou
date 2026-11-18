@@ -120,13 +120,14 @@ CLAIMED 期间还可被 POST /api/tasks/:id/takeover：本地 wrapped run 主动
 | `GET` | `/api/sessions/:id` | agent | 会话详情与消息 |
 | `DELETE` | `/api/sessions/:id` | admin | 删除会话（连带消息与输出记录） |
 | `POST` | `/api/sessions/:id/close` | admin | 关闭会话 |
+| `POST` | `/api/sessions/:id/context/rotate` | admin | 请求下一轮换新原生 CLI 会话（带交接摘要），幂等；已关闭会话返回 409 `SESSION_CLOSED` |
 | `POST` | `/api/sessions/:id/messages` | admin | 发送用户消息 `{ content }` |
 | `PATCH` | `/api/sessions/:id/messages/:messageId` | admin | 改写仍在排队的用户消息（仅 `PENDING` 人工消息） |
 | `POST` | `/api/sessions/:id/messages/:messageId/cancel` | admin | 取消排队消息，保留为 `CANCELLED` 审计记录 |
 | `GET` | `/api/sessions/:id/events` | agent | 增量读取会话输出 `?after=&messageId=` |
-| `GET` | `/api/sessions/next?env=...&timeout=40000` | agent | 端侧 runner 领取下一条消息 |
+| `GET` | `/api/sessions/next?env=...&timeout=40000` | agent | 端侧 runner 领取下一条消息；响应可带 `context: { rotate: true, handoff }`——原生 CLI 会话已花完 `CHAT_CONTEXT_BUDGET_TOKENS`，runner 需新建原生会话并把 `handoff` 前置到 prompt |
 | `POST` | `/api/sessions/:id/messages/:messageId/events` | agent | 追加流式输出 `{ stream, chunk }` |
-| `POST` | `/api/sessions/:id/messages/:messageId/complete` | agent | 完成一轮 `{ status, content?, externalId?, error? }` |
+| `POST` | `/api/sessions/:id/messages/:messageId/complete` | agent | 完成一轮 `{ status, content?, externalId?, error?, contextUsage? }`；`contextUsage` 为本轮估算 token，累加到会话的 `contextTokens`，跨预算后下一轮自动轮换 |
 | `POST` | `/api/sessions/:id/messages/:messageId/retry` | admin | 重试失败轮次（重置为待领取） |
 | `POST` | `/api/sessions/proposals` | agent | Agent 起草下一句回复 `{ env, sessionId?, content, rationale? }`，存为 `PROPOSED` |
 | `POST` | `/api/sessions/:id/proposals/:messageId/adopt` | admin | 采纳草稿（可带改写后的 `content`）并排队发送 |
@@ -134,12 +135,14 @@ CLAIMED 期间还可被 POST /api/tasks/:id/takeover：本地 wrapped run 主动
 | `POST` | `/api/exchanges` | agent | 镜像一轮问答 `{ env, question?, conclusion?, projectName? }`（后两者至少填一项） |
 | `GET` | `/api/exchanges` | admin | 镜像列表，支持 `?env=&projectName=&limit=` |
 
+**上下文续接**：会话返回 `contextTokens` / `contextRotations` / `contextRotateRequested` / `contextSummaryAt`。用量跨过 `CHAT_CONTEXT_BUDGET_TOKENS`（默认 80000）的 60% 时，Hub 用 Meta-Agent 的 OpenAI 兼容模型在后台写一份交接摘要（`META_AGENT_PROVIDER` 不是 `openai` 或调用失败则退回「最近 8 轮摘录」）；花完预算后下一次 `/sessions/next` 带 `context.rotate` + 交接包，runner 换新原生会话续跑，人类侧会话不中断。手动续接走 `POST /api/sessions/:id/context/rotate`。
+
 ## 状态、实时与终端
 
 | 方法 | 路径 | 层 | 说明 |
 | --- | --- | --- | --- |
 | `POST` | `/api/status/heartbeat` | agent | 端侧上报 `{ env, status, projectName?, currentTask?, agent? }`，同时续租该端执行中的任务 |
-| `GET` | `/api/status` | admin | 各接入端在线状态（90s 内有心跳视为在线） |
+| `GET` | `/api/status` | admin | 各接入端在线状态（90s 内有心跳视为在线），以及 `chatContextBudgetTokens`（会话上下文预算） |
 | `GET` | `/api/sync` | admin | 看板整表快照长轮询（`rev` / `changed`）；`/ws/realtime` 可用时自动暂停 |
 | `POST` | `/api/realtime/ticket` | admin | 管理员 Token 换取短期看板 WebSocket ticket |
 | `GET` | `/api/realtime/status` | admin | 实时网关状态（设备 / 看板 / bridge 连接数） |

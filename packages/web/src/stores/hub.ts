@@ -182,6 +182,12 @@ export function createHubStore(api: HubApi = hubApi) {
   const realtimeState = ref<'idle' | 'connecting' | 'online' | 'offline'>('idle');
   const serverVersion = ref('');
   const serverStartedAt = ref(0);
+  /**
+   * Tokens a native CLI session may spend before the hub rotates it. Seeded
+   * with the server default so the badge is still meaningful on the first
+   * paint, then replaced by `/api/status` (the hub owns the real value).
+   */
+  const contextBudget = ref(80_000);
   const lastSyncAt = ref(0);
   const lastError = ref('');
   const authError = ref('');
@@ -481,6 +487,19 @@ export function createHubStore(api: HubApi = hubApi) {
     serverStartedAt.value = health.startedAt ?? 0;
   }
 
+  /** The context budget is configuration, not a snapshot field. */
+  async function loadContextBudget(): Promise<void> {
+    if (!token.value) return;
+    try {
+      const status = await api.status(token.value);
+      if (status.chatContextBudgetTokens) {
+        contextBudget.value = status.chatContextBudgetTokens;
+      }
+    } catch {
+      // Keep the seeded default; the badge is advisory either way.
+    }
+  }
+
   /**
    * Force a snapshot right now (login, manual refresh, after a mutation).
    * `after=0` sidesteps the long poll: the server always answers with state.
@@ -672,6 +691,9 @@ export function createHubStore(api: HubApi = hubApi) {
       token.value = value;
       persistToken(value);
       envs.value = status.envs;
+      if (status.chatContextBudgetTokens) {
+        contextBudget.value = status.chatContextBudgetTokens;
+      }
       lastSyncAt.value = Date.now();
       connection.value = 'online';
       start();
@@ -715,6 +737,7 @@ export function createHubStore(api: HubApi = hubApi) {
     void runSyncLoop(syncGeneration);
     void runRealtimeLoop(realtimeGeneration);
     void pollHealth();
+    void loadContextBudget();
     // The nav badge counts stuck tasks before anyone opens the page, so the
     // inbox is read once up front even though it is not part of the snapshot.
     void loadInbox();
@@ -1453,6 +1476,7 @@ export function createHubStore(api: HubApi = hubApi) {
     realtimeState,
     serverVersion,
     serverStartedAt,
+    contextBudget,
     pollHealth,
     rev,
     lastSyncAt,

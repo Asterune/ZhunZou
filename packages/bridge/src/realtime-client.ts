@@ -234,6 +234,7 @@ export class RealtimeHubClient {
       session: response.session,
       message: response.message,
       timedOut: response.timedOut,
+      ...(response.context ? { context: response.context } : {}),
     };
   }
 

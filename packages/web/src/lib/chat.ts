@@ -43,6 +43,21 @@ export function isSendShortcut(
   return event.key === 'Enter' && !event.isComposing && event.shiftKey;
 }
 
+/**
+ * Share of the native session's context budget already spent, 0–100.
+ *
+ * The hub's figure is a four-chars-per-token estimate, so the badge rounds
+ * instead of pretending to be precise, and a value past the budget clamps at
+ * 100 rather than overflowing the bar.
+ */
+export function contextUsagePercent(
+  tokens: number | undefined,
+  budget: number | undefined,
+): number {
+  if (!tokens || !budget || budget <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((tokens / budget) * 100)));
+}
+
 /** The parts of a fleet workspace a conversation needs to describe itself. */
 export interface WorkspaceDirectory {
   env: string;

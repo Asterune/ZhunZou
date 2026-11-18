@@ -144,7 +144,7 @@ zhunzou/
 | 节点路由 | 按 repo、引擎、tags、角色、内存、并发派发；放不下时报 `NO_ROUTE_TARGET` 并逐台列原因（`GET /api/nodes` 看调度器眼中的机群） |
 | 隔离运行 | 每个任务独占 `.zhunzou/wt/<taskId>` worktree，压成一个提交；出问题时安全回退到普通 checkout |
 | 实时观测 | 降噪后的 `stdout` / `stderr` / engine events 实时流；`tool_call` / `permission_required` / `session` 归一化事件让 parked run 原地续跑 |
-| 人 ↔ Agent | 看板与任意项目 Agent 多轮会话（按 session 续跑）、单次任务下发、IDE 轮次镜像、替人起草的回复草稿 |
+| 人 ↔ Agent | 看板与任意项目 Agent 多轮会话（按 session 续跑，上下文用尽自动交接续接）、单次任务下发、IDE 轮次镜像、替人起草的回复草稿 |
 | 守护进程 | `wake`（单项目）、`fleet`（一进程多项目）、`run`（包裹你自己起的终端）、登录自启 `service`、bridge 自更新 |
 | 交互终端 | 真 PTY shell 流到 xterm.js，输入权唯一、限额、审计可导出 |
 | 接入管理 | 一键接入码（Token + 编辑器配置 + 守护进程）、每 Agent 专属 scoped Token、接入端注册与启停 |

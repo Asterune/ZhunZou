@@ -512,6 +512,19 @@ export function createDatabase(dbPath: string): {
   ensureColumn(sqlite, 'chat_messages', 'origin', "TEXT NOT NULL DEFAULT 'human'");
   ensureColumn(sqlite, 'chat_messages', 'rationale', 'TEXT');
   ensureColumn(sqlite, 'chat_messages', 'decision', 'TEXT');
+  // Context budget accounting for the native CLI session behind a chat.
+  // Existing rows start at zero, so a long-running conversation rotates on the
+  // first turn that pushes it past the budget instead of never rotating.
+  ensureColumn(sqlite, 'chat_sessions', 'context_tokens', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(sqlite, 'chat_sessions', 'context_rotations', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(
+    sqlite,
+    'chat_sessions',
+    'context_rotate_requested',
+    'INTEGER NOT NULL DEFAULT 0',
+  );
+  ensureColumn(sqlite, 'chat_sessions', 'context_summary', 'TEXT');
+  ensureColumn(sqlite, 'chat_sessions', 'context_summary_at', 'INTEGER');
   // One code may enroll several clients on the same machine (Cursor,
   // OpenCode, Claude Code, Codex) instead of forcing one code per client.
   ensureColumn(sqlite, 'enrollment_codes', 'max_uses', 'INTEGER NOT NULL DEFAULT 1');

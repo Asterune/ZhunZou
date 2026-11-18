@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChatMessage, DecisionTicket } from '@zhunzou/shared';
 
 import {
+  contextUsagePercent,
   dirName,
   isSendShortcut,
   queuedUserMessages,
@@ -186,5 +187,19 @@ describe('isSendShortcut', () => {
 
   it('ignores other keys even with a modifier', () => {
     expect(isSendShortcut(key({ key: 'k', shiftKey: true }))).toBe(false);
+  });
+});
+
+describe('contextUsagePercent', () => {
+  it('reports the spent share of the budget', () => {
+    expect(contextUsagePercent(40_000, 80_000)).toBe(50);
+    expect(contextUsagePercent(1, 80_000)).toBe(0);
+  });
+
+  it('clamps a spent or unknown budget instead of overflowing', () => {
+    expect(contextUsagePercent(200_000, 80_000)).toBe(100);
+    expect(contextUsagePercent(undefined, 80_000)).toBe(0);
+    expect(contextUsagePercent(40_000, undefined)).toBe(0);
+    expect(contextUsagePercent(40_000, 0)).toBe(0);
   });
 });

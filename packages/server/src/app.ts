@@ -108,6 +108,7 @@ import {
 } from './approval-link.js';
 import { adjudicate } from './adjudication.js';
 import { createAuthHook, hashToken, requireAdmin, requireEnvAccess } from './auth.js';
+import { claimChatWithContext, scheduleChatContextSummary } from './chat-context.js';
 import {
   ChatImageError,
   readChatImage,
@@ -2575,7 +2576,11 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         const deadline = Date.now() + query.timeout;
 
         for (;;) {
-          const claimed = repo.claimNextChatMessage(query.env);
+          const claimed = claimChatWithContext(
+            repo,
+            query.env,
+            config.chatContextBudgetTokens,
+          );
           if (claimed) return { ...claimed, timedOut: false };
 
           const remaining = deadline - Date.now();
@@ -2584,7 +2589,11 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           }
 
           const wake = await sessionBus.wait(query.env, remaining, () =>
-            repo.claimNextChatMessage(query.env),
+            claimChatWithContext(
+              repo,
+              query.env,
+              config.chatContextBudgetTokens,
+            ),
           );
           if (wake.claim) return { ...wake.claim, timedOut: false };
           if (wake.timedOut) {
@@ -2797,6 +2806,41 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         return { session: closed };
       });
 
+      // A human asked for a fresh native session before the budget ran out.
+      // The rotation itself happens on the next claim, together with the
+      // handoff digest, so a turn already running is never interrupted.
+      api.post('/sessions/:id/context/rotate', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const session = repo.getChatSession(parseTicketId(id));
+        if (!session) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+        if (session.status !== 'ACTIVE') {
+          throw new ConflictError(
+            `session ${formatTicketId(id)} is ${session.status}`,
+            'SESSION_CLOSED',
+          );
+        }
+
+        const updated = repo.requestChatContextRotation(Number(session.id));
+        if (!updated) {
+          throw new NotFoundError(`session ${formatTicketId(id)} not found`);
+        }
+        // A manual rotation can come long before the 60% trigger; write the
+        // digest now so the next claim does not fall back to a plain excerpt.
+        scheduleChatContextSummary({
+          repo,
+          config: config.metaAgent,
+          budgetTokens: config.chatContextBudgetTokens,
+          sessionId: Number(session.id),
+          force: true,
+          log: (line) => app.log.info(line),
+        });
+        sessionBus.publish(updated);
+        return { session: updated };
+      });
+
       // Permanently removes the session, its transcript and streamed output.
       api.delete('/sessions/:id', async (request) => {
         requireAdmin(request);
@@ -2902,6 +2946,15 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           Date.now(),
           input.force === true,
         );
+        // Refresh the handoff digest while there is still room; the rotation
+        // itself reads whatever is stored at claim time.
+        scheduleChatContextSummary({
+          repo,
+          config: config.metaAgent,
+          budgetTokens: config.chatContextBudgetTokens,
+          sessionId: Number(session.id),
+          log: (line) => app.log.info(line),
+        });
         // The runner already downloaded the images before this turn finished;
         // DONE is the point where the hub's copy is no longer needed.
         if (input.status === 'DONE') {
@@ -3162,7 +3215,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
       api.get('/status', async (request) => {
         requireAdmin(request);
-        return { envs: repo.listHeartbeats() };
+        return {
+          envs: repo.listHeartbeats(),
+          // The dashboard renders the context badge against the same budget
+          // the hub rotates on, so the two cannot disagree.
+          chatContextBudgetTokens: config.chatContextBudgetTokens,
+        };
       });
 
       // Browsers cannot set an Authorization header on a WebSocket handshake.
@@ -3945,6 +4003,14 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       sessionBus,
       onChanged: refreshSyncFingerprint,
       onTaskSettled: announceTaskSettled,
+      onChatTurnSettled: (sessionId) =>
+        scheduleChatContextSummary({
+          repo,
+          config: config.metaAgent,
+          budgetTokens: config.chatContextBudgetTokens,
+          sessionId,
+          log: (line) => app.log.info(line),
+        }),
     });
   }
 

@@ -144,7 +144,7 @@ zhunzou/
 | Node routing | Dispatch by repo, engine, tags, role, memory, and capacity — or rejection with per-node reasons (`GET /api/nodes` shows the fleet as the scheduler sees it) |
 | Isolated runs | Per-task git worktree on a `wip/zz-<taskId>` branch squashing to one commit; safe fallback to the plain checkout |
 | Live observability | Noise-reduced `stdout` / `stderr` / engine events while a task runs; normalized `tool_call` / `permission_required` / `session` events let a parked run resume where it stopped |
-| Human ↔ Agent | Dashboard chat with any project's agent (session-resumed turns), one-shot task dispatch, turn mirroring from the IDE, draft replies awaiting adoption |
+| Human ↔ Agent | Dashboard chat with any project's agent (session-resumed turns, automatic handoff when the context budget runs out), one-shot task dispatch, turn mirroring from the IDE, draft replies awaiting adoption |
 | Daemons | `wake` (one project), `fleet` (one process per machine, many projects), `run` (wrap a terminal you started yourself), login-time `service`, bridge self-`upgrade` |
 | Terminals | Real PTY shells streamed to xterm.js with input lease, limits, and an exportable audit trail |
 | Access | One-click enrollment (short-lived code → tokens + editor config + daemon), scoped per-agent tokens, agent registry with enable/disable |

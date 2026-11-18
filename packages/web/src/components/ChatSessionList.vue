@@ -3,7 +3,7 @@ import { ChevronRight, Gavel, RefreshCw, Trash2 } from 'lucide-vue-next';
 
 import type { ChatSession, DecisionTicket } from '@zhunzou/shared';
 
-import { ticketsForSession } from '../lib/chat';
+import { ticketsForSession, contextUsagePercent } from '../lib/chat';
 import { listTime } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 
@@ -16,6 +16,8 @@ const props = withDefaults(
     deletingId: string;
     /** Pending petitions, so a row can say it has one to decide. */
     tickets?: DecisionTicket[];
+    /** Tokens the hub rotates at, so a row can show how full its session is. */
+    contextBudget?: number;
     /**
      * `sidebar` is the desktop column; `page` is the phone's first-level
      * conversation list, styled as one WeChat-like card of rows.
@@ -54,6 +56,11 @@ function initial(title: string): string {
 
 function ticketCount(session: ChatSession): number {
   return ticketsForSession(session, props.tickets ?? []).length;
+}
+
+/** Context used by this conversation's native session, 0–100. */
+function contextPercent(session: ChatSession): number {
+  return contextUsagePercent(session.contextTokens, props.contextBudget);
 }
 
 function isPage(): boolean {
@@ -161,8 +168,30 @@ function isPage(): boolean {
               </span>
             </span>
 
-            <span class="mt-0.5 block truncate text-[10px] text-on-surface-variant/60">
+            <span class="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-on-surface-variant/60">
               {{ t('chat.messagesCount', { count: item.messageCount ?? 0 }) }}
+              <span
+                v-if="contextPercent(item) > 0"
+                class="ml-auto flex shrink-0 items-center gap-1"
+                :class="contextPercent(item) >= 80 ? 'text-error' : ''"
+                :title="
+                  t('chat.contextTitle', {
+                    percent: contextPercent(item),
+                    count: item.contextRotations ?? 0,
+                  })
+                "
+              >
+                <span
+                  class="h-1 w-6 overflow-hidden rounded-full bg-surface-container-high"
+                  aria-hidden="true"
+                >
+                  <span
+                    class="block h-full rounded-full bg-current"
+                    :style="{ width: `${contextPercent(item)}%` }"
+                  />
+                </span>
+                <span class="font-mono">{{ contextPercent(item) }}%</span>
+              </span>
             </span>
           </button>
 

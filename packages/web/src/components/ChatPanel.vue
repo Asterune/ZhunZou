@@ -46,6 +46,7 @@ import {
 import { hubApi } from '../lib/api';
 import { readImageUpload } from '../lib/chat-images';
 import {
+  contextUsagePercent,
   isSendShortcut,
   queuedUserMessages,
   sessionProjectMismatch,
@@ -176,6 +177,7 @@ const loadingSession = ref(false);
 const creating = ref(false);
 const sending = ref(false);
 const closing = ref(false);
+const rotatingContext = ref(false);
 const deletingId = ref('');
 const retrying = ref('');
 const proposalBusy = ref('');
@@ -354,6 +356,36 @@ const sessionTickets = computed(() =>
 );
 
 const activeSession = computed(() => session.value);
+
+/** Share of the native CLI session's context budget the hub has charged. */
+const contextPercent = computed(() =>
+  contextUsagePercent(
+    activeSession.value?.contextTokens,
+    store.contextBudget,
+  ),
+);
+const contextRotations = computed(
+  () => activeSession.value?.contextRotations ?? 0,
+);
+const contextRotateQueued = computed(
+  () => activeSession.value?.contextRotateRequested === true,
+);
+
+async function rotateContext(): Promise<void> {
+  if (!activeSession.value || rotatingContext.value) return;
+  const id = activeSession.value.id;
+  rotatingContext.value = true;
+  try {
+    const response = await hubApi.rotateChatContext(store.token, id);
+    if (activeSession.value?.id === id) session.value = response.session;
+    await loadSessions(true);
+    pushToast(t('chat.rotateRequested'), 'success');
+  } catch (cause) {
+    pushToast(describe(cause), 'error');
+  } finally {
+    rotatingContext.value = false;
+  }
+}
 
 /** The phone keeps the list mounted underneath, so the push has something to slide over. */
 const showMobileList = computed(() => !isDesktop.value);
@@ -1553,6 +1585,7 @@ onBeforeUnmount(() => {
           <ChatSessionList
             :sessions="sessions"
             :tickets="store.pendingTickets"
+            :context-budget="store.contextBudget"
             :active-id="activeId"
             :loading="loadingList"
             :loaded="listLoaded"
@@ -1580,6 +1613,7 @@ onBeforeUnmount(() => {
           variant="page"
           :sessions="sessions"
           :tickets="store.pendingTickets"
+          :context-budget="store.contextBudget"
           :active-id="activeId"
           :loading="loadingList"
           :loaded="listLoaded"
@@ -1644,6 +1678,37 @@ onBeforeUnmount(() => {
               >
                 {{ activeSession.model }}
               </span>
+              <button
+                v-if="contextPercent > 0 || contextRotations > 0"
+                type="button"
+                class="flex items-center gap-1 rounded bg-surface-container-high px-1.5 py-0.5 font-mono transition hover:bg-surface-container disabled:opacity-50"
+                :class="contextPercent >= 80 ? 'text-error' : ''"
+                :title="
+                  t('chat.contextTitle', {
+                    percent: contextPercent,
+                    count: contextRotations,
+                  })
+                "
+                :disabled="
+                  rotatingContext || activeSession.status !== 'ACTIVE'
+                "
+                @click="rotateContext"
+              >
+                <RefreshCw
+                  :size="11"
+                  :class="rotatingContext ? 'animate-spin' : ''"
+                />
+                {{ t('chat.contextUsage', { percent: contextPercent }) }}
+                <span v-if="contextRotations" class="opacity-70">
+                  · {{ t('chat.contextRotations', { count: contextRotations }) }}
+                </span>
+                <span
+                  v-if="contextRotateQueued"
+                  class="rounded bg-primary/15 px-1 text-primary"
+                >
+                  {{ t('chat.rotateQueued') }}
+                </span>
+              </button>
               <span v-if="activeSession.status === 'CLOSED'" class="text-primary">
                 · {{ t('chat.closedBadge') }}
               </span>
@@ -1720,6 +1785,19 @@ onBeforeUnmount(() => {
                 <span v-else class="flex shrink-0 items-center gap-1 text-error">
                   <span class="h-1.5 w-1.5 rounded-full bg-error" />
                   {{ t('chat.agentOffline') }}
+                </span>
+                <span
+                  v-if="contextPercent > 0"
+                  class="shrink-0 rounded bg-surface-container-high px-1 py-0.5 font-mono"
+                  :class="contextPercent >= 80 ? 'text-error' : ''"
+                  :title="
+                    t('chat.contextTitle', {
+                      percent: contextPercent,
+                      count: contextRotations,
+                    })
+                  "
+                >
+                  {{ t('chat.contextUsage', { percent: contextPercent }) }}
                 </span>
               </p>
             </div>
