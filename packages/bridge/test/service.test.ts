@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   renderWindowsServiceCommand,
+  servicePath,
   windowsStartupPath,
   type ServiceConfig,
 } from '../src/service.js';
@@ -15,6 +18,15 @@ const base: ServiceConfig = {
   cliPath: 'C:\\Users\\liuqi\\.zhunzou\\bridge\\cli.mjs',
   nodePath: 'C:\\Program Files\\nodejs\\node.exe',
 };
+
+describe('service PATH', () => {
+  it('keeps the CLI directories launchd would otherwise drop', () => {
+    const value = servicePath();
+    expect(value.split(':')).toContain(join(homedir(), '.opencode', 'bin'));
+    expect(value.split(':')).toContain(join(homedir(), '.local', 'bin'));
+    expect(value).toContain('/opt/homebrew/bin');
+  });
+});
 
 describe('Windows service command', () => {
   it('runs wake for a single env', () => {

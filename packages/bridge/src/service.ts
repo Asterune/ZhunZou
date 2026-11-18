@@ -122,10 +122,31 @@ function modeSuffix(config: ServiceConfig): string {
   return config.mode === 'fleet' ? '，fleet 多客户端' : '';
 }
 
+/**
+ * launchd hands a user agent only `/usr/bin:/bin:/usr/sbin:/sbin`, which hides
+ * every CLI installed under `~/.local/bin`, `~/.opencode/bin` or Homebrew.
+ * The bridge resolves its engine from PATH, so a service installed without
+ * this line silently falls back to the "notify" adapter and never runs chats.
+ */
+export function servicePath(): string {
+  return [
+    join(homedir(), '.local', 'bin'),
+    join(homedir(), '.opencode', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
+  ].join(':');
+}
+
 function macPlist(config: ServiceConfig): string {
   const logs = join(homedir(), 'Library', 'Logs');
   const command = serviceCommand(config);
   const environment: Array<[string, string]> = [
+    ['PATH', servicePath()],
+    ['HOME', homedir()],
     ['HUB_URL', config.hubUrl],
     ['HUB_TOKEN', config.token],
     ['AGENT_ENV', config.env],
@@ -166,6 +187,7 @@ ${environment
 
 function systemdUnit(config: ServiceConfig): string {
   const environment = [
+    `Environment=PATH=${systemdValue(servicePath())}`,
     `Environment=HUB_URL=${systemdValue(config.hubUrl)}`,
     `Environment=HUB_TOKEN=${systemdValue(config.token)}`,
     `Environment=AGENT_ENV=${systemdValue(config.env)}`,
