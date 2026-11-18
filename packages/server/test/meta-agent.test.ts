@@ -283,6 +283,109 @@ describe('createMetaAgent', () => {
     expect(system).toContain('默认立场');
   });
 
+  it('judges replies against the reply rubric, not the engineering rules', async () => {
+    let system = '';
+
+    const agent = createMetaAgent(
+      {
+        enabled: true,
+        provider: 'openai',
+        endpoint: '',
+        headers: {},
+        baseUrl: 'https://example.invalid/v1',
+        apiKey: 'sk-test',
+        model: 'test',
+        timeoutMs: 1000,
+      },
+      (async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as {
+          messages: Array<{ role: string; content: string }>;
+        };
+        system = body.messages[0]?.content ?? '';
+        return new Response(
+          JSON.stringify({
+            choices: [
+              { message: { content: '{"canResolve": false, "reason": "需要人工"}' } },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }) as unknown as typeof fetch,
+    );
+
+    await agent.review(ticket, '规则：优先行内反馈', [], 'judge', 'reply');
+    expect(system).toContain('会话回复');
+    expect(system).toContain('默认可以发出');
+    expect(system).not.toContain('判断一个开发卡点是否可以由你直接拍板');
+  });
+
+  it('gives reply challenges the opposite default as well', async () => {
+    let system = '';
+
+    const agent = createMetaAgent(
+      {
+        enabled: true,
+        provider: 'openai',
+        endpoint: '',
+        headers: {},
+        baseUrl: 'https://example.invalid/v1',
+        apiKey: 'sk-test',
+        model: 'test',
+        timeoutMs: 1000,
+      },
+      (async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as {
+          messages: Array<{ role: string; content: string }>;
+        };
+        system = body.messages[0]?.content ?? '';
+        return new Response(
+          JSON.stringify({
+            choices: [
+              { message: { content: '{"canResolve": false, "reason": "需要人工"}' } },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }) as unknown as typeof fetch,
+    );
+
+    await agent.review(ticket, '', [], 'challenger', 'reply');
+    expect(system).toContain('会话回复');
+    expect(system).toContain('独立复核');
+  });
+
+  it('keeps the verdict JSON inside the token budget', async () => {
+    let body: Record<string, unknown> = {};
+    const respond = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(
+        JSON.stringify({
+          choices: [
+            { message: { content: '{"canResolve": false, "reason": "需要人工"}' } },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+
+    const base = {
+      enabled: true,
+      provider: 'openai' as const,
+      endpoint: '',
+      headers: {},
+      baseUrl: 'https://example.invalid/v1',
+      apiKey: 'sk-test',
+      model: 'test',
+      timeoutMs: 1000,
+    };
+
+    await createMetaAgent(base, respond).review(ticket, '');
+    expect(body.max_tokens).toBe(800);
+
+    await createMetaAgent({ ...base, maxTokens: 1_200 }, respond).review(ticket, '');
+    expect(body.max_tokens).toBe(1_200);
+  });
+
   it('supports the generic HTTP provider with custom headers', async () => {
     let captured: { url: string; headers: Headers; body: Record<string, unknown> } | null =
       null;

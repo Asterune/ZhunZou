@@ -28,10 +28,11 @@
 | `OPENAI_API_KEY` | 空 | 为空时跳过自动预审，全部转人工 |
 | `META_AGENT_MODEL` | `deepseek-chat` | 预审模型 |
 | `META_AGENT_SECOND_MODEL` | 空 | 反方审计专用模型；空表示复用 `META_AGENT_MODEL`（提示词仍不同，两次调用相互独立） |
+| `META_AGENT_MAX_TOKENS` | `800` | 单次裁决的输出上限；过小会把 JSON 截断，截断等同裁决失败、转人工 |
 | `META_AGENT_TIMEOUT_MS` | `15000` | LLM 请求超时（1s–120s） |
 | `META_AGENT_ENDPOINT` | 空 | `provider=http`：`POST { ticket, rules, mode }` → `{ canResolve, selectedOption?, confidence?, category?, reason }` |
 | `META_AGENT_HEADERS` | `{}` | 两种 provider 都可用的额外 JSON 请求头，如 `{"x-api-key":"…"}` |
-| `DECISION_POLICY` | `reply` | 裁决权归属：`off` 全部问人 / `reply` 只自动裁决会话回复 / `all` 连下一步动作也由 hub 裁决（destructive 永远问人） |
+| `DECISION_POLICY` | `reply` | 裁决权归属：会话回复始终直接发出（`off` 除外）——回复由人当场阅读，不值得一次模型裁决；`off` 全部问人 / `reply` 只放行回复、动作一律问人 / `all` 连下一步动作也由 hub 裁决（destructive 永远问人） |
 
 ## L2 裁决限额
 
@@ -45,6 +46,8 @@
 | `DECISION_DAILY_QUOTA` | `0` | 每个项目每滚动 24h 的自动放行上限；`0` 不限额 |
 | `DECISION_AUDIT_RATE` | `0.1` | 自动放行后抽样送人工复核的概率；命中后工单标记「待审计」，不影响放行 |
 | `DECISION_DEMOTION_MINUTES` | `1440` | 人工推翻某个类目的自动裁决后，该类目暂停自动放行的时长 |
+
+正审有两套判断标准：`kind=reply`（这条回复能不能直接发出）用回复专用标准，判的是「是否只陈述已获授权的事实、有没有声称完成未经批准的动作、有没有泄露密钥、有没有夸大结果」；`kind=next_step` / `action` 才按 `GLOBAL_RULES.md` 判断这次改动能不能放行。反方审计也各有对应版本。
 
 流程细节：
 

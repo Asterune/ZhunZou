@@ -45,6 +45,11 @@ export interface MetaAgentConfig {
    * challenger prompt still differs, so the two calls are independent.
    */
   secondModel: string;
+  /**
+   * Output cap for one verdict. Optional so older test fixtures stay valid;
+   * the runtime default is 800, because a truncated verdict fails the review.
+   */
+  maxTokens?: number;
   timeoutMs: number;
   /** Generic HTTP provider: receives { ticket, rules }, returns a MetaReview. */
   endpoint: string;
@@ -274,6 +279,7 @@ function parseMetaAgent(env: NodeJS.ProcessEnv): MetaAgentConfig {
     apiKey: env.OPENAI_API_KEY ?? '',
     model: env.META_AGENT_MODEL ?? 'deepseek-chat',
     secondModel: (env.META_AGENT_SECOND_MODEL ?? '').trim(),
+    maxTokens: readInt(env.META_AGENT_MAX_TOKENS, 800, { min: 100, max: 4_000 }),
     timeoutMs: readInt(env.META_AGENT_TIMEOUT_MS, 15_000, { min: 1_000, max: 120_000 }),
     endpoint: (env.META_AGENT_ENDPOINT ?? '').trim(),
     headers: parseHeaders(env.META_AGENT_HEADERS),

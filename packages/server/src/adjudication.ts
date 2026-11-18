@@ -5,7 +5,7 @@ import type {
 } from '@zhunzou/shared';
 
 import type { DecisionConfig } from './config.js';
-import type { MetaAgent } from './meta-agent.js';
+import type { DecisionKind, MetaAgent } from './meta-agent.js';
 
 /**
  * L2 adjudication: one place that turns a ticket plus the rules into either an
@@ -44,6 +44,8 @@ export interface AdjudicationInput {
   risk?: OptionRisk;
   /** Replies have no ticket to audit, so they skip quota and sampling. */
   applyQuota?: boolean;
+  /** Replies are judged against their own rubric, not the engineering rules. */
+  kind?: DecisionKind;
 }
 
 export interface AdjudicationDeps {
@@ -135,6 +137,7 @@ export async function adjudicate(
     input.rules,
     input.precedents,
     'judge',
+    input.kind,
   );
   const judgeMeta: AdjudicationMeta = {
     ...(judge.category ? { category: judge.category } : {}),
@@ -202,6 +205,7 @@ export async function adjudicate(
         input.rules,
         input.precedents,
         'challenger',
+        input.kind,
       );
     } catch (error) {
       return {

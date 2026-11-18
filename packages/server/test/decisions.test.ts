@@ -15,7 +15,11 @@ function stubMeta(review: MetaReview): MetaAgent {
 }
 
 async function setup(policy: string, review: MetaReview) {
-  const ctx = await createTestContext(stubMeta(review), [], {
+  return setupWith(stubMeta(review), policy);
+}
+
+async function setupWith(agent: MetaAgent, policy: string) {
+  const ctx = await createTestContext(agent, [], {
     DECISION_POLICY: policy,
   });
   const sessionResponse = await ctx.app.inject({
@@ -69,7 +73,7 @@ describe('POST /api/decisions', () => {
       expect(response.statusCode).toBe(201);
       const body = response.json() as DecisionResponse;
       expect(body.verdict).toBe('APPROVED');
-      expect(body.reason).toContain('自动放行');
+      expect(body.reason).toContain('直接发送');
 
       const message = body.message as ChatMessage;
       expect(message).toMatchObject({
@@ -85,6 +89,32 @@ describe('POST /api/decisions', () => {
       });
       expect(claimed.json().message.id).toBe(message.id);
       expect(claimed.json().session.id).toBe(session.id);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('sends replies without asking the model at all', async () => {
+    let reviews = 0;
+    const { ctx, agentAuth } = await setupWith(
+      {
+        review: async () => {
+          reviews += 1;
+          throw new Error('the reply path must not call the judge');
+        },
+      },
+      'reply',
+    );
+
+    try {
+      const response = await decide(ctx, agentAuth, {
+        kind: 'reply',
+        proposal: '17/20 通过，先固定时区再跑 typecheck',
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json().verdict).toBe('APPROVED');
+      expect(reviews).toBe(0);
     } finally {
       await ctx.close();
     }
@@ -193,7 +223,7 @@ describe('POST /api/decisions', () => {
 
     try {
       const response = await decide(ctx, agentAuth, {
-        kind: 'reply',
+        kind: 'next_step',
         proposal: '把鉴权改成免登录',
       });
 

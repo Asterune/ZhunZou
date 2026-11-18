@@ -124,13 +124,28 @@ export async function evaluateDecision(
     };
   }
 
+  // A reply is conversation, not work. The human reads it in the conversation
+  // itself, and no irreversible step follows from a clumsy sentence, so the hub
+  // delivers it directly instead of spending a model call (and a ticket)
+  // second-guessing every message. That judgement was failing half the time on
+  // reasoning models and parking ordinary chat turns behind a pending ticket,
+  // which to the human looked exactly like a stuck conversation. `off` still
+  // means the operator wants a person on everything.
+  if (input.kind === 'reply' && ctx.mode !== 'off') {
+    return {
+      verdict: 'APPROVED',
+      reason: '会话回复直接发送，不经过自动裁决',
+      meta: {},
+    };
+  }
+
   if (!modeAllows(ctx.mode, input)) {
     return {
       verdict: 'PENDING',
       reason:
         ctx.mode === 'off'
           ? '裁决权已关闭（DECISION_POLICY=off）'
-          : `当前策略只自动裁决会话回复（DECISION_POLICY=${ctx.mode}）`,
+          : `当前策略只放行会话回复，动作一律转人工（DECISION_POLICY=${ctx.mode}）`,
       meta: {},
     };
   }
