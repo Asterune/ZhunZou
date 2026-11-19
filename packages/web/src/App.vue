@@ -5,7 +5,6 @@ import {
   ChevronDown,
   Ellipsis,
   Gavel,
-  Inbox,
   LogOut,
   MessageSquare,
   RefreshCw,
@@ -46,7 +45,9 @@ import { useI18n } from './lib/i18n';
 import { mobileChatAnimating, mobileChatShift } from './lib/mobile-chat';
 import { useHubStore } from './stores/hub';
 
-type Tab = 'pending' | 'inbox' | 'chat' | 'terminal' | 'agents' | 'history' | 'rules';
+type Tab = 'decisions' | 'chat' | 'terminal' | 'agents' | 'rules';
+/** The three lists the single 决策 page holds. */
+type DecisionView = 'pending' | 'inbox' | 'history';
 
 const TerminalPanel = defineAsyncComponent(
   () => import('./components/TerminalPanel.vue'),
@@ -56,37 +57,41 @@ const store = useHubStore();
 const { t } = useI18n();
 
 function initialTab(): Tab {
-  if (typeof window === 'undefined') return 'pending';
+  if (typeof window === 'undefined') return 'decisions';
   const value = new URLSearchParams(window.location.search).get('tab');
-  // `?tab=tasks` is a legacy bookmark: the page now lives inside Chat.
+  // Legacy bookmarks: the decision lists used to be three top-level tabs, and
+  // `tasks` used to be its own page (now a mode inside Chat).
   if (value === 'tasks') return 'chat';
-  return value === 'inbox' ||
-    value === 'chat' ||
-    value === 'terminal' ||
-    value === 'agents' ||
-    value === 'history' ||
-    value === 'rules'
-    ? value
-    : 'pending';
+  if (value === 'chat' || value === 'terminal' || value === 'agents' || value === 'rules') {
+    return value;
+  }
+  return 'decisions';
+}
+
+/** Which list the 决策 page opens on; `?view=` keeps deep links working. */
+function initialDecisionView(): DecisionView {
+  if (typeof window === 'undefined') return 'pending';
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get('view');
+  if (view === 'inbox' || view === 'history') return view;
+  // Old links used `?tab=inbox` / `?tab=history` / `?tab=pending`.
+  const legacy = params.get('tab');
+  if (legacy === 'inbox' || legacy === 'history') return legacy;
+  return 'pending';
 }
 
 const activeTab = ref<Tab>(initialTab());
+const decisionView = ref<DecisionView>(initialDecisionView());
 const batchOpen = ref(false);
 const dispatchOpen = ref(false);
 
 // 下发任务 is now a mode inside 会话, so it no longer earns a nav slot.
 const tabs = computed(() => [
   {
-    key: 'pending' as const,
-    label: t('app.tabs.pending'),
+    key: 'decisions' as const,
+    label: t('app.tabs.decisions'),
     icon: ScrollText,
     count: store.pendingTickets.length,
-  },
-  {
-    key: 'inbox' as const,
-    label: t('app.tabs.inbox'),
-    icon: Inbox,
-    count: blockedCount(store.inbox),
   },
   {
     key: 'chat' as const,
@@ -100,14 +105,26 @@ const tabs = computed(() => [
     icon: Bot,
     count: store.agents.length,
   },
-  { key: 'history' as const, label: t('app.tabs.history'), icon: CheckCircle2 },
-  { key: 'rules' as const, label: t('app.tabs.rules'), icon: SlidersHorizontal },
+]);
+
+const decisionViews = computed(() => [
+  {
+    key: 'pending' as const,
+    label: t('app.tabs.pending'),
+    count: store.pendingTickets.length,
+  },
+  {
+    key: 'inbox' as const,
+    label: t('app.tabs.inbox'),
+    count: blockedCount(store.inbox),
+  },
+  { key: 'history' as const, label: t('app.tabs.history'), count: 0 },
 ]);
 
 /**
- * Low-frequency but necessary entry points. The terminal is a debugging tool,
- * not a peer of the approval queue, so it lives behind a "工具" menu instead of
- * taking a top-level slot.
+ * Low-frequency but necessary entry points. The terminal is a debugging tool
+ * and the rules editor is configuration, so both live behind a "工具" menu
+ * instead of taking top-level slots.
  */
 const toolTabs = computed(() => [
   {
@@ -117,13 +134,19 @@ const toolTabs = computed(() => [
     icon: SquareTerminal,
     count: 0,
   },
+  {
+    key: 'rules' as const,
+    label: t('app.tools.rules'),
+    hint: t('app.tools.rulesHint'),
+    icon: SlidersHorizontal,
+    count: 0,
+  },
 ]);
 
 // The mobile/PWA bottom bar only keeps the high-frequency tabs and folds the
 // rest into a "More" sheet (see docs/UI_REDESIGN_BRIEF.md §16.3).
 const primaryTabKeys: ReadonlySet<Tab> = new Set([
-  'pending',
-  'inbox',
+  'decisions',
   'chat',
   'agents',
 ]);
@@ -274,12 +297,30 @@ watch(activeTab, (tab) => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
 
     const url = new URL(window.location.href);
-    if (tab === 'pending') url.searchParams.delete('tab');
-    else url.searchParams.set('tab', tab);
+    // The default page keeps a clean URL; everything else is bookmarkable.
+    if (tab === 'decisions' && decisionView.value === 'pending') {
+      url.searchParams.delete('tab');
+    } else {
+      url.searchParams.set('tab', tab);
+    }
+    if (tab === 'decisions' && decisionView.value !== 'pending') {
+      url.searchParams.set('view', decisionView.value);
+    } else {
+      url.searchParams.delete('view');
+    }
     // The chat mode is per-page state; do not leak it into other tabs.
     if (tab !== 'chat') url.searchParams.delete('mode');
     window.history.replaceState(null, '', url);
   }
+});
+
+/** Keep `?view=` in step with the decision list, without touching the scroll. */
+watch(decisionView, (view) => {
+  if (typeof window === 'undefined' || activeTab.value !== 'decisions') return;
+  const url = new URL(window.location.href);
+  if (view === 'pending') url.searchParams.delete('view');
+  else url.searchParams.set('view', view);
+  window.history.replaceState(null, '', url);
 });
 
 onMounted(() => {
@@ -509,9 +550,39 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <StatusBar v-if="activeTab === 'pending'" />
+      <template v-if="activeTab === 'decisions'">
+        <div
+          class="mb-4 inline-flex rounded-lg border border-outline-variant/40 bg-surface-container p-0.5"
+          role="tablist"
+          :aria-label="t('app.tabs.decisions')"
+        >
+          <button
+            v-for="view in decisionViews"
+            :key="view.key"
+            type="button"
+            role="tab"
+            :aria-selected="decisionView === view.key"
+            class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium transition"
+            :class="
+              decisionView === view.key
+                ? 'bg-surface text-on-surface shadow-sm'
+                : 'text-on-surface-variant hover:text-on-surface'
+            "
+            @click="decisionView = view.key"
+          >
+            {{ view.label }}
+            <span
+              v-if="view.count"
+              class="rounded bg-primary px-1 text-[10px] font-bold leading-4 text-on-primary"
+            >
+              {{ view.count }}
+            </span>
+          </button>
+        </div>
 
-      <section v-if="activeTab === 'pending'">
+        <StatusBar v-if="decisionView === 'pending'" />
+
+        <section v-if="decisionView === 'pending'">
         <div class="mb-4 flex flex-wrap items-end justify-between gap-2 px-0.5">
           <div class="flex items-center gap-2">
             <span class="h-2.5 w-2.5 rotate-45 rounded-[2px] bg-primary-container" />
@@ -579,15 +650,16 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <ChatPanel v-else-if="activeTab === 'chat'" />
+        <InboxPanel v-else-if="decisionView === 'inbox'" />
 
-      <InboxPanel v-else-if="activeTab === 'inbox'" />
+        <HistoryList v-else />
+      </template>
+
+      <ChatPanel v-else-if="activeTab === 'chat'" />
 
       <TerminalPanel v-else-if="activeTab === 'terminal'" />
 
       <AgentPanel v-else-if="activeTab === 'agents'" />
-
-      <HistoryList v-else-if="activeTab === 'history'" />
 
       <RulesEditor v-else />
     </main>
