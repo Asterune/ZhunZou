@@ -1178,6 +1178,17 @@ export interface TicketStore {
   ): LearnedRule | null;
 }
 
+/** Last path segment, tolerant of POSIX and Windows separators. */
+function workspaceDirName(path: string): string {
+  const name =
+    path
+      .split(/[\\/]+/)
+      .filter(Boolean)
+      .pop() ?? '';
+  // A drive root ("C:") names a volume, not a project.
+  return /^[A-Za-z]:$/.test(name) ? '' : name;
+}
+
 export class TicketRepository implements TicketStore {
   /**
    * Roughly how much streamed text a session is holding, so an append can tell
@@ -1612,8 +1623,17 @@ export class TicketRepository implements TicketStore {
         ? LEGACY_IDLE_TASK_LABEL
         : (input.currentTask ?? null);
     // The card, the binding and every later ticket must agree on one spelling.
-    const projectName = input.projectName
-      ? this.resolveProjectName(input.projectName)
+    // A runner that reports where it works but not which project it is on
+    // still implies one: the folder it runs in. Deriving it here is what lets
+    // the dashboard, the dispatch picker and ticket memory agree without a
+    // manual "bind project" step.
+    const reportedProject = input.projectName?.trim()
+      ? input.projectName
+      : input.workspacePath
+        ? workspaceDirName(input.workspacePath)
+        : '';
+    const projectName = reportedProject
+      ? this.resolveProjectName(reportedProject)
       : undefined;
 
     const row = this.db

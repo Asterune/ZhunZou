@@ -3833,7 +3833,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         }
 
         const existing = repo.getFleetWorkspaceByHostPath(host, path);
-        if (existing) return reply.code(200).send({ workspace: existing });
+        if (existing) {
+          // Re-associating repairs a missing binding too: the client should
+          // already offer this project before its next heartbeat arrives.
+          repo.bindWorkspaceProject(existing.env, existing.projectName);
+          return reply.code(200).send({ workspace: existing });
+        }
 
         const workspace = repo.createFleetWorkspace({
           host,
@@ -3845,6 +3850,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           projectName,
           ...(adapter ? { adapter } : {}),
         });
+        // The association is the statement "this env works on this project";
+        // write the binding instead of waiting for a heartbeat to repeat it.
+        repo.bindWorkspaceProject(workspace.env, workspace.projectName);
         return reply.code(201).send({ workspace });
       });
 

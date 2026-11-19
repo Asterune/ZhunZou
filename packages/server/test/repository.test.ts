@@ -176,8 +176,32 @@ describe('findSimilarTickets', () => {
     );
   });
 
-  it('bounds streamed task logs while trimming in batches', async () => {
-    const created = await ctx.app.inject({
+  it('derives the project from the runner directory when the heartbeat omits it', () => {
+    const beat = ctx.app.repo.recordHeartbeat({
+      env: 'derive-project-env',
+      status: 'Idle',
+      workspacePath: '/Users/qiliu/agent-hub',
+    });
+
+    expect(beat.projectName).toBe('agent-hub');
+    const bindings = ctx.app.repo.listWorkspaceProjects({
+      env: 'derive-project-env',
+    }).projects;
+    expect(bindings.map((item) => item.projectName)).toContain('agent-hub');
+  });
+
+  it('keeps an explicit project name over the directory name', () => {
+    const beat = ctx.app.repo.recordHeartbeat({
+      env: 'derive-project-env-2',
+      status: 'Idle',
+      projectName: 'FitAI',
+      workspacePath: '/Users/qiliu/agent-hub',
+    });
+
+    expect(beat.projectName).toBe('FitAI');
+  });
+
+  it('bounds streamed task logs while trimming in batches', async () => {    const created = await ctx.app.inject({
       method: 'POST',
       url: '/api/tasks',
       headers: ctx.auth,

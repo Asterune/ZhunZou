@@ -337,4 +337,21 @@ describe('fleet directory association', () => {
     });
     expect(missing.statusCode).toBe(404);
   });
+
+  it('binds the project as soon as a directory is associated', async () => {
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/fleet/workspaces',
+      headers: ctx.auth,
+      payload: { host: 'bind-host', path: '/srv/apps/erp' },
+    });
+    expect(response.statusCode).toBe(201);
+    const workspace = response.json().workspace as FleetWorkspace;
+
+    expect(workspace.projectName).toBe('erp');
+    const bindings = ctx.app.repo.listWorkspaceProjects({
+      env: workspace.env,
+    }).projects;
+    expect(bindings.map((item) => item.projectName)).toContain('erp');
+  });
 });
