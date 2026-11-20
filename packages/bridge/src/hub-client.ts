@@ -54,6 +54,7 @@ import {
 } from '@zhunzou/shared';
 
 import type { BridgeConfig } from './config.js';
+import { readHostStats } from './host-stats.js';
 import { machineId } from './machine-id.js';
 import { BRIDGE_VERSION } from './version.js';
 
@@ -282,6 +283,9 @@ export class HubClient implements HubApi {
         os: `${platform()}-${arch()}`,
         machineId: machineId(),
         ...(this.config.chatModel ? { model: this.config.chatModel } : {}),
+        // Fresh host facts with every beat: the dashboard shows the machine's
+        // memory/disk/load without asking anyone to SSH in.
+        stats: readHostStats(),
         ...(input.agent ?? {}),
       },
     });

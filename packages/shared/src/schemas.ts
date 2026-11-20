@@ -238,6 +238,11 @@ export const agentMetaSchema = z.object({
    * "the client picked", which is exactly what the dashboard should say.
    */
   model: modelNameSchema.optional(),
+  /**
+   * Runtime environment of the machine, read fresh with each heartbeat.
+   * Optional so older bridges keep working; the dashboard shows a dash.
+   */
+  stats: deviceStatsSchema.optional(),
 });
 
 export const heartbeatSchema = z.object({

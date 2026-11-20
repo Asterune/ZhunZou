@@ -35,6 +35,51 @@ async function issueToken(ctx: Ctx, env: string): Promise<string> {
 }
 
 describe('agent registry', () => {
+  it('stores the runtime stats a heartbeat reports', async () => {
+    const ctx = await createTestContext();
+    try {
+      const beat = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/status/heartbeat',
+        headers: ctx.auth,
+        payload: {
+          env: 'stats-env',
+          status: 'Idle',
+          agent: {
+            kind: 'opencode',
+            stats: {
+              cpuCount: 8,
+              cpuModel: 'Apple M3',
+              load1: 0.5,
+              totalMemBytes: 32_000,
+              freeMemBytes: 12_000,
+              diskTotalBytes: 1_000_000,
+              diskFreeBytes: 400_000,
+              uptimeSec: 3_600,
+            },
+          },
+        },
+      });
+      expect(beat.statusCode).toBe(200);
+
+      const response = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/agents',
+        headers: ctx.auth,
+      });
+      const agent = (response.json().agents as Agent[]).find(
+        (item) => item.env === 'stats-env',
+      );
+      expect(agent?.deviceStats).toMatchObject({
+        cpuCount: 8,
+        cpuModel: 'Apple M3',
+        diskFreeBytes: 400_000,
+      });
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('auto-registers an agent from heartbeat metadata', async () => {
     const ctx = await createTestContext();
     try {

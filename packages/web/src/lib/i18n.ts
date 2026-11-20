@@ -303,6 +303,9 @@ const zh: Record<string, string> = {
   'hosts.title': '主机',
   'hosts.noClient': '无在线客户端',
   'hosts.noProject': '还没有关联项目：连接一个客户端，或在「添加主机」里关联目录。',
+  'hosts.memory': '内存',
+  'hosts.diskFree': '磁盘可用',
+  'hosts.uptime': '运行',
 
   'server.title': '准奏服务器',
   'server.cpu': 'CPU',
@@ -1064,6 +1067,9 @@ const en: Record<string, string> = {
   'hosts.title': 'Hosts',
   'hosts.noClient': 'no online client',
   'hosts.noProject': 'No project yet: connect a client, or associate a folder under "Add host".',
+  'hosts.memory': 'mem',
+  'hosts.diskFree': 'disk free',
+  'hosts.uptime': 'up',
 
   'server.title': 'Hub server',
   'server.cpu': 'CPU',

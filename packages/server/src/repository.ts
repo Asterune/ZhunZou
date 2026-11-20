@@ -2477,6 +2477,7 @@ export class TicketRepository implements TicketStore {
         status: 'active',
         ...(meta?.version ? { version: meta.version } : {}),
         ...(meta?.model ? { model: meta.model } : {}),
+        ...(meta?.stats ? { deviceStats: meta.stats } : {}),
         ...machine,
         transport: 'http',
         connectedAt: now,
@@ -2496,6 +2497,7 @@ export class TicketRepository implements TicketStore {
           // last report rather than erasing it, so an old client on the same env
           // does not blank the card.
           ...(meta?.model ? { model: meta.model } : {}),
+          ...(meta?.stats ? { deviceStats: meta.stats } : {}),
           ...machine,
           transport: 'http',
           connectedAt: now,

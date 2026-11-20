@@ -2,7 +2,7 @@
 import { FolderGit2, Monitor } from 'lucide-vue-next';
 import { computed } from 'vue';
 
-import type { Agent } from '@zhunzou/shared';
+import type { Agent, DeviceStats } from '@zhunzou/shared';
 
 import { clientKindLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
@@ -27,6 +27,64 @@ function projectsOf(machine: MachineTarget): string[] {
 
 function clientsOf(machine: MachineTarget, project: string): Agent[] {
   return store.clientsForMachine(machine, project);
+}
+
+/** Freshest host stats any client on this machine reported. */
+function statsOf(machine: MachineTarget): DeviceStats | undefined {
+  return machine.agents
+    .map((agent) => agent.deviceStats)
+    .find(
+      (stats) =>
+        stats &&
+        (stats.totalMemBytes !== undefined || stats.load1 !== undefined),
+    );
+}
+
+function size(bytes: number | undefined): string {
+  if (bytes === undefined) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+function duration(seconds: number): string {
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+/** One compact line: load, memory, disk and uptime, when reported. */
+function statsLine(machine: MachineTarget): string {
+  const stats = statsOf(machine);
+  if (!stats) return '';
+  const parts: string[] = [];
+
+  if (stats.load1 !== undefined) {
+    parts.push(
+      `CPU ${stats.load1.toFixed(2)}${stats.cpuCount ? `/${stats.cpuCount}` : ''}`,
+    );
+  }
+  if (stats.totalMemBytes !== undefined) {
+    const used = Math.max(0, stats.totalMemBytes - (stats.freeMemBytes ?? 0));
+    parts.push(
+      `${t('hosts.memory')} ${size(used)}/${size(stats.totalMemBytes)}`,
+    );
+  }
+  if (stats.diskFreeBytes !== undefined) {
+    parts.push(`${t('hosts.diskFree')} ${size(stats.diskFreeBytes)}`);
+  }
+  if (stats.uptimeSec !== undefined) {
+    parts.push(`${t('hosts.uptime')} ${duration(stats.uptimeSec)}`);
+  }
+  return parts.join(' · ');
 }
 </script>
 
@@ -55,6 +113,14 @@ function clientsOf(machine: MachineTarget, project: string): Agent[] {
           {{ t('picker.machineCount', { online: machine.online, total: machine.total }) }}
         </span>
       </div>
+
+      <p
+        v-if="statsLine(machine)"
+        class="mt-1 text-[10.5px] text-on-surface-variant/80"
+        :title="statsOf(machine)?.cpuModel"
+      >
+        {{ statsLine(machine) }}
+      </p>
 
       <div v-if="projectsOf(machine).length" class="mt-2 space-y-2">
         <div

@@ -20,11 +20,16 @@ export type DeviceTool = z.infer<typeof deviceToolSchema>;
 /** Cheap machine-load snapshot collected with every hello / heartbeat. */
 export const deviceStatsSchema = z.object({
   cpuCount: z.number().int().nonnegative().optional(),
+  /** CPU model string; reported by bridges that can read it cheaply. */
+  cpuModel: z.string().trim().max(160).optional(),
   load1: z.number().nonnegative().optional(),
   load5: z.number().nonnegative().optional(),
   load15: z.number().nonnegative().optional(),
   totalMemBytes: z.number().int().nonnegative().optional(),
   freeMemBytes: z.number().int().nonnegative().optional(),
+  /** Free/total of the volume the workspace lives on. */
+  diskTotalBytes: z.number().int().nonnegative().optional(),
+  diskFreeBytes: z.number().int().nonnegative().optional(),
   uptimeSec: z.number().int().nonnegative().optional(),
 });
 
