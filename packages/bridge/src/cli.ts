@@ -7,6 +7,21 @@ process.on('SIGINT', () => {
   process.exit(130);
 });
 
+// A leaked promise must not take the runner down mid-turn: log it and keep
+// serving. An uncaught exception leaves process state unknown, so that one
+// exits and lets launchd/systemd start a clean process.
+process.on('unhandledRejection', (reason) => {
+  const detail =
+    reason instanceof Error ? reason.stack ?? reason.message : String(reason);
+  process.stderr.write(`[zhunzou] unhandled rejection: ${detail}\n`);
+});
+process.on('uncaughtException', (error) => {
+  process.stderr.write(
+    `[zhunzou] uncaught exception: ${error.stack ?? error.message}\n`,
+  );
+  process.exit(1);
+});
+
 async function main(): Promise<void> {
   // After `upgrade`, current.json points at a newer versions/<v>/cli.mjs.
   if (await delegateToActiveRelease(import.meta.url)) return;

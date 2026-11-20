@@ -53,7 +53,7 @@ import {
   ticketsForSession,
   workspaceForSession,
 } from '../lib/chat';
-import { failureKindLabel } from '../lib/format';
+import { clientKindLabel, failureKindLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { mobileChatAnimating, mobileChatDetailOpen, mobileChatShift } from '../lib/mobile-chat';
 import {
@@ -326,6 +326,18 @@ const sessionDirectory = computed(() => {
 });
 
 const sessionCwd = computed(() => sessionDirectory.value?.path ?? '');
+
+/**
+ * The header names the machine-facing identity with the label a person
+ * recognises ("Cursor", "OpenCode"), keeping the raw env in the tooltip.
+ */
+const sessionClientLabel = computed(() => {
+  const env = activeSession.value?.env;
+  if (!env) return '';
+  const agent = store.agents.find((item) => item.env === env);
+  if (!agent) return env;
+  return agent.name?.trim() || clientKindLabel(agent.kind);
+});
 
 const sessionDirMismatch = computed(() =>
   sessionProjectMismatch(session.value, sessionDirectory.value),
@@ -1684,8 +1696,11 @@ onBeforeUnmount(() => {
               {{ activeSession.title }}
             </h3>
             <p class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-on-surface-variant">
-              <span class="rounded bg-surface-container-high px-1.5 py-0.5 font-mono">
-                {{ activeSession.env }}
+              <span
+                class="rounded bg-surface-container-high px-1.5 py-0.5"
+                :title="activeSession.env"
+              >
+                {{ sessionClientLabel }}
               </span>
               <span v-if="activeSession.projectName" class="font-mono">
                 {{ activeSession.projectName }}

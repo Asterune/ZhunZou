@@ -7,6 +7,7 @@ import type {
 } from '@zhunzou/shared';
 
 import type { BridgeConfig } from './config.js';
+import { activity } from './activity.js';
 import { prepareChatPrompt, removeChatAttachmentFiles } from './chat-attachments.js';
 import { HubApiError, type HubApi } from './hub-client.js';
 import type { PresenceReporter } from './presence.js';
@@ -453,6 +454,7 @@ export async function runSessionDaemon(
       log(`会话 #${session.id} 上下文轮换：新建 CLI 会话并注入交接包`);
     }
     state.beginTurn(message.id);
+    activity.enter();
     const summary =
       message.content.trim() ||
       (message.attachments?.length
@@ -568,6 +570,8 @@ export async function runSessionDaemon(
     await options.presence
       ?.beat({ status: 'Idle', currentTask: 'Runner 已连接' })
       .catch(() => undefined);
+
+    activity.leave();
 
     if (options.once) break;
   }

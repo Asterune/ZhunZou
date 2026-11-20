@@ -38,6 +38,7 @@ import type {
   SendChatMessageInput,
   SupervisorInboxResponse,
   SyncResponse,
+  SystemStats,
   TaskListResponse,
   TaskLogListResponse,
   TaskResponse,
@@ -106,6 +107,7 @@ export interface HubApi {
     envs: EnvHeartbeat[];
     chatContextBudgetTokens?: number;
   }>;
+  system(token: string): Promise<{ system: SystemStats }>;
   listAgents(token: string): Promise<AgentListResponse>;
   listExchanges(
     token: string,
@@ -403,6 +405,9 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
         token,
         '/api/status',
       ),
+
+    /** The hub host's own environment; admin-only like every dashboard call. */
+    system: (token) => request<{ system: SystemStats }>(token, '/api/system'),
 
     listAgents: (token) => request<AgentListResponse>(token, '/api/agents'),
 

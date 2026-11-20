@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Command } from 'commander';
 
+import { activity } from './activity.js';
 import { loadBridgeConfig, detectWorkspaceProject, type BridgeConfig } from './config.js';
 import {
   addFleetProjects,
@@ -21,6 +22,7 @@ import {
 } from './fleet.js';
 import { createHubApi } from './hub.js';
 import type { HubApi } from './hub-client.js';
+import { readCurrentRelease } from './install-layout.js';
 import { runInit } from './init.js';
 import { machineId } from './machine-id.js';
 import { createPresenceReporter } from './presence.js';
@@ -716,6 +718,22 @@ export function createProgram(): Command {
         const stop = (): void => controller.abort();
         process.once('SIGINT', stop);
         process.once('SIGTERM', stop);
+
+        // An upgrade flips `current.json`, but this long-lived process keeps
+        // running the old code. Restart it once nothing is mid-turn/task so the
+        // next launch picks the new version up.
+        if (!options.once) {
+          const upgradeWatcher = setInterval(() => {
+            const release = readCurrentRelease(defaultInstallRoot());
+            if (!release || release.version === BRIDGE_VERSION) return;
+            if (!activity.idleFor(120_000)) return;
+            process.stderr.write(
+              `[zhunzou] bridge ${BRIDGE_VERSION} -> ${release.version} staged; restarting while idle\n`,
+            );
+            process.exit(0);
+          }, 60_000);
+          upgradeWatcher.unref?.();
+        }
 
         try {
           process.exitCode = await runFleet(config, {

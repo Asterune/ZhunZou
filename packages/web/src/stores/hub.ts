@@ -21,6 +21,7 @@ import type {
   RulesResponse,
   SupervisorInboxItem,
   SyncState,
+  SystemStats,
   UpdateAgentInput,
   WorkspaceProject,
 } from '@zhunzou/shared';
@@ -196,6 +197,8 @@ export function createHubStore(api: HubApi = hubApi) {
    * paint, then replaced by `/api/status` (the hub owns the real value).
    */
   const contextBudget = ref(80_000);
+  /** The hub host's own metrics; null until the first successful sample. */
+  const system = ref<SystemStats | null>(null);
   const lastSyncAt = ref(0);
   const lastError = ref('');
   const authError = ref('');
@@ -505,6 +508,17 @@ export function createHubStore(api: HubApi = hubApi) {
       }
     } catch {
       // Keep the seeded default; the badge is advisory either way.
+    }
+  }
+
+  /** Refresh the hub host card; callers poll only while the page is open. */
+  async function loadSystem(): Promise<void> {
+    if (!token.value) return;
+    try {
+      const response = await api.system(token.value);
+      system.value = response.system;
+    } catch {
+      // Keep the last reading; the card shows when it was sampled.
     }
   }
 
@@ -1511,6 +1525,8 @@ export function createHubStore(api: HubApi = hubApi) {
     serverVersion,
     serverStartedAt,
     contextBudget,
+    system,
+    loadSystem,
     pollHealth,
     rev,
     chatDeltas,

@@ -12,6 +12,7 @@ import {
   isNotNull,
   like,
   lte,
+  notInArray,
   or,
   sql,
 } from 'drizzle-orm';
@@ -748,6 +749,10 @@ export interface TicketStore {
   ): DecisionTicket | null;
   /** Drop the SLA so a high-risk ticket is never auto-approved. */
   clearExpiry(id: number, now?: number): void;
+  /** Delete terminal tickets last touched before `before`; returns the count. */
+  pruneResolvedTickets(before: number): number;
+  /** Delete terminal audit rows older than `before`; returns the count. */
+  pruneTerminalAudit(before: number): number;
   /** Push the SLA deadline out by N minutes; only pending tickets. */
   extend(id: number, minutes: number, now?: number): DecisionTicket | null;
   recordHeartbeat(input: HeartbeatInput, now?: number): EnvHeartbeat;
@@ -1604,6 +1609,30 @@ export class TicketRepository implements TicketStore {
       .set({ expiresAt: null, updatedAt: now })
       .where(and(eq(tickets.id, id), inArray(tickets.status, AWAITING)))
       .run();
+  }
+
+  /**
+   * Retention for the ticket board. Pending work is never touched: only rows
+   * that already reached a terminal status and have not changed since the
+   * cutoff are removed.
+   */
+  pruneResolvedTickets(before: number): number {
+    return this.db
+      .delete(tickets)
+      .where(
+        and(
+          notInArray(tickets.status, AWAITING),
+          lte(tickets.updatedAt, before),
+        ),
+      )
+      .run().changes;
+  }
+
+  pruneTerminalAudit(before: number): number {
+    return this.db
+      .delete(terminalAudit)
+      .where(lte(terminalAudit.createdAt, before))
+      .run().changes;
   }
 
   extend(id: number, minutes: number, now = Date.now()): DecisionTicket | null {

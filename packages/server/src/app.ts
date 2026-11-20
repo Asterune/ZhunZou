@@ -191,6 +191,7 @@ import {
 import { buildRealtimeTicket } from './realtime/ticket.js';
 import { RulesStore } from './rules-store.js';
 import { routeTask, toRouteCandidates } from './scheduler.js';
+import { SystemSampler } from './system-metrics.js';
 import { SERVER_VERSION, STARTED_AT } from './version.js';
 
 declare module 'fastify' {
@@ -250,6 +251,8 @@ export interface BuildAppOptions {
   ruleDistiller?: RuleDistiller;
   /** L2 diagnosis client; defaults to the same provider as the judge. */
   healer?: SupervisorHealer;
+  /** Host metrics sampler; tests inject a deterministic one. */
+  systemSampler?: SystemSampler;
   notifiers?: Notifier[];
   plugins?: HubPlugin[];
   logger?: FastifyServerOptions['logger'];
@@ -326,6 +329,11 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const bus = new TicketEventBus();
   const taskBus = new TaskEventBus();
   const sessionBus = new SessionEventBus();
+  // Prime the counters now, so the dashboard's first request already shows a
+  // CPU share and network rate instead of the first-sample blanks.
+  const systemSampler =
+    options.systemSampler ?? new SystemSampler(config.dbPath);
+  systemSampler.sample();
 
   // -----------------------------------------------------------------
   // Dashboard sync (long poll)
@@ -3279,6 +3287,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         };
       });
 
+      /** The hub host's own CPU/memory/disk/network, not an agent's report. */
+      api.get('/system', async (request) => {
+        requireAdmin(request);
+        return { system: systemSampler.sample() };
+      });
+
       // Browsers cannot set an Authorization header on a WebSocket handshake.
       // The dashboard exchanges its admin token for this short-lived ticket.
       api.post('/realtime/ticket', async (request) => {
@@ -4110,6 +4124,32 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   await readyPlugins(plugins, app, app.log);
 
   // Single background loop for SLA auto-resolution and stale task cleanup.
+  // Retention runs at most once an hour on the same timer.
+  const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
+  let lastRetentionAt = 0;
+  const pruneOldData = (): void => {
+    const now = Date.now();
+    if (now - lastRetentionAt < RETENTION_INTERVAL_MS) return;
+    lastRetentionAt = now;
+
+    if (config.retentionTicketDays > 0) {
+      const removed = repo.pruneResolvedTickets(
+        now - config.retentionTicketDays * 24 * 60 * 60 * 1000,
+      );
+      if (removed > 0) {
+        app.log.info({ count: removed }, 'pruned resolved tickets');
+      }
+    }
+    if (config.retentionAuditDays > 0) {
+      const removed = repo.pruneTerminalAudit(
+        now - config.retentionAuditDays * 24 * 60 * 60 * 1000,
+      );
+      if (removed > 0) {
+        app.log.info({ count: removed }, 'pruned terminal audit rows');
+      }
+    }
+  };
+
   // unref() keeps tests and one-shot CLI usage from being held open.
   sweeper = setInterval(() => {
     void sweepDueTickets().catch((error: unknown) => {
@@ -4127,6 +4167,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         'stale chat sweep failed',
       );
     });
+    pruneOldData();
   }, config.sweepIntervalMs);
   sweeper.unref?.();
 

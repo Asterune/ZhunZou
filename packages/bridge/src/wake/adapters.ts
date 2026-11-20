@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, join } from 'node:path';
 
@@ -95,6 +95,60 @@ export interface RunProcessOptions {
   ) => void;
 }
 
+const IS_WINDOWS = process.platform === 'win32';
+/** How long a SIGTERM gets before the whole tree is killed outright. */
+const KILL_GRACE_MS = 2_000;
+
+/**
+ * Signal the child and everything it spawned.
+ *
+ * Engine CLIs start tool subprocesses of their own. Killing only the leader
+ * leaves those grandchildren running after a timeout, still holding files and
+ * ports. On POSIX the child is spawned as its own process group, so a negative
+ * pid reaches the whole tree; Windows uses `taskkill /T`.
+ */
+export function terminateProcessTree(
+  child: Pick<ChildProcess, 'pid' | 'kill'>,
+  signal: NodeJS.Signals = 'SIGTERM',
+): void {
+  const pid = child.pid;
+  if (!pid) return;
+
+  if (IS_WINDOWS) {
+    try {
+      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      }).on('error', () => {
+        try {
+          child.kill(signal);
+        } catch {
+          // Already gone.
+        }
+      });
+    } catch {
+      // Fall back to the leader only.
+      try {
+        child.kill(signal);
+      } catch {
+        // Already gone.
+      }
+    }
+    return;
+  }
+
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      // The group is gone (or was never created); the leader may still live.
+      child.kill(signal);
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
 export function runProcess(
   command: string,
   args: string[],
@@ -106,6 +160,10 @@ export function runProcess(
       env: options.env ?? process.env,
       shell: options.shell ?? false,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Its own process group, so a timeout can kill the tools it spawned too.
+      // Interactive wrappers keep the terminal's group on purpose: Ctrl-C must
+      // still reach the child there.
+      detached: !IS_WINDOWS,
     });
 
     let stdout = '';
@@ -122,8 +180,8 @@ export function runProcess(
     };
 
     const stop = (): void => {
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 2_000).unref?.();
+      terminateProcessTree(child, 'SIGTERM');
+      setTimeout(() => terminateProcessTree(child, 'SIGKILL'), KILL_GRACE_MS).unref?.();
     };
 
     function onAbort(): void {

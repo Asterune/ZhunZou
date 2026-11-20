@@ -234,4 +234,36 @@ describe('findSimilarTickets', () => {
     expect(logs.length).toBeLessThan(40);
     expect(bytes).toBeLessThanOrEqual(256 * 1024 + 64 * 1024);
   });
+
+  it('prunes resolved tickets but never pending ones', async () => {
+    const pending = await createTicket({
+      projectName: 'retention-project',
+      blockerQuestion: '保留策略：这条应该还在吗？',
+    });
+    const resolved = await createTicket({
+      projectName: 'retention-project',
+      blockerQuestion: '保留策略：这条会被清掉吗？',
+    });
+    await resolveTicket(resolved.id, 'A');
+
+    const removed = ctx.app.repo.pruneResolvedTickets(Date.now() + 1_000);
+
+    expect(removed).toBeGreaterThan(0);
+    expect(ctx.app.repo.get(Number(resolved.id))).toBeNull();
+    expect(ctx.app.repo.get(Number(pending.id))).not.toBeNull();
+  });
+
+  it('prunes terminal audit rows past the cutoff', () => {
+    const entry = ctx.app.repo.appendTerminalAudit({
+      sessionId: 1,
+      env: 'retention-env',
+      kind: 'CLAIM',
+    });
+
+    const removed = ctx.app.repo.pruneTerminalAudit(Date.now() + 1_000);
+
+    expect(removed).toBeGreaterThan(0);
+    expect(ctx.app.repo.listTerminalAudit(1, { after: 0, limit: 10 }).entries)
+      .not.toContainEqual(expect.objectContaining({ id: entry.id }));
+  });
 });

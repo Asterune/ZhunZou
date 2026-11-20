@@ -125,6 +125,13 @@ export interface ServerConfig {
    * 0 disables chat-message recovery.
    */
   chatMessageTimeoutMs: number;
+  /**
+   * Delete resolved/auto-resolved tickets older than this many days.
+   * 0 keeps them forever (the default for questioners who need the history).
+   */
+  retentionTicketDays: number;
+  /** Delete terminal audit rows older than this many days; 0 keeps them. */
+  retentionAuditDays: number;
 
   /** Public origin used in notification links, e.g. https://hub.example.com. */
   publicBaseUrl: string;
@@ -459,6 +466,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       5 * 60 * 1000,
       { min: 0, max: 7 * 24 * 60 * 60 * 1000 },
     ),
+    retentionTicketDays: readInt(env.RETENTION_TICKET_DAYS, 180, {
+      min: 0,
+      max: 3650,
+    }),
+    retentionAuditDays: readInt(env.RETENTION_AUDIT_DAYS, 30, {
+      min: 0,
+      max: 3650,
+    }),
     publicBaseUrl: (env.PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, ''),
     approvalLinkSecret:
       (env.APPROVAL_LINK_SECRET ?? '').trim() || token || 'dev-token',

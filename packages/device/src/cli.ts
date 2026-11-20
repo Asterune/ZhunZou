@@ -228,6 +228,20 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
+  // Keep a stray promise from killing the device daemon; a real crash still
+  // exits so the service manager can restart a clean process.
+  process.on('unhandledRejection', (reason) => {
+    const detail =
+      reason instanceof Error ? reason.stack ?? reason.message : String(reason);
+    process.stderr.write(`[zhunzou-device] unhandled rejection: ${detail}\n`);
+  });
+  process.on('uncaughtException', (error) => {
+    process.stderr.write(
+      `[zhunzou-device] uncaught exception: ${error.stack ?? error.message}\n`,
+    );
+    process.exit(1);
+  });
+
   main().then(
     (code) => {
       process.exitCode = code;

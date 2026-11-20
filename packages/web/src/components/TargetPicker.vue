@@ -75,10 +75,16 @@ function machineOptionLabel(item: MachineTarget): string {
 }
 
 /** Two identities of one client type on one box cannot be told apart by type alone. */
+function clientLabel(agent: Agent): string {
+  return agent.name?.trim() || clientKindLabel(agent.kind);
+}
+
 function clientOptionLabel(agent: Agent): string {
+  const label = clientLabel(agent);
   const shared =
-    clients.value.visible.filter((item) => item.kind === agent.kind).length > 1;
-  return `${clientKindLabel(agent.kind)}${shared ? ` · ${agent.env}` : ''}${
+    clients.value.visible.filter((item) => clientLabel(item) === label).length >
+    1;
+  return `${label}${shared ? ` · ${agent.env}` : ''}${
     agent.online ? '' : t('picker.offlineSuffix')
   }`;
 }

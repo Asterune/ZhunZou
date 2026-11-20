@@ -1,6 +1,7 @@
 import type { AgentTask, HeartbeatInput } from '@zhunzou/shared';
 
 import type { BridgeConfig } from '../config.js';
+import { activity } from '../activity.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { readWorkspaceFingerprint } from '../git/delta.js';
 import type { HubApi } from '../hub-client.js';
@@ -296,6 +297,7 @@ async function runClaimLoop(
       reportEvent: eventSink.push,
     };
 
+    activity.enter();
     try {
       const outcome = await adapter.wake(task, taskContext);
       // Ship the events before anything changes the task's status: the hub only
@@ -358,6 +360,8 @@ async function runClaimLoop(
 
       await notifyTask(task, context).catch(() => undefined);
       await beat(client, idlePatch, internals.presence);
+    } finally {
+      activity.leave();
     }
 
     if (internals.once) return 0;

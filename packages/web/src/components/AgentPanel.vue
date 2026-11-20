@@ -34,7 +34,9 @@ import { useI18n } from '../lib/i18n';
 import { buildNodeMatrix, type NodeCard } from '../lib/matrix';
 import { useHubStore } from '../stores/hub';
 import FleetWorkspaces from './FleetWorkspaces.vue';
+import HostTree from './HostTree.vue';
 import ProjectBindings from './ProjectBindings.vue';
+import ServerCard from './ServerCard.vue';
 
 const store = useHubStore();
 const { t } = useI18n();
@@ -312,13 +314,27 @@ async function copyEnrollmentCommand(): Promise<void> {
       </div>
     </div>
 
-    <div v-if="nodes.length" class="mb-5">
+    <ServerCard class="mb-5" />
+
+    <div class="mb-5">
       <div class="mb-2 flex items-center gap-1.5 px-0.5 text-[11px] font-medium text-on-surface-variant">
+        <Monitor :size="13" />
+        {{ t('hosts.title') }}
+        <span class="text-on-surface-variant/50">· {{ store.targetMachines.length }}</span>
+      </div>
+      <HostTree />
+    </div>
+
+    <details
+      v-if="nodes.length"
+      class="mb-5 rounded-xl border border-outline-variant/35 bg-surface-container-low p-3 shadow-sm"
+    >
+      <summary class="flex cursor-pointer items-center gap-1.5 text-[11px] font-medium text-on-surface-variant">
         <Server :size="13" />
         {{ t('agents.nodes') }}
         <span class="text-on-surface-variant/50">· {{ nodes.length }}</span>
-      </div>
-      <div class="grid gap-2 sm:grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
+      </summary>
+      <div class="mt-2 grid gap-2 sm:grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
         <article
           v-for="node in nodes"
           :key="node.host"
@@ -410,7 +426,7 @@ async function copyEnrollmentCommand(): Promise<void> {
           </p>
         </article>
       </div>
-    </div>
+    </details>
 
     <div v-if="agentCount" class="mb-5 rounded-xl border border-outline-variant/35 bg-surface-container-low p-3.5 shadow-sm">
       <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -510,8 +526,8 @@ async function copyEnrollmentCommand(): Promise<void> {
                 }}
               </span>
             </div>
-            <p class="mt-1 truncate text-[12px] text-on-surface-variant">
-              {{ agent.name }} · {{ clientKindLabel(agent.kind) }}
+            <p class="mt-1 truncate text-[12px] text-on-surface-variant" :title="agent.env">
+              {{ agent.name }}
             </p>
           </div>
           <button

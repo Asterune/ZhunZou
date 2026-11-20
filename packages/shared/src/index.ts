@@ -6,4 +6,5 @@ export * from './projects.js';
 export * from './realtime.js';
 export * from './schemas.js';
 export * from './supervisor.js';
+export * from './system.js';
 export * from './terminal.js';
