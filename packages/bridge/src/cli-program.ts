@@ -33,6 +33,7 @@ import {
   uninstallService,
 } from './service.js';
 import { runSessionDaemon, supportsChat } from './session.js';
+import { runUninstall } from './uninstall.js';
 import { BRIDGE_VERSION } from './version.js';
 import { defaultInstallRoot, runUpgrade } from './upgrade.js';
 import { waitForDecision } from './wait-command.js';
@@ -392,7 +393,7 @@ export function createProgram(): Command {
     .option('--service', 'register a login-time daemon so the device stays online')
     .option('--env <name>', 'environment label shown on the dashboard')
     .option('--project <name>', 'project name reported in heartbeats')
-    .option('--target <target>', 'cursor | opencode | claude | codex | qoder | all (all = one env per client)')
+    .option('--target <target>', 'cursor | opencode | claude | codex | qoder | gemini | windsurf | vscode | all | auto (auto = only installed clients)')
     .option('--agent-kind <kind>', 'cursor | opencode | claude-code | codex | gemini | qoder | other')
     .option('--no-agent-token', 'keep using the admin token instead of issuing a scoped one')
     .option('--dir <path>', 'workspace directory (defaults to cwd)')
@@ -424,6 +425,20 @@ export function createProgram(): Command {
         ...(typeof options.dir === 'string' ? { dir: options.dir } : {}),
         ...(options.yes === true ? { yes: true } : {}),
         ...(options.skipCheck === true ? { skipCheck: true } : {}),
+        ...(options.dryRun === true ? { dryRun: true } : {}),
+      });
+    });
+
+  program
+    .command('uninstall')
+    .description(
+      'Remove the Zhunzou MCP entries and the login service (keeps ~/.zhunzou unless --purge)',
+    )
+    .option('--purge', 'also delete ~/.zhunzou (bridge versions, fleet.json, tokens)')
+    .option('--dry-run', 'print what would be removed without writing')
+    .action((options: { purge?: boolean; dryRun?: boolean }) => {
+      process.exitCode = runUninstall({
+        ...(options.purge === true ? { purge: true } : {}),
         ...(options.dryRun === true ? { dryRun: true } : {}),
       });
     });

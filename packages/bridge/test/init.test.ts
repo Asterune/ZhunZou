@@ -21,6 +21,7 @@ import {
   mergeCodexConfig,
   mergeCursorConfig,
   mergeOpenCodeConfig,
+  mergeVscodeConfig,
   runInit,
 } from '../src/init.js';
 
@@ -467,9 +468,12 @@ describe('one code, several clients', () => {
         'claude-code',
         'codex',
         'qoder',
+        'gemini',
+        'windsurf',
+        'vscode',
       ]);
       const envs = received.map((body) => String(body.env));
-      expect(new Set(envs).size).toBe(5);
+      expect(new Set(envs).size).toBe(8);
       expect(envs[0]).toMatch(/^cursor-/);
       expect(envs[3]).toMatch(/^codex-/);
       expect(envs[4]).toMatch(/^qoder-/);
@@ -511,6 +515,25 @@ describe('one code, several clients', () => {
       expect(qoder.mcpServers.zhunzou.env).toMatchObject({
         HUB_TOKEN: 'zz_qoder',
         ZHUNZOU_AGENT_KIND: 'qoder',
+      });
+
+      const gemini = JSON.parse(
+        readFileSync(join(home, '.gemini', 'settings.json'), 'utf8'),
+      ) as { mcpServers: { zhunzou: { env: Record<string, string> } } };
+      expect(gemini.mcpServers.zhunzou.env).toMatchObject({
+        HUB_TOKEN: 'zz_gemini',
+        ZHUNZOU_AGENT_KIND: 'gemini',
+      });
+
+      const windsurf = JSON.parse(
+        readFileSync(
+          join(home, '.codeium', 'windsurf', 'mcp_config.json'),
+          'utf8',
+        ),
+      ) as { mcpServers: { zhunzou: { env: Record<string, string> } } };
+      expect(windsurf.mcpServers.zhunzou.env).toMatchObject({
+        HUB_TOKEN: 'zz_windsurf',
+        ZHUNZOU_AGENT_KIND: 'windsurf',
       });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -621,6 +644,21 @@ describe('one code, several clients', () => {
     expect(existsSync(join(dir, '.mcp.json'))).toBe(false);
     expect(readFileSync(join(dir, 'AGENTS.md'), 'utf8')).toContain(
       'agent_hub_escalate',
+    );
+  });
+
+  it('writes VS Code servers with a stdio type and keeps other servers', () => {
+    const merged = mergeVscodeConfig(
+      { servers: { other: { type: 'stdio', command: 'other-bin' } } },
+      settings,
+    ) as {
+      servers: Record<string, { type?: string; command?: string; env?: Record<string, string> }>;
+    };
+
+    expect(merged.servers.other).toMatchObject({ command: 'other-bin' });
+    expect(merged.servers.zhunzou).toMatchObject({ type: 'stdio' });
+    expect(merged.servers.zhunzou?.env?.HUB_URL).toBe(
+      'https://hub.example.com',
     );
   });
 });

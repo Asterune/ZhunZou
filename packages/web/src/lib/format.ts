@@ -213,6 +213,7 @@ const CLIENT_KIND_LABELS: Record<AgentKind, string> = {
   gemini: 'Gemini',
   qoder: 'Qoder',
   windsurf: 'Windsurf',
+  vscode: 'VS Code',
   other: 'Other',
 };
 

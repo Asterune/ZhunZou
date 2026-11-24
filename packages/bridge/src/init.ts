@@ -16,10 +16,20 @@ import { machineId } from './machine-id.js';
 import { installService } from './service.js';
 import { BRIDGE_VERSION } from './version.js';
 
-export type InitTarget = 'cursor' | 'opencode' | 'claude' | 'codex' | 'qoder' | 'all';
+export type InitTarget =
+  | 'cursor'
+  | 'opencode'
+  | 'claude'
+  | 'codex'
+  | 'qoder'
+  | 'gemini'
+  | 'windsurf'
+  | 'vscode'
+  | 'all'
+  | 'auto';
 
 /** Targets that own a config file; `all` expands to these. */
-export type ClientTarget = Exclude<InitTarget, 'all'>;
+export type ClientTarget = Exclude<InitTarget, 'all' | 'auto'>;
 
 const CLIENT_TARGETS: readonly ClientTarget[] = [
   'cursor',
@@ -27,7 +37,43 @@ const CLIENT_TARGETS: readonly ClientTarget[] = [
   'claude',
   'codex',
   'qoder',
+  'gemini',
+  'windsurf',
+  'vscode',
 ];
+
+/**
+ * Which clients this machine actually has.
+ *
+ * Detection is a directory probe: every client creates its config folder on
+ * first launch, and writing a config for an editor that is not installed only
+ * creates clutter the user has to reason about.
+ */
+export function detectInstalledTargets(): ClientTarget[] {
+  const home = homedir();
+  const configHome = process.env.XDG_CONFIG_HOME || join(home, '.config');
+  const has = (path: string): boolean => existsSync(path);
+
+  const markers: Record<ClientTarget, () => boolean> = {
+    cursor: () =>
+      has(join(home, '.cursor')) || has('/Applications/Cursor.app'),
+    opencode: () => has(join(configHome, 'opencode')),
+    claude: () =>
+      has(join(home, '.claude.json')) || has(join(home, '.claude')),
+    codex: () => has(codexHome()),
+    qoder: () => has(qoderHome()),
+    gemini: () => has(join(home, '.gemini')),
+    windsurf: () =>
+      has(join(home, '.codeium', 'windsurf')) ||
+      has('/Applications/Windsurf.app'),
+    vscode: () =>
+      has(join(home, '.vscode')) ||
+      has(vscodeUserDir()) ||
+      has('/Applications/Visual Studio Code.app'),
+  };
+
+  return CLIENT_TARGETS.filter((target) => markers[target]());
+}
 
 export interface InitSettings {
   hubUrl: string;
@@ -179,6 +225,26 @@ export function mergeQoderConfig(
   settings: InitSettings,
 ): Record<string, unknown> {
   return mergeCursorConfig(existing, settings);
+}
+
+/**
+ * VS Code's MCP file uses `servers` (not `mcpServers`) and needs an explicit
+ * transport type. Everything else matches the other clients.
+ */
+export function mergeVscodeConfig(
+  existing: unknown,
+  settings: InitSettings,
+): Record<string, unknown> {
+  const base = isRecord(existing) ? existing : {};
+  const servers = isRecord(base.servers) ? base.servers : {};
+
+  return {
+    ...base,
+    servers: {
+      ...servers,
+      zhunzou: { type: 'stdio', ...stdioServer(settings) },
+    },
+  };
 }
 
 export function mergeOpenCodeConfig(
@@ -414,6 +480,32 @@ function writeClientConfig(
     return;
   }
 
+  if (target === 'gemini') {
+    const path = options.global
+      ? globalConfigFile('gemini')
+      : join(dir, '.gemini', 'settings.json');
+    writeJson(path, mergeCursorConfig(readJson(path), settings), dryRun);
+    return;
+  }
+
+  // Windsurf only reads its user-level file, even when a workspace is open.
+  if (target === 'windsurf') {
+    writeJson(
+      globalConfigFile('windsurf'),
+      mergeCursorConfig(readJson(globalConfigFile('windsurf')), settings),
+      dryRun,
+    );
+    return;
+  }
+
+  if (target === 'vscode') {
+    const path = options.global
+      ? globalConfigFile('vscode')
+      : join(dir, '.vscode', 'mcp.json');
+    writeJson(path, mergeVscodeConfig(readJson(path), settings), dryRun);
+    return;
+  }
+
   // Codex only reads `$CODEX_HOME/config.toml` (default ~/.codex), even for a
   // workspace install, so the file is always user-level.
   const path = globalConfigFile('codex');
@@ -495,17 +587,14 @@ function parseTarget(raw: string | undefined, fallback: InitTarget): InitTarget 
   if (!raw) return fallback;
   const value = raw.toLowerCase();
   if (
-    value === 'cursor' ||
-    value === 'opencode' ||
-    value === 'claude' ||
-    value === 'codex' ||
-    value === 'qoder' ||
-    value === 'all'
+    (CLIENT_TARGETS as readonly string[]).includes(value) ||
+    value === 'all' ||
+    value === 'auto'
   ) {
-    return value;
+    return value as InitTarget;
   }
   throw new Error(
-    `未知 target "${raw}"，可选 cursor / opencode / claude / codex / qoder / all`,
+    `未知 target "${raw}"，可选 ${[...CLIENT_TARGETS, 'all', 'auto'].join(' / ')}`,
   );
 }
 
@@ -515,6 +604,9 @@ function kindForTarget(target: InitTarget): AgentKind {
   if (target === 'claude') return 'claude-code';
   if (target === 'codex') return 'codex';
   if (target === 'qoder') return 'qoder';
+  if (target === 'gemini') return 'gemini';
+  if (target === 'windsurf') return 'windsurf';
+  if (target === 'vscode') return 'vscode';
   return 'other';
 }
 
@@ -544,7 +636,9 @@ function defaultAgentEnv(kind: AgentKind, project: string): string {
                 ? 'qoder'
                 : kind === 'windsurf'
                   ? 'windsurf'
-                  : 'agent';
+                  : kind === 'vscode'
+                    ? 'vscode'
+                    : 'agent';
   const slug = envSlug(project) || envSlug(hostname()) || 'agent';
   return `${prefix}-${slug}`.slice(0, 64);
 }
@@ -660,28 +754,54 @@ function qoderHome(): string {
   return raw ? resolve(raw) : join(homedir(), '.qoder');
 }
 
+/** Where VS Code keeps its user-level settings on this platform. */
+export function vscodeUserDir(): string {
+  if (process.platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'Code', 'User');
+  }
+  if (process.platform === 'win32') {
+    return join(
+      process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'),
+      'Code',
+      'User',
+    );
+  }
+  const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+  return join(configHome, 'Code', 'User');
+}
+
 /** Global (user-level) config locations, so one install covers all projects. */
-function globalTargetDir(target: Exclude<InitTarget, 'all'>): string {
+function globalTargetDir(target: ClientTarget): string {
   const configHome =
     process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
   if (target === 'cursor') return join(homedir(), '.cursor');
   if (target === 'opencode') return join(configHome, 'opencode');
   if (target === 'codex') return codexHome();
   if (target === 'qoder') return qoderHome();
+  if (target === 'gemini') return join(homedir(), '.gemini');
+  if (target === 'windsurf') return join(homedir(), '.codeium', 'windsurf');
+  if (target === 'vscode') return vscodeUserDir();
   return homedir();
 }
 
-function globalConfigFile(target: Exclude<InitTarget, 'all'>): string {
+function globalConfigFile(target: ClientTarget): string {
   if (target === 'cursor') return join(globalTargetDir(target), 'mcp.json');
   if (target === 'opencode') {
     return join(globalTargetDir(target), 'opencode.json');
   }
   if (target === 'codex') return join(globalTargetDir(target), 'config.toml');
   if (target === 'qoder') return join(globalTargetDir(target), 'settings.json');
+  if (target === 'gemini') {
+    return join(globalTargetDir(target), 'settings.json');
+  }
+  if (target === 'windsurf') {
+    return join(globalTargetDir(target), 'mcp_config.json');
+  }
+  if (target === 'vscode') return join(globalTargetDir(target), 'mcp.json');
   return join(homedir(), '.claude.json');
 }
 
-function globalInstructionFile(target: Exclude<InitTarget, 'all'>): {
+function globalInstructionFile(target: ClientTarget): {
   dir: string;
   file: string;
   template: string;
@@ -858,33 +978,53 @@ export async function runInit(options: InitOptions = {}): Promise<number> {
       options.hubUrl ??
       (rl ? await ask(rl, '云端地址 HUB_URL', DEFAULT_HUB_URL) : DEFAULT_HUB_URL);
 
-    // Global installs have no workspace to inspect, so default to all clients.
-    const targetFallback = options.global ? 'all' : detectTarget(dir);
-    const target = parseTarget(
+    // Global installs have no workspace to inspect, so probe the machine.
+    const targetFallback = options.global ? 'auto' : detectTarget(dir);
+    const requested = parseTarget(
       options.target ??
         (rl
           ? await ask(
               rl,
-              '写入哪个客户端 cursor / opencode / claude / codex / qoder / all',
+              `写入哪个客户端 ${[...CLIENT_TARGETS, 'all', 'auto'].join(' / ')}`,
               targetFallback,
             )
           : targetFallback),
       targetFallback,
     );
 
+    let targets: ClientTarget[];
+    if (requested === 'auto') {
+      const detected = detectInstalledTargets();
+      targets = detected.length > 0 ? detected : [...CLIENT_TARGETS];
+      const skipped = CLIENT_TARGETS.filter((item) => !targets.includes(item));
+      if (detected.length > 0) {
+        process.stdout.write(
+          `✓ 检测到 ${detected.join(' / ')}${
+            skipped.length ? `；跳过 ${skipped.join(' / ')}` : ''
+          }\n`,
+        );
+      } else {
+        process.stdout.write('! 没有检测到已安装的客户端，按全部客户端写入\n');
+      }
+    } else if (requested === 'all') {
+      targets = [...CLIENT_TARGETS];
+    } else {
+      targets = [requested];
+    }
+
     const explicitKind = parseAgentKind(options.agentKind);
-    const agentKind = explicitKind ?? kindForTarget(target);
+    const agentKind =
+      explicitKind ??
+      (targets.length === 1 ? kindForTarget(targets[0]!) : kindForTarget('all'));
 
     // `--target all` now means "every client on this machine". Each client
     // needs its own env (and therefore its own token): four editors sharing
     // one env would overwrite each other's heartbeat and collapse into a
     // single card. Pin `--env` / `--agent-kind` to keep the old behaviour.
     const perClient =
-      target === 'all' &&
+      targets.length > 1 &&
       options.env === undefined &&
       explicitKind === undefined;
-    const targets: ClientTarget[] =
-      target === 'all' ? [...CLIENT_TARGETS] : [target];
 
     let adminToken = options.token ?? '';
     let projectName = options.project;

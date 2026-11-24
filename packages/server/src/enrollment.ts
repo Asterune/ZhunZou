@@ -261,7 +261,7 @@ await import(pathToFileURL(join(dir, 'cli.mjs')).href);
 ZHUNZOU_BOOT
 chmod +x "$ROOT_DIR/cli.mjs" "$ROOT_DIR/mcp.mjs" 2>/dev/null || true
 
-INIT_ARGS=(init --hub-url "$HUB_URL" --code "$CODE" --yes --global --target all)
+INIT_ARGS=(init --hub-url "$HUB_URL" --code "$CODE" --yes --global --target auto)
 if [ "$INSTALL_SERVICE" = "1" ]; then
   INIT_ARGS+=(--service)
 fi
@@ -388,7 +388,7 @@ await import(pathToFileURL(join(dir, 'ENTRY_FILE')).href);
 Set-Content -Path (Join-Path $rootDir 'mcp.mjs') -Value ($bootstrap -replace 'ENTRY_FILE', 'mcp.mjs') -Encoding utf8
 Set-Content -Path (Join-Path $rootDir 'cli.mjs') -Value ($bootstrap -replace 'ENTRY_FILE', 'cli.mjs') -Encoding utf8
 
-$initArgs = @('init', '--hub-url', $HubUrl, '--code', $Code, '--yes', '--global', '--target', 'all')
+$initArgs = @('init', '--hub-url', $HubUrl, '--code', $Code, '--yes', '--global', '--target', 'auto')
 if (-not $NoService) { $initArgs += '--service' }
 
 Say '注册设备并写入编辑器配置 ...'

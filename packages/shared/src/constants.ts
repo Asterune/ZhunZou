@@ -256,6 +256,7 @@ export const AGENT_KINDS = [
   'gemini',
   'qoder',
   'windsurf',
+  'vscode',
   'other',
 ] as const;
 
