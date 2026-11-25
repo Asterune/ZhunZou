@@ -36,6 +36,7 @@ import type {
   RulesResponse,
   RealtimeTicketResponse,
   SendChatMessageInput,
+  ProviderUsage,
   SupervisorInboxResponse,
   SyncResponse,
   SystemStats,
@@ -108,6 +109,7 @@ export interface HubApi {
     chatContextBudgetTokens?: number;
   }>;
   system(token: string): Promise<{ system: SystemStats }>;
+  providerUsage(token: string): Promise<{ usage: ProviderUsage }>;
   listAgents(token: string): Promise<AgentListResponse>;
   listExchanges(
     token: string,
@@ -408,6 +410,9 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
 
     /** The hub host's own environment; admin-only like every dashboard call. */
     system: (token) => request<{ system: SystemStats }>(token, '/api/system'),
+
+    providerUsage: (token) =>
+      request<{ usage: ProviderUsage }>(token, '/api/provider-usage'),
 
     listAgents: (token) => request<AgentListResponse>(token, '/api/agents'),
 

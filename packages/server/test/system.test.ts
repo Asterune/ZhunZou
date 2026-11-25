@@ -101,4 +101,24 @@ describe('GET /api/system', () => {
       await ctx.close();
     }
   });
+
+  it('returns an unsupported allowance when no key is configured', async () => {
+    const ctx = await createTestContext();
+    try {
+      const response = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/provider-usage',
+        headers: ctx.auth,
+      });
+      expect(response.statusCode).toBe(200);
+
+      const { usage } = response.json() as {
+        usage: { supported: boolean; usage: unknown };
+      };
+      expect(usage.supported).toBe(false);
+      expect(usage.usage).toBeNull();
+    } finally {
+      await ctx.close();
+    }
+  });
 });

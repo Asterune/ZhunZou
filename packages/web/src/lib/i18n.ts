@@ -323,6 +323,16 @@ const zh: Record<string, string> = {
   'server.free': '可用',
   'server.total': '累计',
   'server.dbSplit': '主库 {main} + WAL {wal}',
+
+  'quota.title': 'AI 额度',
+  'quota.rolling': '5 小时',
+  'quota.weekly': '本周',
+  'quota.monthly': '本月',
+  'quota.resets': '重置于 {time}',
+  'quota.limited': '已受限',
+  'quota.unsupported': '当前 Key 不支持额度查询',
+  'quota.waiting': '读取中…',
+  'quota.sampled': '更新于 {time}',
   'agents.bindings': '项目绑定',
   'agents.bindingsHint':
     '绑定后，会话与单次执行的项目下拉框只列出这里的项目；心跳会自动绑定当前活跃项目。',
@@ -1087,6 +1097,16 @@ const en: Record<string, string> = {
   'server.free': 'free',
   'server.total': 'total',
   'server.dbSplit': 'DB {main} + WAL {wal}',
+
+  'quota.title': 'AI allowance',
+  'quota.rolling': '5 hours',
+  'quota.weekly': 'This week',
+  'quota.monthly': 'This month',
+  'quota.resets': 'resets {time}',
+  'quota.limited': 'limited',
+  'quota.unsupported': 'The configured key has no usage endpoint',
+  'quota.waiting': 'Reading…',
+  'quota.sampled': 'updated {time}',
   'agents.bindings': 'Project bindings',
   'agents.bindingsHint':
     'Bound projects are the only ones offered in the chat and single-run pickers. Heartbeats bind the active project automatically.',

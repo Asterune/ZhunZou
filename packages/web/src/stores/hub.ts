@@ -19,6 +19,7 @@ import type {
   ResolveTicketInput,
   RuleCandidate,
   RulesResponse,
+  ProviderUsage,
   SupervisorInboxItem,
   SyncState,
   SystemStats,
@@ -199,6 +200,8 @@ export function createHubStore(api: HubApi = hubApi) {
   const contextBudget = ref(80_000);
   /** The hub host's own metrics; null until the first successful sample. */
   const system = ref<SystemStats | null>(null);
+  /** Provider allowance meters (OpenCode Go: 5h/week/month). */
+  const providerUsage = ref<ProviderUsage | null>(null);
   const lastSyncAt = ref(0);
   const lastError = ref('');
   const authError = ref('');
@@ -519,6 +522,17 @@ export function createHubStore(api: HubApi = hubApi) {
       system.value = response.system;
     } catch {
       // Keep the last reading; the card shows when it was sampled.
+    }
+  }
+
+  /** Refresh the provider allowance card (server caches it for a minute). */
+  async function loadProviderUsage(): Promise<void> {
+    if (!token.value) return;
+    try {
+      const response = await api.providerUsage(token.value);
+      providerUsage.value = response.usage;
+    } catch {
+      // Keep the last reading; a transient failure must not blank the card.
     }
   }
 
@@ -1527,6 +1541,8 @@ export function createHubStore(api: HubApi = hubApi) {
     contextBudget,
     system,
     loadSystem,
+    providerUsage,
+    loadProviderUsage,
     pollHealth,
     rev,
     chatDeltas,

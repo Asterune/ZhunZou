@@ -36,6 +36,7 @@ import { useHubStore } from '../stores/hub';
 import FleetWorkspaces from './FleetWorkspaces.vue';
 import HostTree from './HostTree.vue';
 import ProjectBindings from './ProjectBindings.vue';
+import QuotaCard from './QuotaCard.vue';
 import ServerCard from './ServerCard.vue';
 
 const store = useHubStore();
@@ -314,7 +315,8 @@ async function copyEnrollmentCommand(): Promise<void> {
       </div>
     </div>
 
-    <ServerCard class="mb-5" />
+    <ServerCard class="mb-3" />
+    <QuotaCard class="mb-5" />
 
     <div class="mb-5">
       <div class="mb-2 flex items-center gap-1.5 px-0.5 text-[11px] font-medium text-on-surface-variant">

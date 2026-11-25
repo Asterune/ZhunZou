@@ -159,6 +159,10 @@ import {
   type MetaAgent,
 } from './meta-agent.js';
 import {
+  ProviderUsageReader,
+  deriveProviderUsageUrl,
+} from './provider-usage.js';
+import {
   createNotifiers,
   notifyTaskOutcome,
   notifyTicketPendingHuman,
@@ -251,6 +255,8 @@ export interface BuildAppOptions {
   ruleDistiller?: RuleDistiller;
   /** L2 diagnosis client; defaults to the same provider as the judge. */
   healer?: SupervisorHealer;
+  /** Provider allowance reader; tests inject a deterministic one. */
+  providerUsage?: ProviderUsageReader;
   /** Host metrics sampler; tests inject a deterministic one. */
   systemSampler?: SystemSampler;
   notifiers?: Notifier[];
@@ -333,6 +339,17 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   // CPU share and network rate instead of the first-sample blanks.
   const systemSampler =
     options.systemSampler ?? new SystemSampler(config.dbPath);
+  const providerUsage =
+    options.providerUsage ??
+    new ProviderUsageReader({
+      url:
+        config.providerUsageUrl ??
+        deriveProviderUsageUrl(config.metaAgent.baseUrl),
+      apiKey: config.metaAgent.apiKey,
+      provider: /opencode\.ai/i.test(config.metaAgent.baseUrl ?? '')
+        ? 'opencode-go'
+        : config.metaAgent.provider,
+    });
   systemSampler.sample();
 
   // -----------------------------------------------------------------
@@ -3291,6 +3308,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       api.get('/system', async (request) => {
         requireAdmin(request);
         return { system: systemSampler.sample() };
+      });
+
+      /** Provider allowance meters (OpenCode Go: 5h/week/month). */
+      api.get('/provider-usage', async (request) => {
+        requireAdmin(request);
+        return { usage: await providerUsage.read() };
       });
 
       // Browsers cannot set an Authorization header on a WebSocket handshake.

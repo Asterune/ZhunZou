@@ -86,6 +86,12 @@ export interface ServerConfig {
    * fresh one and prepends a handoff digest. Roughly 60% of a 128k window.
    */
   chatContextBudgetTokens: number;
+  /**
+   * Provider allowance endpoint (e.g. OpenCode Go `/v1/usage`). When unset it
+   * is derived from `OPENAI_BASE_URL` for opencode.ai; other providers have no
+   * standard endpoint and the card shows "unsupported".
+   */
+  providerUsageUrl?: string;
   rulesPath: string;
   waitTimeoutMs: number;
   logLevel: string;
@@ -432,6 +438,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       80_000,
       { min: 4_000, max: 4_000_000 },
     ),
+    ...(env.PROVIDER_USAGE_URL?.trim()
+      ? { providerUsageUrl: env.PROVIDER_USAGE_URL.trim() }
+      : {}),
     logLevel: env.LOG_LEVEL ?? (isProduction ? 'info' : 'debug'),
     serveWeb: readBool(env.SERVE_WEB, true),
     webDistPath: resolvePath(env.WEB_DIST_PATH ?? './packages/web/dist'),
