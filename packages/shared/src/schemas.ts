@@ -25,6 +25,8 @@ import {
   TASK_ORIGINS,
   TASK_STATUSES,
   TICKET_STATUSES,
+  WORKFLOW_RUN_STATUSES,
+  WORKFLOW_STEP_ROLES,
 } from './constants.js';
 import {
   DEVICE_TRANSPORTS,
@@ -45,7 +47,7 @@ export const ticketIdSchema = z
 const envSchema = z.string().trim().min(1).max(64);
 const projectNameSchema = z.string().trim().min(1).max(128);
 const shortTextSchema = z.string().trim().min(1).max(500);
-const longTextSchema = z.string().trim().min(1).max(2000);
+const longTextSchema = z.string().trim().min(1).max(20_000);
 /** An absolute path on the machine that reported it; the hub never resolves it. */
 const workspacePathSchema = z
   .string()
@@ -509,6 +511,9 @@ export const agentTaskSchema = z.object({
    * its CLI, because the hub never sees the catalog.
    */
   model: modelNameSchema.optional(),
+  /** The workflow run/step that spawned this task, when any. */
+  workflowRunId: ticketIdSchema.optional(),
+  workflowStep: z.number().int().nonnegative().optional(),
   origin: z.enum(TASK_ORIGINS).default('HUB_DISPATCH'),
   /** Engine-native session id, kept so a blocked task resumes in place. */
   sessionId: z.string().trim().min(1).max(128).optional(),
@@ -555,6 +560,9 @@ export const createTaskSchema = z.object({
   /** A locally wrapped terminal registers itself with LOCAL_WRAP. */
   origin: z.enum(TASK_ORIGINS).optional(),
   managedBySupervisor: z.boolean().optional(),
+  /** Internal: the workflow run/step that spawned this task. */
+  workflowRunId: ticketIdSchema.optional(),
+  workflowStep: z.number().int().nonnegative().max(50).optional(),
 });
 
 /**
@@ -599,6 +607,85 @@ export const dispatchTaskSchema = z
   });
 
 export type DispatchTaskInput = z.infer<typeof dispatchTaskSchema>;
+
+/* ------------------------------------------------------------------ */
+/* Linear workflows: design → code → review → test                    */
+/* ------------------------------------------------------------------ */
+
+export const workflowStepSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  /** Labels the step and its default prompt; the instruction is what matters. */
+  role: z.enum(WORKFLOW_STEP_ROLES).default('custom'),
+  /** Which connected client runs this step. */
+  env: envSchema,
+  /** Model this step asks the CLI to run on; absent = the node's default. */
+  model: modelNameSchema.optional(),
+  /**
+   * The instruction for this step. `{{previous}}` becomes the previous step's
+   * result (or the run's starting brief for the first step), `{{task}}` the
+   * run title.
+   */
+  instruction: longTextSchema,
+});
+
+export const createWorkflowSchema = z.object({
+  projectName: projectNameSchema,
+  name: z.string().trim().min(1).max(120),
+  steps: z.array(workflowStepSchema).min(2).max(8),
+});
+
+export const workflowSchema = createWorkflowSchema.extend({
+  id: ticketIdSchema,
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+export const workflowRunStepSchema = z.object({
+  index: z.number().int().nonnegative(),
+  taskId: ticketIdSchema,
+  title: z.string().trim().max(200),
+  status: taskStatusSchema,
+});
+
+export const workflowRunSchema = z.object({
+  id: ticketIdSchema,
+  workflowId: ticketIdSchema,
+  workflowName: z.string().trim().max(120),
+  projectName: projectNameSchema,
+  status: z.enum(WORKFLOW_RUN_STATUSES),
+  /** Zero-based index of the step currently running (or the last one). */
+  stepIndex: z.number().int().nonnegative(),
+  tasks: z.array(workflowRunStepSchema),
+  error: z.string().max(2000).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+export const workflowResponseSchema = z.object({ workflow: workflowSchema });
+export const workflowRunResponseSchema = z.object({ run: workflowRunSchema });
+export const workflowListResponseSchema = z.object({
+  workflows: z.array(workflowSchema),
+});
+export const workflowRunListResponseSchema = z.object({
+  runs: z.array(workflowRunSchema),
+});
+
+export const listWorkflowsQuerySchema = z.object({
+  projectName: projectNameSchema.optional(),
+});
+
+export const startWorkflowRunSchema = z.object({
+  /**
+   * The starting brief passed to the first step's `{{previous}}`. Empty means
+   * the first step's template stands alone.
+   */
+  brief: z.string().trim().max(20_000).optional(),
+});
+
+export const listWorkflowRunsQuerySchema = z.object({
+  workflowId: ticketIdSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
 
 /** Query accepted by GET /api/tasks. */
 export const listTasksQuerySchema = z.object({
@@ -1517,6 +1604,13 @@ export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 export type CreateLocalTaskInput = z.infer<typeof createLocalTaskSchema>;
 export type TakeoverTaskInput = z.infer<typeof takeoverTaskSchema>;
 export type ListTasksQuery = z.infer<typeof listTasksQuerySchema>;
+export type WorkflowStep = z.infer<typeof workflowStepSchema>;
+export type CreateWorkflowInput = z.infer<typeof createWorkflowSchema>;
+export type Workflow = z.infer<typeof workflowSchema>;
+export type WorkflowRunStep = z.infer<typeof workflowRunStepSchema>;
+export type WorkflowRun = z.infer<typeof workflowRunSchema>;
+export type StartWorkflowRunInput = z.infer<typeof startWorkflowRunSchema>;
+export type ListWorkflowRunsQuery = z.infer<typeof listWorkflowRunsQuerySchema>;
 export type NextTaskQuery = z.infer<typeof nextTaskQuerySchema>;
 export type CompleteTaskInput = z.infer<typeof completeTaskSchema>;
 export type ReleaseTaskInput = z.infer<typeof releaseTaskSchema>;

@@ -30,6 +30,9 @@ import type {
   TaskLogStream,
   TaskOrigin,
   TaskStatus,
+  WorkflowRunStep,
+  WorkflowRunStatus,
+  WorkflowStep,
   TerminalAuditKind,
   TerminalSessionStatus,
   TicketOption,
@@ -353,6 +356,9 @@ export const agentTasks = sqliteTable(  'agent_tasks',
     result: text('result'),
     /** The node's reading of its own CLI's complaint, when it could name one. */
     failureKind: text('failure_kind').$type<ModelFailureKind>(),
+    /** The workflow run this task belongs to, and which step it is. */
+    workflowRunId: integer('workflow_run_id'),
+    workflowStep: integer('workflow_step'),
   },
   (table) => [
     index('idx_agent_tasks_status').on(table.status),
@@ -361,6 +367,7 @@ export const agentTasks = sqliteTable(  'agent_tasks',
     index('idx_agent_tasks_repo').on(table.repoName),
     index('idx_agent_tasks_created').on(table.createdAt),
     index('idx_agent_tasks_updated').on(table.updatedAt),
+    index('idx_agent_tasks_workflow').on(table.workflowRunId, table.workflowStep),
   ],
 );
 
@@ -671,3 +678,51 @@ export type FleetCandidateRow = typeof fleetCandidates.$inferSelect;
 export type FleetCandidateInsert = typeof fleetCandidates.$inferInsert;
 export type FleetWorkspaceRow = typeof fleetWorkspaces.$inferSelect;
 export type FleetWorkspaceInsert = typeof fleetWorkspaces.$inferInsert;
+
+/* ------------------------------------------------------------------ */
+/* Linear workflows                                                    */
+/* ------------------------------------------------------------------ */
+
+export const workflows = sqliteTable(
+  'workflows',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    projectName: text('project_name').notNull(),
+    name: text('name').notNull(),
+    /** Ordered steps; the run executes them one at a time. */
+    steps: text('steps', { mode: 'json' }).$type<WorkflowStep[]>().notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [index('idx_workflows_project').on(table.projectName)],
+);
+
+export const workflowRuns = sqliteTable(
+  'workflow_runs',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    workflowId: integer('workflow_id').notNull(),
+    workflowName: text('workflow_name').notNull(),
+    projectName: text('project_name').notNull(),
+    status: text('status').$type<WorkflowRunStatus>().notNull(),
+    stepIndex: integer('step_index').notNull().default(0),
+    /** One entry per dispatched step, in order. */
+    tasks: text('tasks', { mode: 'json' })
+      .$type<WorkflowRunStep[]>()
+      .notNull()
+      .default([]),
+    error: text('error'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    index('idx_workflow_runs_workflow').on(table.workflowId, table.id),
+    index('idx_workflow_runs_status').on(table.status),
+  ],
+);
+
+export type WorkflowRow = typeof workflows.$inferSelect;
+export type WorkflowInsert = typeof workflows.$inferInsert;
+export type WorkflowRunRow = typeof workflowRuns.$inferSelect;
+export type WorkflowRunInsert = typeof workflowRuns.$inferInsert;
+

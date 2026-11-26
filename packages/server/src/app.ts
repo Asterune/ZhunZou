@@ -22,6 +22,8 @@ import type {
   OptionRisk,
   RuleCandidate,
   SyncState,
+  Workflow,
+  WorkflowRun,
 } from '@zhunzou/shared';
 import {
   appendChatEventSchema,
@@ -41,6 +43,7 @@ import {
   createLearnedRuleSchema,
   createLocalTaskSchema,
   createTaskSchema,
+  createWorkflowSchema,
   createTerminalSchema,
   createTicketSchema,
   decisionRequestSchema,
@@ -64,6 +67,8 @@ import {
   listTaskEventsQuerySchema,
   listTaskLogsQuerySchema,
   listTasksQuerySchema,
+  listWorkflowRunsQuerySchema,
+  listWorkflowsQuerySchema,
   listTerminalAuditQuerySchema,
   listTerminalEventsQuerySchema,
   listTerminalsQuerySchema,
@@ -83,6 +88,7 @@ import {
   resolveTicketSchema,
   resumeQuerySchema,
   sendChatMessageSchema,
+  startWorkflowRunSchema,
   syncQuerySchema,
   takeoverTaskSchema,
   terminalAuditExportQuerySchema,
@@ -1057,6 +1063,104 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     if (config.autoResolveTimeoutMs <= 0) return false;
     if (config.autoResolveProjects.length === 0) return true;
     return config.autoResolveProjects.includes(projectName);
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* Linear workflows                                                    */
+  /* ------------------------------------------------------------------ */
+
+  /** A handoff larger than this is truncated with a visible marker. */
+  const WORKFLOW_HANDOFF_LIMIT = 12_000;
+
+  const renderWorkflowInstruction = (
+    template: string,
+    previous: string,
+    title: string,
+  ): string => {
+    const handoff =
+      previous.length > WORKFLOW_HANDOFF_LIMIT
+        ? `${previous.slice(0, WORKFLOW_HANDOFF_LIMIT)}\n\n[上一步结果已截断]`
+        : previous;
+    return template
+      .split('{{previous}}')
+      .join(handoff)
+      .split('{{task}}')
+      .join(title);
+  };
+
+  const createWorkflowStepTask = (
+    workflow: Workflow,
+    run: WorkflowRun,
+    index: number,
+    previous: string,
+  ): AgentTask => {
+    const step = workflow.steps[index]!;
+    return repo.createTask({
+      env: step.env,
+      projectName: workflow.projectName,
+      title: `${workflow.name} · ${step.name}`.slice(0, 200),
+      instruction: renderWorkflowInstruction(
+        step.instruction,
+        previous,
+        workflow.name,
+      ),
+      ...(step.model ? { model: step.model } : {}),
+      workflowRunId: run.id,
+      workflowStep: index,
+    });
+  };
+
+  /** Called when a workflow step's task settles: advance, complete or fail. */
+  const advanceWorkflow = (task: AgentTask): void => {
+    if (!task.workflowRunId) return;
+    const run = repo.getWorkflowRun(Number(task.workflowRunId));
+    if (!run || run.status !== 'RUNNING') return;
+
+    const workflow = repo.getWorkflow(Number(run.workflowId));
+    if (!workflow) return;
+
+    const stepIndex = task.workflowStep ?? run.stepIndex;
+    const tasks = run.tasks.map((item) =>
+      item.index === stepIndex ? { ...item, status: task.status } : item,
+    );
+
+    if (task.status !== 'DONE') {
+      repo.updateWorkflowRun(Number(run.id), {
+        status: 'FAILED',
+        tasks,
+        ...(task.result ? { error: task.result.slice(0, 2000) } : {}),
+      });
+      return;
+    }
+
+    const next = stepIndex + 1;
+    if (next >= workflow.steps.length) {
+      repo.updateWorkflowRun(Number(run.id), {
+        status: 'DONE',
+        tasks,
+        stepIndex,
+      });
+      return;
+    }
+
+    const created = createWorkflowStepTask(
+      workflow,
+      run,
+      next,
+      task.result ?? '',
+    );
+    repo.updateWorkflowRun(Number(run.id), {
+      stepIndex: next,
+      tasks: [
+        ...tasks,
+        {
+          index: next,
+          taskId: created.id,
+          title: created.title,
+          status: created.status,
+        },
+      ],
+    });
   };
 
   const sweepDueTickets = async (): Promise<void> => {
@@ -2380,6 +2484,17 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
         announceTaskSettled(task);
 
+        // A workflow step just settled: dispatch the next one, or mark the run
+        // done/failed. Errors here must not undo a task the agent reported.
+        try {
+          advanceWorkflow(task);
+        } catch (error) {
+          app.log.error(
+            { err: (error as Error).message, task: formatTicketId(id) },
+            'workflow advance failed',
+          );
+        }
+
         if (task.status === 'FAILED') {
           setImmediate(() => {
             void healFailure(taskId).catch((error: unknown) => {
@@ -2395,6 +2510,79 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         }
 
         return { task };
+      });
+
+      /* Linear workflows: a definition plus one run per start. */
+      api.get('/workflows', async (request) => {
+        requireAdmin(request);
+        const query = listWorkflowsQuerySchema.parse(request.query);
+        return { workflows: repo.listWorkflows(query.projectName) };
+      });
+
+      api.post('/workflows', async (request, reply) => {
+        requireAdmin(request);
+        const input = createWorkflowSchema.parse(request.body);
+        const workflow = repo.createWorkflow(input);
+        return reply.code(201).send({ workflow });
+      });
+
+      api.delete('/workflows/:id', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        if (!repo.deleteWorkflow(parseTicketId(id))) {
+          throw new NotFoundError(`workflow ${formatTicketId(id)} not found`);
+        }
+        return { deleted: true, id: formatTicketId(id) };
+      });
+
+      api.post('/workflows/:id/runs', async (request, reply) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const workflow = repo.getWorkflow(parseTicketId(id));
+        if (!workflow) {
+          throw new NotFoundError(`workflow ${formatTicketId(id)} not found`);
+        }
+
+        const input = startWorkflowRunSchema.parse(request.body ?? {});
+        let run = repo.createWorkflowRun(workflow);
+        const first = createWorkflowStepTask(workflow, run, 0, input.brief ?? '');
+        run =
+          repo.updateWorkflowRun(Number(run.id), {
+            stepIndex: 0,
+            tasks: [
+              {
+                index: 0,
+                taskId: first.id,
+                title: first.title,
+                status: first.status,
+              },
+            ],
+          }) ?? run;
+
+        return reply.code(201).send({ run });
+      });
+
+      api.get('/workflow-runs', async (request) => {
+        requireAdmin(request);
+        const query = listWorkflowRunsQuerySchema.parse(request.query);
+        return {
+          runs: repo.listWorkflowRuns(
+            query.workflowId ? Number(query.workflowId) : undefined,
+            query.limit,
+          ),
+        };
+      });
+
+      api.get('/workflow-runs/:id', async (request) => {
+        requireAdmin(request);
+        const { id } = paramsSchema.parse(request.params);
+        const run = repo.getWorkflowRun(parseTicketId(id));
+        if (!run) {
+          throw new NotFoundError(
+            `workflow run ${formatTicketId(id)} not found`,
+          );
+        }
+        return { run };
       });
 
       // Live output from a running task. The bridge batches stdout/stderr and

@@ -19,6 +19,7 @@ import type {
   CreateFleetWorkspaceInput,
   CreateTaskInput,
   CreateTerminalInput,
+  CreateWorkflowInput,
   DecisionTicket,
   DispatchTaskInput,
   EnrollmentResponse,
@@ -51,6 +52,8 @@ import type {
   TicketListResponse,
   TicketResponse,
   UpdateAgentInput,
+  Workflow,
+  WorkflowRun,
   WorkspaceProjectListResponse,
   WorkspaceProjectResponse,
 } from '@zhunzou/shared';
@@ -110,6 +113,11 @@ export interface HubApi {
   }>;
   system(token: string): Promise<{ system: SystemStats }>;
   providerUsage(token: string): Promise<{ usage: ProviderUsage }>;
+  listWorkflows(token: string, projectName?: string): Promise<{ workflows: Workflow[] }>;
+  createWorkflow(token: string, input: CreateWorkflowInput): Promise<{ workflow: Workflow }>;
+  deleteWorkflow(token: string, id: string): Promise<{ deleted: boolean }>;
+  startWorkflowRun(token: string, id: string, brief?: string): Promise<{ run: WorkflowRun }>;
+  listWorkflowRuns(token: string, workflowId?: string, limit?: number): Promise<{ runs: WorkflowRun[] }>;
   listAgents(token: string): Promise<AgentListResponse>;
   listExchanges(
     token: string,
@@ -413,6 +421,35 @@ export function createHubApi(fetchImpl: typeof fetch = fetch): HubApi {
 
     providerUsage: (token) =>
       request<{ usage: ProviderUsage }>(token, '/api/provider-usage'),
+
+    listWorkflows: (token, projectName) =>
+      request<{ workflows: Workflow[] }>(
+        token,
+        `/api/workflows${projectName ? `?projectName=${encodeURIComponent(projectName)}` : ''}`,
+      ),
+
+    createWorkflow: (token, input) =>
+      request<{ workflow: Workflow }>(token, '/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    deleteWorkflow: (token, id) =>
+      request<{ deleted: boolean }>(token, `/api/workflows/${id}`, {
+        method: 'DELETE',
+      }),
+
+    startWorkflowRun: (token, id, brief) =>
+      request<{ run: WorkflowRun }>(token, `/api/workflows/${id}/runs`, {
+        method: 'POST',
+        body: JSON.stringify(brief ? { brief } : {}),
+      }),
+
+    listWorkflowRuns: (token, workflowId, limit = 20) =>
+      request<{ runs: WorkflowRun[] }>(
+        token,
+        `/api/workflow-runs?limit=${limit}${workflowId ? `&workflowId=${workflowId}` : ''}`,
+      ),
 
     listAgents: (token) => request<AgentListResponse>(token, '/api/agents'),
 

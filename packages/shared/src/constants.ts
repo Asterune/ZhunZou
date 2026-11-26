@@ -66,6 +66,27 @@ export const TASK_STATUSES = [
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
+/** What a workflow step is for; the role only labels the step and its template. */
+export const WORKFLOW_STEP_ROLES = [
+  'design',
+  'code',
+  'review',
+  'test',
+  'custom',
+] as const;
+
+export type WorkflowStepRole = (typeof WORKFLOW_STEP_ROLES)[number];
+
+/** A linear pipeline run: one step at a time, in order. */
+export const WORKFLOW_RUN_STATUSES = [
+  'RUNNING',
+  'DONE',
+  'FAILED',
+  'CANCELLED',
+] as const;
+
+export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
+
 /**
  * The blueprint names the same machine QUEUED / RUNNING; the persisted
  * vocabulary predates it, so this map is the single place the two meet.

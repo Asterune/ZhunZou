@@ -38,6 +38,7 @@ import type {
   CreateLearnedRuleInput,
   CreateLocalTaskInput,
   CreateTaskInput,
+  CreateWorkflowInput,
   CreateTerminalInput,
   CreateEnrollmentInput,
   CreateTicketInput,
@@ -89,6 +90,10 @@ import type {
   TerminalSessionStatus,
   TicketStatus,
   UpdateAgentInput,
+  Workflow,
+  WorkflowRun,
+  WorkflowRunStatus,
+  WorkflowRunStep,
   WorkspaceProject,
 } from '@zhunzou/shared';
 import {
@@ -129,6 +134,8 @@ import {
   terminalAudit,
   terminalSessions,
   tickets,
+  workflowRuns,
+  workflows,
   workspaceProjects,
   type AgentRow,
   type AgentTaskRow,
@@ -148,6 +155,8 @@ import {
   type TaskEventRow,
   type TerminalAuditRow,
   type TerminalSessionRow,
+  type WorkflowRow,
+  type WorkflowRunRow,
   type TicketRow,
   type WorkspaceProjectRow,
 } from './db/schema.js';
@@ -389,6 +398,10 @@ function toTask(row: AgentTaskRow): AgentTask {
     retryCount: row.retryCount ?? 0,
     ...(row.workspacePath ? { workspacePath: row.workspacePath } : {}),
     ...(row.fixPrompt ? { fixPrompt: row.fixPrompt } : {}),
+    ...(row.workflowRunId !== null
+      ? { workflowRunId: String(row.workflowRunId) }
+      : {}),
+    ...(row.workflowStep !== null ? { workflowStep: row.workflowStep } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ...(row.claimedAt !== null ? { claimedAt: row.claimedAt } : {}),
@@ -396,6 +409,32 @@ function toTask(row: AgentTaskRow): AgentTask {
     ...(row.completedAt !== null ? { completedAt: row.completedAt } : {}),
     ...(row.result ? { result: row.result } : {}),
     ...(row.failureKind ? { failureKind: row.failureKind } : {}),
+  };
+}
+
+function toWorkflow(row: WorkflowRow): Workflow {
+  return {
+    id: String(row.id),
+    projectName: row.projectName,
+    name: row.name,
+    steps: row.steps,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toWorkflowRun(row: WorkflowRunRow): WorkflowRun {
+  return {
+    id: String(row.id),
+    workflowId: String(row.workflowId),
+    workflowName: row.workflowName,
+    projectName: row.projectName,
+    status: row.status,
+    stepIndex: row.stepIndex,
+    tasks: row.tasks,
+    ...(row.error ? { error: row.error } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -864,6 +903,27 @@ export interface TicketStore {
    * carries one fix prompt, which the claim that takes it delivers and clears.
    */
   retryTask(id: number, fixPrompt: string, now?: number): AgentTask | null;
+  /* Linear workflows: definition, one run, one step at a time. */
+  createWorkflow(input: CreateWorkflowInput, now?: number): Workflow;
+  getWorkflow(id: number): Workflow | null;
+  listWorkflows(projectName?: string): Workflow[];
+  deleteWorkflow(id: number): boolean;
+  createWorkflowRun(workflow: Workflow, now?: number): WorkflowRun;
+  getWorkflowRun(id: number): WorkflowRun | null;
+  listWorkflowRuns(
+    workflowId: number | undefined,
+    limit: number,
+  ): WorkflowRun[];
+  updateWorkflowRun(
+    id: number,
+    patch: {
+      status?: WorkflowRunStatus;
+      stepIndex?: number;
+      tasks?: WorkflowRunStep[];
+      error?: string | null;
+    },
+    now?: number,
+  ): WorkflowRun | null;
   /** Stop the loop. No further retry, no further token, a human decides. */
   blockTask(id: number, now?: number): AgentTask | null;
   /** A human overrode the breaker: same task, a fresh retry budget. */
@@ -3969,6 +4029,12 @@ export class TicketRepository implements TicketStore {
         model: input.model ?? null,
         origin: input.origin ?? 'HUB_DISPATCH',
         managedBySupervisor: input.managedBySupervisor ? 1 : 0,
+        ...(input.workflowRunId
+          ? { workflowRunId: Number(input.workflowRunId) }
+          : {}),
+        ...(input.workflowStep !== undefined
+          ? { workflowStep: input.workflowStep }
+          : {}),
         retryCount: 0,
         createdAt: now,
         updatedAt: now,
@@ -4939,6 +5005,124 @@ export class TicketRepository implements TicketStore {
    * (streamed output has its own cheap pager) so streaming does not wake
    * every connected dashboard.
    */
+  /* ---------------------------------------------------------------- */
+  /* Linear workflows                                                 */
+  /* ---------------------------------------------------------------- */
+
+  createWorkflow(input: CreateWorkflowInput, now = Date.now()): Workflow {
+    const row = this.db
+      .insert(workflows)
+      .values({
+        projectName: input.projectName,
+        name: input.name,
+        steps: input.steps,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+    return toWorkflow(row);
+  }
+
+  getWorkflow(id: number): Workflow | null {
+    const row = this.db
+      .select()
+      .from(workflows)
+      .where(eq(workflows.id, id))
+      .get();
+    return row ? toWorkflow(row) : null;
+  }
+
+  listWorkflows(projectName?: string): Workflow[] {
+    return this.db
+      .select()
+      .from(workflows)
+      .where(
+        projectName ? eq(workflows.projectName, projectName) : undefined,
+      )
+      .orderBy(desc(workflows.updatedAt), desc(workflows.id))
+      .all()
+      .map(toWorkflow);
+  }
+
+  deleteWorkflow(id: number): boolean {
+    this.db.delete(workflowRuns).where(eq(workflowRuns.workflowId, id)).run();
+    return (
+      this.db.delete(workflows).where(eq(workflows.id, id)).run().changes > 0
+    );
+  }
+
+  createWorkflowRun(workflow: Workflow, now = Date.now()): WorkflowRun {
+    const row = this.db
+      .insert(workflowRuns)
+      .values({
+        workflowId: Number(workflow.id),
+        workflowName: workflow.name,
+        projectName: workflow.projectName,
+        status: 'RUNNING',
+        stepIndex: 0,
+        tasks: [],
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+    return toWorkflowRun(row);
+  }
+
+  getWorkflowRun(id: number): WorkflowRun | null {
+    const row = this.db
+      .select()
+      .from(workflowRuns)
+      .where(eq(workflowRuns.id, id))
+      .get();
+    return row ? toWorkflowRun(row) : null;
+  }
+
+  listWorkflowRuns(workflowId: number | undefined, limit: number): WorkflowRun[] {
+    return this.db
+      .select()
+      .from(workflowRuns)
+      .where(
+        workflowId ? eq(workflowRuns.workflowId, workflowId) : undefined,
+      )
+      .orderBy(desc(workflowRuns.id))
+      .limit(limit)
+      .all()
+      .map(toWorkflowRun);
+  }
+
+  updateWorkflowRun(
+    id: number,
+    patch: {
+      status?: WorkflowRunStatus;
+      stepIndex?: number;
+      tasks?: WorkflowRunStep[];
+      error?: string | null;
+    },
+    now = Date.now(),
+  ): WorkflowRun | null {
+    const row = this.db
+      .update(workflowRuns)
+      .set({
+        updatedAt: now,
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.stepIndex !== undefined
+          ? { stepIndex: patch.stepIndex }
+          : {}),
+        ...(patch.tasks ? { tasks: patch.tasks } : {}),
+        ...(patch.error === null
+          ? { error: null }
+          : patch.error
+            ? { error: patch.error }
+            : {}),
+      })
+      .where(eq(workflowRuns.id, id))
+      .returning()
+      .get();
+    return row ? toWorkflowRun(row) : null;
+  }
+
   syncFingerprint(): string {
     const { structural, presence } = this.syncFingerprints();
     return `${structural}|${presence}`;

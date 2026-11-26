@@ -377,6 +377,33 @@ CREATE TABLE IF NOT EXISTS decision_demotions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_decision_demotions_until ON decision_demotions(until);
+
+CREATE TABLE IF NOT EXISTS workflows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_name TEXT NOT NULL,
+  name TEXT NOT NULL,
+  steps TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflows_project ON workflows(project_name);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_id INTEGER NOT NULL,
+  workflow_name TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  status TEXT NOT NULL,
+  step_index INTEGER NOT NULL DEFAULT 0,
+  tasks TEXT NOT NULL DEFAULT '[]',
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id, id);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
 `;
 
 export type SqliteDatabase = InstanceType<typeof Database>;
@@ -449,6 +476,12 @@ export function createDatabase(dbPath: string): {
   // asked for, or the reason a CLI refused to think, so both land on upgrade.
   ensureColumn(sqlite, 'agent_tasks', 'model', 'TEXT');
   ensureColumn(sqlite, 'agent_tasks', 'failure_kind', 'TEXT');
+  // Linear workflows: which run/step spawned this task.
+  ensureColumn(sqlite, 'agent_tasks', 'workflow_run_id', 'INTEGER');
+  ensureColumn(sqlite, 'agent_tasks', 'workflow_step', 'INTEGER');
+  sqlite.exec(
+    'CREATE INDEX IF NOT EXISTS idx_agent_tasks_workflow ON agent_tasks(workflow_run_id, workflow_step);',
+  );
   ensureColumn(sqlite, 'chat_messages', 'failure_kind', 'TEXT');
   // Images live on disk; the message row only carries their metadata.
   ensureColumn(sqlite, 'chat_messages', 'attachments', "TEXT NOT NULL DEFAULT '[]'");

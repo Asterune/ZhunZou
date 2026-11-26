@@ -79,6 +79,7 @@ import SingleTaskList from './SingleTaskList.vue';
 import TargetPicker from './TargetPicker.vue';
 import TaskBoard from './TaskBoard.vue';
 import TicketCard from './TicketCard.vue';
+import WorkflowPanel from './WorkflowPanel.vue';
 
 const store = useHubStore();
 const { t, locale } = useI18n();
@@ -221,7 +222,7 @@ let voiceSession: VoiceSession | null = null;
  * 「单次执行」is the old 下发任务 page folded in here: same env/project picker,
  * but the run is one-shot and keeps no context.
  */
-type ChatMode = 'chat' | 'single';
+type ChatMode = 'chat' | 'single' | 'workflow';
 const mode = ref<ChatMode>(readInitialMode());
 const focusTaskId = ref('');
 
@@ -229,20 +230,22 @@ function readInitialMode(): ChatMode {
   if (typeof window === 'undefined') return 'chat';
   const params = new URLSearchParams(window.location.search);
   if (params.get('tab') === 'tasks') return 'single';
-  return params.get('mode') === 'single' ? 'single' : 'chat';
+  const value = params.get('mode');
+  if (value === 'single' || value === 'workflow') return value;
+  return 'chat';
 }
 
 function setMode(next: ChatMode): void {
   mode.value = next;
   if (next === 'chat') focusTaskId.value = '';
-  if (next === 'single') {
+  if (next !== 'chat') {
     resetMobileDetail();
   }
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
   url.searchParams.set('tab', 'chat');
-  if (next === 'single') url.searchParams.set('mode', 'single');
-  else url.searchParams.delete('mode');
+  if (next === 'chat') url.searchParams.delete('mode');
+  else url.searchParams.set('mode', next);
   window.history.replaceState(null, '', url);
 }
 
@@ -261,6 +264,11 @@ const modes = computed(() => [
     key: 'single' as const,
     label: t('chat.mode.single'),
     hint: t('chat.mode.singleHint'),
+  },
+  {
+    key: 'workflow' as const,
+    label: t('chat.mode.workflow'),
+    hint: t('chat.mode.workflowHint'),
   },
 ]);
 const form = reactive({
@@ -1615,6 +1623,8 @@ onBeforeUnmount(() => {
       embedded
       :focus-task-id="focusTaskId"
     />
+
+    <WorkflowPanel v-else-if="mode === 'workflow'" />
 
     <div v-else class="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
       <!-- Desktop session list -->

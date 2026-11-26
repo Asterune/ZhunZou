@@ -6,6 +6,7 @@ import type {
   ChatEvent,
   CreateAgentInput,
   CreateEnrollmentInput,
+  CreateWorkflowInput,
   CreateTaskInput,
   DecisionTicket,
   Device,
@@ -24,6 +25,8 @@ import type {
   SyncState,
   SystemStats,
   UpdateAgentInput,
+  Workflow,
+  WorkflowRun,
   WorkspaceProject,
 } from '@zhunzou/shared';
 
@@ -202,6 +205,9 @@ export function createHubStore(api: HubApi = hubApi) {
   const system = ref<SystemStats | null>(null);
   /** Provider allowance meters (OpenCode Go: 5h/week/month). */
   const providerUsage = ref<ProviderUsage | null>(null);
+  /** Linear workflow definitions and their recent runs. */
+  const workflows = ref<Workflow[]>([]);
+  const workflowRuns = ref<WorkflowRun[]>([]);
   const lastSyncAt = ref(0);
   const lastError = ref('');
   const authError = ref('');
@@ -533,6 +539,62 @@ export function createHubStore(api: HubApi = hubApi) {
       providerUsage.value = response.usage;
     } catch {
       // Keep the last reading; a transient failure must not blank the card.
+    }
+  }
+
+  async function loadWorkflows(projectName?: string): Promise<void> {
+    if (!token.value) return;
+    try {
+      const response = await api.listWorkflows(token.value, projectName);
+      workflows.value = response.workflows;
+    } catch {
+      // The panel keeps the last list; the next poll retries.
+    }
+  }
+
+  async function createWorkflow(input: CreateWorkflowInput): Promise<Workflow | null> {
+    if (!token.value) return null;
+    try {
+      const response = await api.createWorkflow(token.value, input);
+      await loadWorkflows();
+      return response.workflow;
+    } catch {
+      return null;
+    }
+  }
+
+  async function deleteWorkflow(id: string): Promise<boolean> {
+    if (!token.value) return false;
+    try {
+      await api.deleteWorkflow(token.value, id);
+      workflows.value = workflows.value.filter((item) => item.id !== id);
+      workflowRuns.value = workflowRuns.value.filter(
+        (run) => run.workflowId !== id,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function startWorkflowRun(id: string, brief?: string): Promise<WorkflowRun | null> {
+    if (!token.value) return null;
+    try {
+      const response = await api.startWorkflowRun(token.value, id, brief);
+      await loadWorkflowRuns();
+      return response.run;
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadWorkflowRuns(workflowId?: string): Promise<void> {
+    if (!token.value) return;
+    try {
+      const response = await api.listWorkflowRuns(token.value, workflowId);
+      workflowRuns.value = response.runs;
+    } catch {
+      // Keep the last list.
     }
   }
 
@@ -1543,6 +1605,13 @@ export function createHubStore(api: HubApi = hubApi) {
     loadSystem,
     providerUsage,
     loadProviderUsage,
+    workflows,
+    workflowRuns,
+    loadWorkflows,
+    createWorkflow,
+    deleteWorkflow,
+    startWorkflowRun,
+    loadWorkflowRuns,
     pollHealth,
     rev,
     chatDeltas,
