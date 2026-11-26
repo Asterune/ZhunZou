@@ -18,6 +18,10 @@ import { useHubStore } from '../stores/hub';
  * 线性流程：设计 → 编码 → 审查/测试。每一步是一条普通任务，跑完后 hub 自动把
  * 上一步结果注入下一步的指令并派发；步骤可以各自指定执行端和模型。
  */
+const emit = defineEmits<{
+  'open-task': [taskId: string];
+}>();
+
 const store = useHubStore();
 const { t } = useI18n();
 
@@ -68,27 +72,32 @@ const canSave = computed(
     ),
 );
 
+function templateFor(role: WorkflowStepRole): string {
+  if (role === 'design' || role === 'code' || role === 'review' || role === 'test') {
+    return t(`workflow.template.${role}`);
+  }
+  return '';
+}
+
 function defaultStep(role: WorkflowStepRole): StepDraft {
-  const env = envs.value[0]?.env ?? '';
-  if (role === 'design') {
-    return {
-      name: t('workflow.role.design'),
-      role,
-      env,
-      model: '',
-      instruction: t('workflow.template.design'),
-    };
-  }
-  if (role === 'code') {
-    return {
-      name: t('workflow.role.code'),
-      role,
-      env,
-      model: '',
-      instruction: t('workflow.template.code'),
-    };
-  }
-  return { name: '', role, env, model: '', instruction: '' };
+  return {
+    name: t(`workflow.role.${role}`),
+    role,
+    env: envs.value[0]?.env ?? '',
+    model: '',
+    instruction: templateFor(role),
+  };
+}
+
+/** Fill the template when a role is picked on an empty instruction. */
+function onRoleChange(step: StepDraft): void {
+  if (!step.instruction.trim()) step.instruction = templateFor(step.role);
+  if (!step.name.trim()) step.name = t(`workflow.role.${step.role}`);
+}
+
+function addStepOf(role: WorkflowStepRole): void {
+  if (form.steps.length >= 8) return;
+  form.steps.push(defaultStep(role));
 }
 
 function openCreate(): void {
@@ -99,8 +108,7 @@ function openCreate(): void {
 }
 
 function addStep(): void {
-  if (form.steps.length >= 8) return;
-  form.steps.push(defaultStep('custom'));
+  addStepOf('custom');
 }
 
 function removeStep(index: number): void {
@@ -306,15 +314,18 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <div class="mt-2 space-y-1">
-            <div
+            <button
               v-for="task in run.tasks"
               :key="task.index"
-              class="flex items-center gap-2 text-[11px]"
+              type="button"
+              class="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-[11px] transition hover:bg-surface-container"
+              :title="t('workflow.openTask')"
+              @click="emit('open-task', task.taskId)"
             >
               <span class="w-4 shrink-0 text-center font-mono text-on-surface-variant/60">
                 {{ task.index + 1 }}
               </span>
-              <span class="min-w-0 flex-1 truncate text-on-surface" :title="task.title">
+              <span class="min-w-0 flex-1 truncate text-on-surface underline decoration-outline-variant/40 underline-offset-2">
                 {{ task.title }}
               </span>
               <span class="shrink-0 rounded px-1 text-[9.5px]" :class="statusClass(
@@ -329,7 +340,7 @@ onBeforeUnmount(() => {
               <span class="shrink-0 font-mono text-[10px] text-on-surface-variant/50">
                 #{{ task.taskId }}
               </span>
-            </div>
+            </button>
           </div>
           <p class="mt-1.5 text-[10px] text-on-surface-variant/60">
             {{ relativeTime(run.updatedAt) }}
@@ -413,6 +424,7 @@ onBeforeUnmount(() => {
                 <select
                   v-model="step.role"
                   class="h-8 rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-2 text-[12px] text-on-surface outline-none focus:border-primary"
+                  @change="onRoleChange(step)"
                 >
                   <option v-for="role in ROLES" :key="role" :value="role">
                     {{ t(`workflow.role.${role}`) }}
@@ -444,15 +456,35 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="mt-3 flex items-center justify-between">
-            <button
-              type="button"
-              class="flex h-8 items-center gap-1 rounded-lg px-2.5 text-[11px] font-medium text-on-surface-variant transition hover:bg-surface-container"
-              :disabled="form.steps.length >= 8"
-              @click="addStep"
-            >
-              <Plus :size="12" />
-              {{ t('workflow.addStep') }}
-            </button>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                class="flex h-8 items-center gap-1 rounded-lg px-2.5 text-[11px] font-medium text-on-surface-variant transition hover:bg-surface-container"
+                :disabled="form.steps.length >= 8"
+                @click="addStep"
+              >
+                <Plus :size="12" />
+                {{ t('workflow.addStep') }}
+              </button>
+              <button
+                type="button"
+                class="flex h-8 items-center gap-1 rounded-lg px-2.5 text-[11px] font-medium text-secondary transition hover:bg-secondary/10"
+                :disabled="form.steps.length >= 8"
+                @click="addStepOf('review')"
+              >
+                <Plus :size="12" />
+                {{ t('workflow.addReview') }}
+              </button>
+              <button
+                type="button"
+                class="flex h-8 items-center gap-1 rounded-lg px-2.5 text-[11px] font-medium text-on-surface-variant transition hover:bg-surface-container"
+                :disabled="form.steps.length >= 8"
+                @click="addStepOf('test')"
+              >
+                <Plus :size="12" />
+                {{ t('workflow.addTest') }}
+              </button>
+            </div>
             <div class="flex gap-2">
               <button
                 type="button"

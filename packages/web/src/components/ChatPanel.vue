@@ -1624,7 +1624,7 @@ onBeforeUnmount(() => {
       :focus-task-id="focusTaskId"
     />
 
-    <WorkflowPanel v-else-if="mode === 'workflow'" />
+    <WorkflowPanel v-else-if="mode === 'workflow'" @open-task="openSingleTask" />
 
     <div v-else class="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
       <!-- Desktop session list -->
